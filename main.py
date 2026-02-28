@@ -12,11 +12,13 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete
 
 # Load the variables defined in .env into the process environment.
 # This must run before any code that calls os.getenv().
@@ -190,3 +192,80 @@ def endpoint_nearest_meeting_point():
         raise HTTPException(status_code=422, detail=str(exc))
 
     return result
+
+
+# -----------------------------------------------------------------------------
+# Request body models
+# Pydantic models declare the expected JSON shape for POST endpoints.
+# FastAPI uses them for automatic validation and documentation generation.
+# -----------------------------------------------------------------------------
+
+class FrescosRequest(BaseModel):
+    """
+    Body for POST /determine-frescos.
+    has_own_van: True if the company's van is available for this event,
+                 False if a miniflete must be hired.
+    """
+    has_own_van: bool
+
+
+@app.post(
+    "/determine-frescos",
+    summary="Determine the frescos vehicle and assigned staff roles",
+    description=(
+        "Given whether the company owns a van for this event, returns which "
+        "vehicle will transport the frescos (raw ingredients) and which staff "
+        "roles are assigned to it.  No external APIs are called — the decision "
+        "is purely rule-based."
+    ),
+)
+def endpoint_determine_frescos(body: FrescosRequest):
+    """
+    Delegates directly to determine_frescos_vehicle() from the logistics module.
+
+    The Excel file is validated to exist (consistent with all other endpoints)
+    even though this particular rule does not need its data — it confirms the
+    event is properly configured before returning transport decisions.
+
+    Returns a JSON object:
+    {
+        "vehicle":        "camioneta propia" | "miniflete contratado",
+        "assigned_roles": ["Manager Senior"] | ["Manager Senior", "Jefe de Parrilla Senior"]
+    }
+    """
+    # Validate that the event Excel exists before returning any logistics advice.
+    # This guards against answering transport questions for a non-existent event.
+    _load_excel()
+
+    return determine_frescos_vehicle(body.has_own_van)
+
+
+@app.post(
+    "/determine-second-miniflete",
+    summary="Determine whether a second miniflete is needed for frescos",
+    description=(
+        "Reads the event Excel, inspects the 'prestaciones' sheet, and "
+        "evaluates whether the volume of frescos for this event requires a "
+        "second miniflete.  Triggers are based on menu type and guest count. "
+        "If 'Estación de fuegos' is contracted the answer is always false."
+    ),
+)
+def endpoint_determine_second_miniflete():
+    """
+    Workflow:
+        1. Read the event Excel via _load_excel().
+        2. Extract the 'services' list (from the 'prestaciones' sheet).
+        3. Pass it to determine_second_miniflete() which applies the
+           threshold rules defined in config.py.
+
+    Returns a JSON object:
+    {
+        "needs_second_miniflete": true | false,
+        "reason": "<human-readable explanation>"
+    }
+    """
+    data = _load_excel()
+
+    # "services" maps to the 'prestaciones' sheet rows — each is a dict with
+    # keys "Servicio", "Detalle", and "Cantidad" as read from the Excel columns.
+    return determine_second_miniflete(data["services"])
