@@ -9,12 +9,24 @@
 # vehicle cannot carry all the frescos in one trip.
 # =============================================================================
 
+import math
 import unicodedata
+from datetime import datetime, timedelta
 
 # Import all thresholds and keywords from the central constants file.
 # Using named constants instead of magic numbers makes the rules self-documenting
 # and easy to change in one place without hunting through logic code.
-from config import MENU_KEYWORDS, SECOND_MINIFLETE_CONDITIONS
+from config import (
+    CHARTER_THRESHOLD,
+    DEPARTURE_BUFFER_MINUTES,
+    DEPARTURE_PREP_HOURS,
+    LOADING_TIME_MINUTES,
+    LONG_EVENT_DURATION_THRESHOLD,
+    LONG_EVENT_EXTRA_HOURS,
+    MENU_KEYWORDS,
+    PICADA_GUEST_THRESHOLD,
+    SECOND_MINIFLETE_CONDITIONS,
+)
 
 
 # =============================================================================
@@ -224,4 +236,188 @@ def determine_second_miniflete(prestaciones: list[dict]) -> dict:
     return {
         "needs_second_miniflete": False,
         "reason": "No trigger conditions met for the contracted prestaciones.",
+    }
+
+
+def calculate_departure_time(
+    event_time_str: str,
+    travel_seconds: int,
+    event_duration_hours: float,
+    picada_guests: int,
+) -> dict:
+    """
+    Calculates the departure time from the CP (Centro de Producción) for the
+    frescos vehicle — and the second miniflete if one is used, since both
+    depart from the CP at the same time.
+
+    The formula works backwards from the event start time, subtracting every
+    fixed block of time the team needs before service can begin:
+
+        departure = event_time
+                    − DEPARTURE_PREP_HOURS      (setup time at venue)
+                    − travel_minutes            (CP → event, rounded up)
+                    − DEPARTURE_BUFFER_MINUTES  (last-minute margin)
+                    − LOADING_TIME_MINUTES      (loading frescos at CP)
+                    [ − LONG_EVENT_EXTRA_HOURS  (if event is long or has picada) ]
+
+    The extra prep block is applied when EITHER of these is true (OR logic):
+      - event_duration_hours >= LONG_EVENT_DURATION_THRESHOLD  (≥ 8 h event)
+      - picada_guests >= PICADA_GUEST_THRESHOLD                (≥ 100 picada guests)
+
+    If both conditions are met simultaneously, the extra hours are still added
+    only once; both reasons are reported in the returned list.
+
+    Parameters:
+        event_time_str      (str):   Event start time as "HH:MM", read from
+                                     the 'hora_inicio' field of the Excel.
+        travel_seconds      (int):   Driving time in seconds from the CP to
+                                     the event venue, as returned by the
+                                     Distance Matrix API.
+        event_duration_hours (float): Total planned duration of the event in
+                                     hours (used to trigger extra prep time).
+        picada_guests       (int):   Number of guests for the picada service;
+                                     pass 0 if no picada is contracted.
+
+    Returns:
+        dict: {
+            "departure_time":            str,        # "HH:MM" — time to leave the CP
+            "extra_prep_applied":        bool,       # whether extra hours were added
+            "extra_prep_reason":         list[str],  # reasons that triggered extra prep;
+                                                     # may contain "long event", "picada", or both;
+                                                     # empty list if extra prep was not applied
+            "total_minutes_before_event": int,       # total lead time in minutes
+        }
+    """
+    # Parse the event start time string into a datetime object.
+    # We use today's date as a placeholder — we only care about the time component.
+    event_time = datetime.strptime(event_time_str, "%H:%M")
+
+    # Convert travel seconds to minutes, rounding UP.
+    # math.ceil ensures we never underestimate the drive — arriving early is
+    # always better than arriving late at an event venue.
+    travel_minutes = math.ceil(travel_seconds / 60)
+
+    # Sum all fixed deductions that always apply
+    total_minutes = (
+        DEPARTURE_PREP_HOURS * 60   # hours → minutes
+        + travel_minutes
+        + DEPARTURE_BUFFER_MINUTES
+        + LOADING_TIME_MINUTES
+    )
+
+    # -------------------------------------------------------------------------
+    # Check whether the extra prep block is needed (OR logic).
+    # Both conditions are evaluated independently so that if both are true,
+    # both reasons appear in the returned list.  The extra hours are still
+    # added only once — they represent a single additional block of setup time,
+    # not a multiplier.
+    # -------------------------------------------------------------------------
+    extra_prep_reason = []
+
+    if event_duration_hours >= LONG_EVENT_DURATION_THRESHOLD:
+        extra_prep_reason.append("long event")
+
+    if picada_guests >= PICADA_GUEST_THRESHOLD:
+        extra_prep_reason.append("picada")
+
+    extra_prep_applied = len(extra_prep_reason) > 0
+
+    if extra_prep_applied:
+        total_minutes += LONG_EVENT_EXTRA_HOURS * 60   # hours → minutes
+
+    # Subtract the total lead time from the event start to get the departure time.
+    # timedelta handles midnight roll-overs correctly (e.g. a 01:00 event with
+    # a 6-hour lead time will produce 19:00 the previous day — only the HH:MM
+    # part is returned, so callers should be aware this is a wall-clock time).
+    departure_time = event_time - timedelta(minutes=total_minutes)
+
+    return {
+        "departure_time":             departure_time.strftime("%H:%M"),
+        "extra_prep_applied":         extra_prep_applied,
+        "extra_prep_reason":          extra_prep_reason,
+        "total_minutes_before_event": total_minutes,
+    }
+
+
+def get_remaining_pool(staff: list[dict], assigned_roles: list[str]) -> dict:
+    """
+    Builds the remaining staff pool after the frescos and second-miniflete
+    assignments have been committed.
+
+    Each employee in the full staff list is checked against assigned_roles
+    by matching their "Profesion" column value.  Matched employees are
+    separated out as already assigned; the rest form the pool that still
+    needs to be placed into a vehicle for the event.
+
+    After building the pool, two edge-case checks run immediately because
+    they block all further routing logic:
+      - pool == 1  → only one person left; no standard vehicle can carry
+                     a single passenger economically.  The user must find
+                     an alternative (moto, baúl de camioneta, etc.).
+      - pool > CHARTER_THRESHOLD (8) → too many people for individual cars
+                     or Ubers; a charter bus must be arranged instead.
+
+    If neither edge case is triggered (status "proceed"), the caller can
+    continue to Step 4b: personal car assignment and Uber allocation.
+
+    Parameters:
+        staff          (list[dict]): Full staff list from read_excel()["staff"].
+                                     Each dict must have at least a "Profesion" key.
+        assigned_roles (list[str]):  Role strings already committed to the
+                                     frescos vehicle or second miniflete
+                                     (e.g. ["Manager Senior", "Jefe de Parrilla Senior"]).
+
+    Returns:
+        dict: {
+            "remaining_pool":      list[dict], # staff not yet assigned to any vehicle
+            "remaining_count":     int,
+            "assigned_to_frescos": list[dict], # staff removed from pool (matched roles)
+            "charter_required":    bool,        # True if remaining_count > CHARTER_THRESHOLD
+            "alternative_required": bool,       # True if remaining_count == 1
+            "status":              str,         # "charter" | "alternative" | "proceed"
+        }
+    """
+    assigned_to_frescos = []
+    remaining_pool      = []
+
+    for member in staff:
+        # Strip whitespace before comparing to guard against accidental spaces
+        # in the Excel "Profesion" cell — exact match is intentional here
+        # because role strings are controlled vocabulary, not free text.
+        profesion = str(member.get("Profesion", "")).strip()
+
+        if profesion in assigned_roles:
+            assigned_to_frescos.append(member)
+        else:
+            remaining_pool.append(member)
+
+    remaining_count = len(remaining_pool)
+
+    # -------------------------------------------------------------------------
+    # Edge-case checks: both conditions halt further routing because no
+    # standard vehicle-assignment logic applies in either scenario.
+    # We derive a single "status" string so the frontend can branch cleanly
+    # without inspecting two separate boolean flags.
+    # -------------------------------------------------------------------------
+    charter_required     = remaining_count > CHARTER_THRESHOLD
+    alternative_required = remaining_count == 1
+
+    if charter_required:
+        # Too many people for cars/Ubers — a hired bus is the only viable option.
+        status = "charter"
+    elif alternative_required:
+        # Exactly one person left — no standard vehicle makes sense for one rider.
+        # The user must decide: send them on a moto, fit them in the van's boot, etc.
+        status = "alternative"
+    else:
+        # Normal case: 2–8 people remaining, proceed to car and Uber assignment.
+        status = "proceed"
+
+    return {
+        "remaining_pool":       remaining_pool,
+        "remaining_count":      remaining_count,
+        "assigned_to_frescos":  assigned_to_frescos,
+        "charter_required":     charter_required,
+        "alternative_required": alternative_required,
+        "status":               status,
     }

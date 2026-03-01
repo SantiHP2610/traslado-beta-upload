@@ -17,8 +17,12 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool
+
+# CP coordinates are fixed constants defined in config.py — imported here
+# so the endpoint can pass them directly to the Distance Matrix API.
+from config import CP_LAT, CP_LNG
 
 # Load the variables defined in .env into the process environment.
 # This must run before any code that calls os.getenv().
@@ -269,3 +273,151 @@ def endpoint_determine_second_miniflete():
     # "services" maps to the 'prestaciones' sheet rows — each is a dict with
     # keys "Servicio", "Detalle", and "Cantidad" as read from the Excel columns.
     return determine_second_miniflete(data["services"])
+
+
+class DepartureTimeRequest(BaseModel):
+    """
+    Body for POST /calculate-departure-time.
+    event_duration_hours: planned length of the event in hours (triggers extra prep if >= 8).
+    picada_guests: guest count for the picada service; pass 0 if none is contracted.
+    """
+    event_duration_hours: float
+    picada_guests: int
+
+
+@app.post(
+    "/calculate-departure-time",
+    summary="Calculate CP departure time for the frescos vehicle",
+    description=(
+        "Reads the event start time and address from the Excel, queries the "
+        "Distance Matrix API for the driving time from the CP to the event venue, "
+        "then applies the departure formula from config.py.  Both the frescos "
+        "vehicle and the second miniflete (if any) depart at the same time."
+    ),
+)
+def endpoint_calculate_departure_time(body: DepartureTimeRequest):
+    """
+    Workflow:
+        1. Read the Excel for 'hora_inicio', 'direccion_evento', 'ciudad_evento'.
+        2. Geocode the event address to obtain lat/lng coordinates.
+        3. Call the Distance Matrix API with the CP as origin and the event
+           venue as destination to get the driving time in seconds.
+        4. Pass everything to calculate_departure_time() from the logistics module.
+
+    Returns a JSON object:
+    {
+        "departure_time":             "HH:MM",
+        "extra_prep_applied":         true | false,
+        "extra_prep_reason":          ["long event"] | ["picada"] | ["long event", "picada"] | [],
+        "total_minutes_before_event": int
+    }
+    """
+    data = _load_excel()
+    event = data["event"]
+
+    # -------------------------------------------------------------------------
+    # Step 1: read the event start time from the Excel.
+    # 'hora_inicio' is a raw field name from the Excel sheet — stays in Spanish.
+    # -------------------------------------------------------------------------
+    hora_inicio = str(event.get("hora_inicio", "")).strip()
+    if not hora_inicio:
+        raise HTTPException(
+            status_code=422,
+            detail="'hora_inicio' is missing or empty in the Excel event sheet.",
+        )
+
+    # -------------------------------------------------------------------------
+    # Step 2: geocode the event venue address.
+    # -------------------------------------------------------------------------
+    event_address = (
+        f"{event.get('direccion_evento', '')}, "
+        f"{event.get('ciudad_evento', '')}"
+    )
+    event_coords = geocode(event_address)
+    if event_coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode the event address: '{event_address}'",
+        )
+
+    # -------------------------------------------------------------------------
+    # Step 3: get driving time from the CP to the event venue.
+    # CP_LAT / CP_LNG are the fixed coordinates of the production centre,
+    # imported from config.py.  We wrap them in lists because calculate_distances()
+    # always expects lists of coordinate dicts.
+    # -------------------------------------------------------------------------
+    cp_origin = [{"lat": CP_LAT, "lng": CP_LNG}]
+    event_destination = [{"lat": event_coords["lat"], "lng": event_coords["lng"]}]
+
+    matrix = calculate_distances(cp_origin, event_destination)
+
+    # The matrix has exactly one row (one origin) and one element (one destination).
+    # We check the status before reading the duration to give a clear error message.
+    element = matrix["rows"][0]["elements"][0]
+    if element["status"] != "OK":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Distance Matrix API could not find a route from the CP to "
+                f"'{event_address}'. Status: {element['status']}"
+            ),
+        )
+
+    travel_seconds = element["duration"]["value"]
+
+    # -------------------------------------------------------------------------
+    # Step 4: apply the departure formula and return the result.
+    # -------------------------------------------------------------------------
+    return calculate_departure_time(
+        event_time_str=hora_inicio,
+        travel_seconds=travel_seconds,
+        event_duration_hours=body.event_duration_hours,
+        picada_guests=body.picada_guests,
+    )
+
+
+class RemainingPoolRequest(BaseModel):
+    """
+    Body for POST /get-remaining-pool.
+    assigned_roles: list of role strings already committed to the frescos vehicle
+                    and/or second miniflete (matched against the "Profesion" column).
+    """
+    assigned_roles: list[str]
+
+
+@app.post(
+    "/get-remaining-pool",
+    summary="Build the remaining staff pool after frescos assignments",
+    description=(
+        "Reads the staff list from the Excel, removes any employee whose "
+        "'Profesion' matches an assigned role, and returns the remaining pool "
+        "with charter and alternative flags.  If status is 'charter' or "
+        "'alternative', routing should not proceed until the user resolves it."
+    ),
+)
+def endpoint_get_remaining_pool(body: RemainingPoolRequest):
+    """
+    Workflow:
+        1. Read the Excel to get the full staff list.
+        2. Pass staff and assigned_roles to get_remaining_pool().
+        3. Return the pool summary with status and edge-case flags.
+
+    # TODO: once role lookup is implemented, assigned_roles will be populated
+    # automatically from the results of /determine-frescos and
+    # /determine-second-miniflete — the user will not need to provide them manually.
+
+    Returns a JSON object:
+    {
+        "remaining_pool":       [ { "Profesion": ..., "Nombre": ..., ... }, ... ],
+        "remaining_count":      int,
+        "assigned_to_frescos":  [ { ... }, ... ],
+        "charter_required":     true | false,
+        "alternative_required": true | false,
+        "status":               "charter" | "alternative" | "proceed"
+    }
+    """
+    data = _load_excel()
+
+    # "staff" maps to the 'equipo' sheet — each dict has at least "Profesion",
+    # which is what get_remaining_pool() uses for role matching.
+    return get_remaining_pool(data["staff"], body.assigned_roles)

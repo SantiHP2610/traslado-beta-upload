@@ -57,22 +57,29 @@ EVENT_PREP_HOURS = 4
 EVENT_PREP_HOURS_WITH_PICADA = 2
 PICADA_THRESHOLD_GUESTS = 100
 
-# --- Meeting point parameters ---
-# PEA_MAX_TRANSIT_MINUTES: maximum acceptable transit time (in minutes)
-#   from a staff member's home to a meeting point.  Beyond this, the
-#   meeting point is considered too far for that employee.
-# PEA_RADIUS_KM: maximum km difference between (PEA → event) distance and
-#   (original meeting point → event) distance.  If within this threshold,
-#   the PEA is flagged "optimal"; beyond it, flagged "consult_remuneration"
-#   (affects where driver pay starts).
-# PEA_MIN_EXCLUSIVE_PREFERENCE: minimum number of staff members who must
-#   exclusively prefer the PEA for it to be proposed.  "Exclusively prefer"
-#   means the original meeting point takes them >PEA_MAX_TRANSIT_MINUTES but
-#   the PEA takes them ≤PEA_MAX_TRANSIT_MINUTES.  Full condition: ALL staff
-#   must prefer the PEA AND at least this many must exclusively prefer it.
-# PICKUP_MIN_TIME_SAVING_MINUTES: minimum time (minutes) a direct pickup
-#   must save compared to the meeting-point route to justify the detour.
-PEA_MAX_TRANSIT_MINUTES = 25
-PEA_RADIUS_KM = 10
-PEA_MIN_EXCLUSIVE_PREFERENCE = 2
-PICKUP_MIN_TIME_SAVING_MINUTES = 20
+# --- Alternative Meeting Point (PEA) parameters ---
+PEA_MAX_TRANSIT_MINUTES = 25       # max travel time by public transit to PEA to be "convenient"
+PEA_EXCLUSIVE_DIFF_MINUTES = 20    # min difference (in minutes) between transit time to PE
+                                    # and transit time to PEA to count as "exclusively prefers PEA"
+PEA_MIN_EXCLUSIVE_PREFERENCE = 2   # min number of staff who must exclusively prefer PEA
+                                    # for it to be proposed to the user
+PICKUP_MIN_TIME_SAVING_MINUTES = 20 # min minutes saved vs going to PE to assign a pickup point
+
+# --- Production Center (CP — Centro de Producción) ---
+# Physical address where frescos and equipment are loaded before each event.
+# Coordinates obtained from Google Maps — update if the CP address changes.
+CP_ADDRESS = "Gral. Conesa 640, Ramos Mejía, Buenos Aires"
+CP_LAT = -34.65289155977212
+CP_LNG = -58.56475066030458
+
+# --- Departure time formula parameters ---
+# All time values are in minutes unless the variable name says _HOURS.
+# Formula: departure = event_time - PREP_HOURS - travel_time - BUFFER - LOADING
+# If event duration >= LONG_EVENT_DURATION_THRESHOLD hours
+# OR picada guests >= PICADA_GUEST_THRESHOLD: subtract LONG_EVENT_EXTRA_HOURS too.
+DEPARTURE_PREP_HOURS = 4
+DEPARTURE_BUFFER_MINUTES = 10
+LOADING_TIME_MINUTES = 50
+LONG_EVENT_EXTRA_HOURS = 2
+LONG_EVENT_DURATION_THRESHOLD = 8   # event duration in hours that triggers extra prep
+PICADA_GUEST_THRESHOLD = 100        # guest count that triggers extra prep
