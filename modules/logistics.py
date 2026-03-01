@@ -421,3 +421,88 @@ def get_remaining_pool(staff: list[dict], assigned_roles: list[str]) -> dict:
         "alternative_required": alternative_required,
         "status":               status,
     }
+
+
+def detect_personal_vehicle(staff: list[dict]) -> dict:
+    """
+    Scans the full staff list for any employee who has a personal vehicle
+    available for the event, indicated by a non-empty "Auto" column in the
+    Excel 'equipo' sheet.
+
+    Business rule: there is never more than one personal vehicle per event.
+    This is a data-entry guarantee from the operator, not something we can
+    enforce in code — but we guard against it anyway.  If multiple employees
+    have a car listed, the first one found is used and a warning is returned
+    so the caller (and ultimately the user) is made aware of the inconsistency.
+
+    Why scan the full staff list rather than the remaining pool?
+    Personal vehicle detection is done before pool filtering so that the result
+    can be passed to the vehicle-assignment step regardless of which pool the
+    driver ends up in.  If the driver was already assigned to a frescos vehicle,
+    the car is not available for the remaining pool — but that collision is
+    resolved by the caller, not here.
+
+    Parameters:
+        staff (list[dict]): Full staff list from read_excel()["staff"].
+                            Each dict is expected to have an "Auto" key whose
+                            value is the car make/model string, or an empty
+                            string / missing key if the employee has no car.
+
+    Returns:
+        dict: {
+            "has_personal_vehicle": bool,
+            "driver":               dict | None,  # full employee dict, or None
+            "vehicle_description":  str | None,   # "Auto" column value (make/model)
+            "warning":              str | None,   # set if more than one car was found
+        }
+    """
+    cars_found = []
+
+    for member in staff:
+        # Treat missing key and empty string equally — both mean "no car".
+        # strip() removes accidental whitespace that would make a blank cell
+        # look non-empty.
+        auto = str(member.get("Auto", "")).strip()
+        if auto:
+            cars_found.append((member, auto))
+
+    # -------------------------------------------------------------------------
+    # Normal case: zero or one car found.
+    # -------------------------------------------------------------------------
+    if not cars_found:
+        return {
+            "has_personal_vehicle": False,
+            "driver":               None,
+            "vehicle_description":  None,
+            "warning":              None,
+        }
+
+    # -------------------------------------------------------------------------
+    # Take the first car found as the designated personal vehicle.
+    # If more than one was found, build a descriptive warning so the operator
+    # knows the data needs to be corrected before the event.
+    # -------------------------------------------------------------------------
+    driver, vehicle_description = cars_found[0]
+
+    warning = None
+    if len(cars_found) > 1:
+        # List the names of all employees with a car so the operator can
+        # identify and fix the data entry error quickly.
+        extra_names = [
+            f"{m.get('Nombre', '')} {m.get('Apellido', '')}".strip()
+            for m, _ in cars_found[1:]
+        ]
+        warning = (
+            f"More than one personal vehicle found. "
+            f"Using first driver: "
+            f"{driver.get('Nombre', '')} {driver.get('Apellido', '')}. "
+            f"Extra vehicles ignored: {', '.join(extra_names)}. "
+            f"Please correct the Excel data."
+        )
+
+    return {
+        "has_personal_vehicle": True,
+        "driver":               driver,
+        "vehicle_description":  vehicle_description,
+        "warning":              warning,
+    }

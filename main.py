@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -421,3 +421,38 @@ def endpoint_get_remaining_pool(body: RemainingPoolRequest):
     # "staff" maps to the 'equipo' sheet — each dict has at least "Profesion",
     # which is what get_remaining_pool() uses for role matching.
     return get_remaining_pool(data["staff"], body.assigned_roles)
+
+
+@app.get(
+    "/detect-personal-vehicle",
+    summary="Detect if any staff member has a personal vehicle available",
+    description=(
+        "Reads the full staff list from the Excel and checks the 'Auto' column "
+        "for each employee.  Returns the driver and vehicle description if one "
+        "is found.  Emits a warning if more than one car is listed — the first "
+        "found is used and the others are ignored."
+    ),
+)
+def endpoint_detect_personal_vehicle():
+    """
+    Delegates to detect_personal_vehicle() from the logistics module.
+
+    This endpoint is called during Step 4b of the routing flow, after
+    get_remaining_pool() has confirmed the pool size is valid (status "proceed").
+    The result determines whether the remaining staff travel in a personal car
+    + Uber combination, or in Ubers only.
+
+    Returns a JSON object:
+    {
+        "has_personal_vehicle": true | false,
+        "driver":               { "Profesion": ..., "Nombre": ..., "Auto": ..., ... } | null,
+        "vehicle_description":  "Toyota Corolla" | null,
+        "warning":              "More than one personal vehicle found. ..." | null
+    }
+    """
+    data = _load_excel()
+
+    # Pass the full staff list — detection is not filtered to the remaining pool
+    # because the caller needs to know the driver's identity regardless of which
+    # vehicle they were previously assigned to.
+    return detect_personal_vehicle(data["staff"])
