@@ -15,6 +15,7 @@
 import os
 
 import httpx
+import polyline as polyline_lib
 from dotenv import load_dotenv
 
 from config import CP_LAT, CP_LNG  # noqa: F401 — available for route calculations from the CP
@@ -62,6 +63,29 @@ _DISTANCE_MATRIX_URL = "https://maps.googleapis.com/maps/api/distancematrix/json
 # The Routes API uses a different base domain and accepts POST with a JSON body,
 # unlike the older APIs above which use GET with query parameters.
 _ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+# The Places API (New) nearby search also uses POST with a JSON body.
+# "New" refers to the updated Places API launched in 2023 — it has a different
+# endpoint structure and field-mask pattern from the legacy Places API.
+_PLACES_NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby"
+
+# How many points to skip between sampled points on the decoded polyline.
+# Sampling every 5th point balances coverage against the number of Places API
+# calls made: too few samples may miss stations; too many waste quota.
+_POLYLINE_SAMPLE_STEP = 5
+
+# Search radius in metres around each sampled polyline point.
+# 300 m is roughly a 4-minute walk — tight enough to stay on-route,
+# wide enough to catch stations slightly off the road centreline.
+_PLACES_SEARCH_RADIUS = 300.0
+
+# Place types we accept as PEA candidates.
+# These map to Google Places type identifiers for public transport hubs.
+_PEA_PLACE_TYPES = [
+    "transit_station",
+    "subway_station",
+    "train_station",
+    "bus_station",
+]
 
 
 # =============================================================================
@@ -160,6 +184,7 @@ def geocode_staff(staff: list[dict]) -> list[dict]:
 def calculate_distances(
     origins: list[dict],
     destinations: list[dict],
+    mode: str = "driving",
 ) -> dict:
     """
     Calls the Google Distance Matrix API to compute travel times and
@@ -171,6 +196,10 @@ def calculate_distances(
     Parameters:
         origins (list[dict]):      Coordinate dicts {"lat": float, "lng": float}.
         destinations (list[dict]): Coordinate dicts {"lat": float, "lng": float}.
+        mode (str):                Travel mode passed to the API.  Common values:
+                                   "driving" (default), "transit", "walking",
+                                   "bicycling".  PEA evaluation (Step 6) passes
+                                   "transit" to compare public-transport times.
 
     Returns:
         dict: Full JSON response from the Distance Matrix API, which includes:
@@ -191,6 +220,9 @@ def calculate_distances(
     params = {
         "origins":      coords_to_pipe_string(origins),
         "destinations": coords_to_pipe_string(destinations),
+        # The mode parameter controls how the API calculates travel times.
+        # "driving" uses road network; "transit" uses public transport timetables.
+        "mode":         mode,
         "key":          GOOGLE_MAPS_API_KEY,
     }
 
@@ -474,3 +506,114 @@ def calculate_driver_route(
         "base_route":   _extract_route(response_a),
         "direct_route": _extract_route(response_b),
     }
+
+
+def find_pea_candidates(direct_route_polyline: str) -> list[dict]:
+    """
+    Searches for public transport hubs along the driver's direct route
+    (home → event, no stopover) that could serve as an alternative meeting
+    point (PEA — Punto de Encuentro Alternativo).
+
+    Strategy — why sample the polyline?
+        The direct route is encoded as a single polyline string, which when
+        decoded yields potentially hundreds of lat/lng points.  Sending a
+        Places API request for every point would exhaust quota quickly and
+        return many duplicate stations.  Sampling every Nth point (controlled
+        by _POLYLINE_SAMPLE_STEP) gives enough geographic coverage without
+        excessive calls.  A 300 m search radius around each sample catches
+        any station that a staff member could reach from the road.
+
+    Deduplication — why by formattedAddress?
+        Adjacent sampled points are close together, so the same station
+        frequently appears in the results of two or three consecutive calls.
+        formattedAddress is a stable, human-readable identifier that is unique
+        per location — more reliable than place ID or display name alone.
+
+    This function is intentionally narrow in scope: it only finds candidates.
+    It does not evaluate transit times, compare them to the original meeting
+    point, or apply any of the PEA proposal rules from config.py.  That
+    evaluation belongs to the routing module (Step 6, not yet built).
+
+    Parameters:
+        direct_route_polyline (str): Encoded polyline string from the
+            "direct_route" returned by calculate_driver_route().
+
+    Returns:
+        list[dict]: Unique candidate stations found along the route, each as:
+            {
+                "name":    str,        # display name of the place
+                "address": str,        # formatted address
+                "lat":     float,
+                "lng":     float,
+                "types":   list[str],  # Google place type identifiers
+            }
+            Empty list if no candidates are found.
+    """
+    # -------------------------------------------------------------------------
+    # Step 1: decode the polyline into a list of (lat, lng) tuples.
+    # The 'polyline' library implements the Google Encoded Polyline Algorithm
+    # Format, which compresses a sequence of coordinates into a compact ASCII
+    # string.  decode() reverses that compression.
+    # -------------------------------------------------------------------------
+    all_points = polyline_lib.decode(direct_route_polyline)
+
+    # Sample every Nth point to limit the number of Places API calls.
+    # list[::N] is Python slice notation for "take every Nth element".
+    sampled_points = all_points[::_POLYLINE_SAMPLE_STEP]
+
+    # -------------------------------------------------------------------------
+    # Step 2: query the Places API (New) for each sampled point and collect
+    # all results, deduplicating by formatted address as we go.
+    # Using a dict keyed on address gives O(1) duplicate checks and preserves
+    # the first occurrence of each station (the one found earliest on the route).
+    # -------------------------------------------------------------------------
+    seen_addresses: dict[str, dict] = {}
+
+    for lat, lng in sampled_points:
+        body = {
+            "includedTypes": _PEA_PLACE_TYPES,
+            "locationRestriction": {
+                "circle": {
+                    "center": {"latitude": lat, "longitude": lng},
+                    "radius": _PLACES_SEARCH_RADIUS,
+                }
+            },
+        }
+        headers = {
+            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+            # Request only the four fields we need — Places API (New) charges
+            # per field category, so requesting fewer fields reduces cost.
+            "X-Goog-FieldMask": (
+                "places.displayName,"
+                "places.location,"
+                "places.types,"
+                "places.formattedAddress"
+            ),
+        }
+
+        response = httpx.post(_PLACES_NEARBY_URL, json=body, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        # "places" key may be absent if the API found nothing nearby
+        for place in data.get("places", []):
+            address = place.get("formattedAddress", "")
+
+            # Skip if we have already recorded this station from a previous
+            # sampled point — formattedAddress is our deduplication key.
+            if address in seen_addresses:
+                continue
+
+            # Extract the nested location coordinates
+            location = place.get("location", {})
+
+            seen_addresses[address] = {
+                "name":    place.get("displayName", {}).get("text", ""),
+                "address": address,
+                "lat":     location.get("latitude", 0.0),
+                "lng":     location.get("longitude", 0.0),
+                "types":   place.get("types", []),
+            }
+
+    # Return as a flat list; order reflects first appearance along the route
+    return list(seen_addresses.values())

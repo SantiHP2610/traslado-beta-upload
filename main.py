@@ -17,8 +17,8 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -556,3 +556,131 @@ def endpoint_calculate_driver_route():
     # Step 5: calculate both routes via the Routes API and return the result.
     # -------------------------------------------------------------------------
     return calculate_driver_route(driver_coords, meeting_point, event_coords)
+
+
+@app.get(
+    "/evaluate-pea",
+    summary="Evaluate alternative meeting point (PEA) candidates along the driver's direct route",
+    description=(
+        "Runs the full PEA evaluation pipeline: geocodes all staff, finds the nearest "
+        "meeting point (PE), computes the driver's direct route, searches for transit "
+        "hubs along that route, then evaluates each candidate against the remaining "
+        "staff pool using public-transport travel times.  Returns the best qualifying "
+        "PEA (if any), how many staff exclusively prefer it, and a proximity flag that "
+        "determines whether driver remuneration needs to be reviewed."
+    ),
+)
+def endpoint_evaluate_pea():
+    """
+    Workflow:
+        1. Read the Excel for staff and event data.
+        2. Geocode all staff — adds "coordinates" to each employee dict in-place.
+           The remaining-pool members need coordinates for the transit-time matrix.
+        3. Detect the personal vehicle; raise 422 if none exists.
+        4. Use the driver's geocoded coordinates (already set in step 2).
+        5. Geocode the event venue address.
+        6. Find the nearest meeting point (PE) to the event venue.
+        7. Calculate the driver's direct route (home → event, no stopover).
+        8. Search for PEA candidates along the direct route polyline.
+        9. Build the remaining staff pool by removing the frescos-assigned roles.
+           TODO: replace the hardcoded role list with the result of /determine-frescos
+           and /determine-second-miniflete once role lookup is implemented.
+       10. Evaluate the candidates against the pool and return the best result.
+
+    Returns a JSON object:
+    {
+        "pea_proposed":             true | false,
+        "best_candidate":           {
+            "name":    str,
+            "address": str,
+            "lat":     float,
+            "lng":     float,
+            "types":   list[str]
+        } | null,
+        "exclusively_prefer_count": int,
+        "pea_near_original":        true | false,
+        "remuneration_note":        str | null
+    }
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: geocode all staff up-front.
+    # evaluate_pea_candidates() needs each remaining-pool member's coordinates
+    # to query transit times.  geocode_staff() adds "coordinates" to every
+    # employee dict in-place, so later calls to detect_personal_vehicle() and
+    # get_remaining_pool() will receive the enriched dicts automatically.
+    # -------------------------------------------------------------------------
+    geocode_staff(data["staff"])
+
+    # -------------------------------------------------------------------------
+    # Step 2: detect the personal vehicle.
+    # After geocode_staff(), the driver dict already has a "coordinates" key,
+    # so we can use it directly without a second geocoding call.
+    # -------------------------------------------------------------------------
+    vehicle_info = detect_personal_vehicle(data["staff"])
+    if not vehicle_info["has_personal_vehicle"]:
+        raise HTTPException(
+            status_code=422,
+            detail="No personal vehicle found in staff list.",
+        )
+
+    driver        = vehicle_info["driver"]
+    driver_coords = driver["coordinates"]
+
+    if driver_coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not geocode the driver's home address.",
+        )
+
+    # -------------------------------------------------------------------------
+    # Step 3: geocode the event venue address.
+    # -------------------------------------------------------------------------
+    event = data["event"]
+    event_address = (
+        f"{event.get('direccion_evento', '')}, "
+        f"{event.get('ciudad_evento', '')}"
+    )
+    event_coords = geocode(event_address)
+    if event_coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode the event address: '{event_address}'",
+        )
+
+    # -------------------------------------------------------------------------
+    # Step 4: find the nearest meeting point (PE) to the event venue.
+    # -------------------------------------------------------------------------
+    try:
+        meeting_point = nearest_meeting_point(event_coords)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # -------------------------------------------------------------------------
+    # Step 5: compute the driver's direct route (home → event, no stopover).
+    # The direct route polyline is what we search for transit hub candidates —
+    # we want stations the driver would naturally pass, not detour to.
+    # -------------------------------------------------------------------------
+    routes       = calculate_driver_route(driver_coords, meeting_point, event_coords)
+    direct_polyline = routes["direct_route"]["encoded_polyline"]
+
+    # -------------------------------------------------------------------------
+    # Step 6: find PEA candidates along the direct route.
+    # -------------------------------------------------------------------------
+    candidates = find_pea_candidates(direct_polyline)
+
+    # -------------------------------------------------------------------------
+    # Step 7: build the remaining staff pool.
+    # TODO: replace hardcoded assigned_roles with the actual output of
+    # /determine-frescos and /determine-second-miniflete once role lookup is
+    # implemented.  For now we use the two default frescos roles.
+    # -------------------------------------------------------------------------
+    assigned_roles    = ["Manager Senior", "Jefe de Parrilla Senior"]
+    remaining_result  = get_remaining_pool(data["staff"], assigned_roles)
+    remaining_pool    = remaining_result["remaining_pool"]
+
+    # -------------------------------------------------------------------------
+    # Step 8: evaluate candidates and return the best qualifying PEA.
+    # -------------------------------------------------------------------------
+    return evaluate_pea_candidates(candidates, remaining_pool, meeting_point)

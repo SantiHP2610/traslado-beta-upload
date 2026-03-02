@@ -63,6 +63,8 @@ PEA_EXCLUSIVE_DIFF_MINUTES = 20    # min difference (in minutes) between transit
                                     # and transit time to PEA to count as "exclusively prefers PEA"
 PEA_MIN_EXCLUSIVE_PREFERENCE = 2   # min number of staff who must exclusively prefer PEA
                                     # for it to be proposed to the user
+PEA_RADIUS_KM = 10                 # straight-line km from PEA candidate to original PE;
+                                    # ≤ this → flagged "optimal"; > this → "consult_remuneration"
 PICKUP_MIN_TIME_SAVING_MINUTES = 20 # min minutes saved vs going to PE to assign a pickup point
 
 # --- Production Center (CP — Centro de Producción) ---

@@ -24,9 +24,18 @@ from config import (
     LONG_EVENT_DURATION_THRESHOLD,
     LONG_EVENT_EXTRA_HOURS,
     MENU_KEYWORDS,
+    PEA_EXCLUSIVE_DIFF_MINUTES,
+    PEA_MAX_TRANSIT_MINUTES,
+    PEA_MIN_EXCLUSIVE_PREFERENCE,
+    PEA_RADIUS_KM,
     PICADA_GUEST_THRESHOLD,
     SECOND_MINIFLETE_CONDITIONS,
 )
+
+# calculate_distances is used by evaluate_pea_candidates() to get transit times
+# from each staff member to both the PEA candidate and the original meeting point.
+# This cross-module import works because uvicorn adds the project root to sys.path.
+from modules.maps_client import calculate_distances
 
 
 # =============================================================================
@@ -56,6 +65,43 @@ def _normalize(text: str) -> str:
     text = unicodedata.normalize("NFD", text)
     # Keep only non-combining characters (i.e. drop the accent marks)
     return "".join(c for c in text if unicodedata.category(c) != "Mn")
+
+
+def _haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """
+    Returns the straight-line (great-circle) distance in kilometres between
+    two points defined by latitude and longitude, using the Haversine formula.
+
+    Why Haversine here instead of the Distance Matrix API?
+    The "optimal" vs "consult_remuneration" flag only needs an approximate
+    threshold check (PEA_RADIUS_KM = 10 km).  Haversine gives exact spherical
+    geometry at this scale with no quota cost and no network round-trip.
+
+    Parameters:
+        lat1, lng1 (float): Coordinates of the first point (degrees).
+        lat2, lng2 (float): Coordinates of the second point (degrees).
+
+    Returns:
+        float: Distance in kilometres.
+    """
+    R = 6371.0  # Earth mean radius in kilometres
+
+    # Convert degree differences to radians for the trig functions
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+
+    # Haversine formula: a = sin²(Δlat/2) + cos(lat1)·cos(lat2)·sin²(Δlng/2)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlng / 2) ** 2
+    )
+
+    # Central angle via atan2 — numerically stable for all distances
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
 
 
 def _row_contains(row: dict, keyword: str) -> bool:
@@ -505,4 +551,215 @@ def detect_personal_vehicle(staff: list[dict]) -> dict:
         "driver":               driver,
         "vehicle_description":  vehicle_description,
         "warning":              warning,
+    }
+
+
+def evaluate_pea_candidates(
+    candidates: list[dict],
+    remaining_pool: list[dict],
+    meeting_point: dict,
+) -> dict:
+    """
+    Evaluates PEA (Punto de Encuentro Alternativo) candidates against the
+    remaining staff pool and the original meeting point, and selects the
+    best candidate to propose to the user — if one qualifies.
+
+    PEA proposal rules (ALL must hold for a candidate to qualify):
+      1. ALL staff in remaining_pool can reach the candidate in
+         ≤ PEA_MAX_TRANSIT_MINUTES (25 min) by public transit.
+      2. AT LEAST PEA_MIN_EXCLUSIVE_PREFERENCE (2) staff "exclusively prefer"
+         the candidate, defined as:
+             transit_time_to_original_PE − transit_time_to_candidate
+             ≥ PEA_EXCLUSIVE_DIFF_MINUTES (20 min)
+
+    Evaluation strategy — one Distance Matrix call per candidate:
+        Origins:      each employee in remaining_pool who has coordinates (N rows)
+        Destinations: [candidate, meeting_point]  (2 columns)
+        Mode:         "transit"
+        → Returns an N×2 matrix.
+          Column 0 = each employee's transit time to the candidate PEA.
+          Column 1 = each employee's transit time to the original meeting point.
+        Batching both destinations into one call avoids N×2 separate requests
+        per candidate, keeping API usage proportional to len(candidates).
+
+    Best-candidate selection:
+        Among all qualifying candidates, the one with the highest
+        exclusively_prefer_count is selected.  Ties are broken by order of
+        appearance in the candidates list (i.e. first qualifying candidate
+        encountered with that count wins).
+
+    Proximity flag (pea_near_original):
+        Straight-line distance from the selected PEA to the original meeting
+        point, computed via _haversine_distance() — no extra API call needed.
+        ≤ PEA_RADIUS_KM (10 km) → "optimal"      (driver pay reference unchanged)
+        > PEA_RADIUS_KM          → "consult_remuneration" (pay start point unclear)
+
+    Parameters:
+        candidates     (list[dict]): Transit hub candidates from find_pea_candidates().
+                                     Each must have "lat", "lng", "name", "address".
+        remaining_pool (list[dict]): Staff who still need a vehicle, from
+                                     get_remaining_pool()["remaining_pool"].
+                                     Each must have a "coordinates" key added by
+                                     geocode_staff() ({"lat": ..., "lng": ...}).
+        meeting_point  (dict):       The original PE from nearest_meeting_point().
+                                     Must have "lat", "lng", and "name" keys.
+
+    Returns:
+        dict: {
+            "pea_proposed":             bool,        # True if a qualifying PEA was found
+            "best_candidate":           dict | None, # the winning candidate dict, or None
+            "exclusively_prefer_count": int,         # how many staff exclusively prefer the PEA;
+                                                     # 0 when pea_proposed is False
+            "pea_near_original":        bool,        # True if PEA is within PEA_RADIUS_KM of PE
+            "remuneration_note":        str | None,  # user-facing note when PEA is far from PE
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Early exits: nothing to evaluate if there are no candidates or no staff.
+    # -------------------------------------------------------------------------
+    _empty_result = {
+        "pea_proposed":             False,
+        "best_candidate":           None,
+        "exclusively_prefer_count": 0,
+        "pea_near_original":        False,
+        "remuneration_note":        None,
+    }
+
+    if not candidates or not remaining_pool:
+        return _empty_result
+
+    # Extract each employee's coordinates for the Distance Matrix origins.
+    # Employees whose address failed to geocode are skipped — this guard
+    # prevents a KeyError from breaking the whole evaluation if one address
+    # was unresolvable.
+    staff_coords = [
+        member["coordinates"]
+        for member in remaining_pool
+        if member.get("coordinates") is not None
+    ]
+
+    if not staff_coords:
+        return _empty_result
+
+    # The original meeting point is always the second destination (column 1) in
+    # every matrix call, so we build it once and reuse it for all candidates.
+    mp_destination = {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}
+
+    # -------------------------------------------------------------------------
+    # Evaluate each candidate.
+    # We keep track of the best qualifying candidate seen so far and its score.
+    # -------------------------------------------------------------------------
+    best_candidate              = None
+    best_exclusively_prefer_count = 0
+
+    for candidate in candidates:
+        candidate_destination = {"lat": candidate["lat"], "lng": candidate["lng"]}
+
+        # One Distance Matrix call: N staff × 2 destinations (candidate + original PE).
+        # "transit" mode returns public-transport travel times — the metric that
+        # matters for staff who travel to meeting points independently of the car.
+        matrix = calculate_distances(
+            origins=staff_coords,
+            destinations=[candidate_destination, mp_destination],
+            mode="transit",
+        )
+
+        rows = matrix.get("rows", [])
+
+        # -------------------------------------------------------------------------
+        # Per-employee analysis.
+        # all_can_reach:            True until we find one employee who can't make it.
+        # exclusively_prefer_count: incremented for each employee who saves enough
+        #                           time by going to the candidate instead of the PE.
+        # -------------------------------------------------------------------------
+        all_can_reach            = True
+        exclusively_prefer_count = 0
+
+        for row in rows:
+            elements = row.get("elements", [])
+
+            # Column 0: employee → candidate PEA
+            # Column 1: employee → original meeting point
+            # If the API returns fewer than 2 elements, the data is incomplete —
+            # treat the candidate as unreachable to avoid incorrect conclusions.
+            if len(elements) < 2:
+                all_can_reach = False
+                break
+
+            elem_to_candidate = elements[0]
+            elem_to_meeting   = elements[1]
+
+            # Both legs must be OK; ZERO_RESULTS means no transit route was found.
+            if elem_to_candidate["status"] != "OK" or elem_to_meeting["status"] != "OK":
+                all_can_reach = False
+                break
+
+            # Convert seconds → minutes for comparison against config thresholds.
+            # Integer division would lose precision; float division is safe here
+            # because the thresholds are whole-minute boundaries.
+            minutes_to_candidate = elem_to_candidate["duration"]["value"] / 60
+            minutes_to_meeting   = elem_to_meeting["duration"]["value"]   / 60
+
+            # Rule 1: every employee must be able to reach the candidate in time
+            if minutes_to_candidate > PEA_MAX_TRANSIT_MINUTES:
+                all_can_reach = False
+                break
+
+            # Rule 2: count employees who strongly prefer the candidate.
+            # "Exclusively prefers" means the savings are large enough that
+            # going to the original PE would be a significant burden for them.
+            time_saved = minutes_to_meeting - minutes_to_candidate
+            if time_saved >= PEA_EXCLUSIVE_DIFF_MINUTES:
+                exclusively_prefer_count += 1
+
+        # A candidate is disqualified if any employee cannot reach it, or if
+        # fewer staff than the threshold exclusively prefer it over the original PE.
+        if not all_can_reach:
+            continue
+
+        if exclusively_prefer_count < PEA_MIN_EXCLUSIVE_PREFERENCE:
+            continue
+
+        # This candidate qualifies — update the best if it has a higher score.
+        # Ties are resolved by order in candidates list (first wins).
+        if exclusively_prefer_count > best_exclusively_prefer_count:
+            best_exclusively_prefer_count = exclusively_prefer_count
+            best_candidate                = candidate
+
+    # -------------------------------------------------------------------------
+    # Proximity check for the winning candidate.
+    # Haversine gives us a cost-free straight-line distance from the PEA to
+    # the original PE — accurate enough for the 10 km threshold.
+    # -------------------------------------------------------------------------
+    pea_proposed = best_candidate is not None
+
+    if pea_proposed:
+        distance_km   = _haversine_distance(
+            best_candidate["lat"], best_candidate["lng"],
+            meeting_point["lat"],  meeting_point["lng"],
+        )
+        pea_near_original = distance_km <= PEA_RADIUS_KM
+    else:
+        pea_near_original = False
+
+    # -------------------------------------------------------------------------
+    # Remuneration note: only relevant when a far PEA is proposed, because
+    # the driver's paid kilometres typically start from the original meeting
+    # point.  A distant PEA could change that reference point.
+    # -------------------------------------------------------------------------
+    if pea_proposed and not pea_near_original:
+        remuneration_note = (
+            f"The selected PEA is more than {PEA_RADIUS_KM} km from the "
+            f"original meeting point ({meeting_point['name']}). "
+            f"Driver pay start point should be reviewed with remuneration."
+        )
+    else:
+        remuneration_note = None
+
+    return {
+        "pea_proposed":             pea_proposed,
+        "best_candidate":           best_candidate,
+        "exclusively_prefer_count": best_exclusively_prefer_count,
+        "pea_near_original":        pea_near_original,
+        "remuneration_note":        remuneration_note,
     }
