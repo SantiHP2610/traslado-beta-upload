@@ -1,7 +1,7 @@
 # =============================================================================
 # maps_client.py
 # Client module for Google Maps APIs.
-# Provides geocoding, distance matrix, and meeting-point utilities.
+# Provides geocoding, distance matrix, meeting-point, and route utilities.
 #
 # All functions in this module require the environment variable
 # GOOGLE_MAPS_API_KEY to be set in .env at the project root.
@@ -9,12 +9,15 @@
 # APIs used:
 #   - Geocoding API:        https://developers.google.com/maps/documentation/geocoding
 #   - Distance Matrix API:  https://developers.google.com/maps/documentation/distance-matrix
+#   - Routes API:           https://developers.google.com/maps/documentation/routes
 # =============================================================================
 
 import os
 
 import httpx
 from dotenv import load_dotenv
+
+from config import CP_LAT, CP_LNG  # noqa: F401 — available for route calculations from the CP
 
 # Load the variables defined in .env into the process environment.
 # This call is safe to repeat — if load_dotenv() was already called by
@@ -52,10 +55,13 @@ MEETING_POINTS = [
     },
 ]
 
-# Base URLs for the two Google Maps APIs we call.
+# Base URLs for the Google Maps APIs we call.
 # Keeping them as module-level constants makes them easy to update or mock.
-_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+_GEOCODING_URL      = "https://maps.googleapis.com/maps/api/geocode/json"
 _DISTANCE_MATRIX_URL = "https://maps.googleapis.com/maps/api/distancematrix/json"
+# The Routes API uses a different base domain and accepts POST with a JSON body,
+# unlike the older APIs above which use GET with query parameters.
+_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 
 
 # =============================================================================
@@ -281,4 +287,190 @@ def nearest_meeting_point(event_coordinates: dict) -> dict:
         "duration_text":    winning_element["duration"]["text"],
         "distance_meters":  winning_element["distance"]["value"],
         "distance_text":    winning_element["distance"]["text"],
+    }
+
+
+# =============================================================================
+# Routes API — private helpers
+# =============================================================================
+
+def _latLng(coords: dict) -> dict:
+    """
+    Converts a flat {"lat": float, "lng": float} dict into the nested location
+    structure the Routes API expects in origin, destination, and intermediates.
+
+    The Routes API uses a different coordinate format from the older Distance
+    Matrix API (which accepts "lat,lng" pipe-separated strings).  Centralising
+    this conversion prevents the nesting from being repeated in every request.
+
+    Parameters:
+        coords (dict): {"lat": float, "lng": float}
+
+    Returns:
+        dict: {"location": {"latLng": {"latitude": float, "longitude": float}}}
+    """
+    return {
+        "location": {
+            "latLng": {
+                "latitude":  coords["lat"],
+                "longitude": coords["lng"],
+            }
+        }
+    }
+
+
+def _call_routes_api(body: dict) -> dict:
+    """
+    POSTs a request to the Routes API and returns the parsed JSON response.
+
+    Unlike the older Maps APIs that use GET with query parameters, the Routes
+    API uses POST with a JSON body.  Authentication and field selection are
+    both handled through request headers rather than query parameters:
+      - X-Goog-Api-Key   authenticates the request (replaces the 'key' param).
+      - X-Goog-FieldMask controls which response fields are returned, keeping
+        the payload small.  Only fields listed here will be populated in the
+        response; omitting a field means it won't be returned even if it exists.
+
+    Parameters:
+        body (dict): Full Routes API request body (origin, destination,
+                     intermediates, travelMode, routingPreference, etc.).
+
+    Returns:
+        dict: Parsed JSON response from the Routes API.
+
+    Raises:
+        httpx.HTTPStatusError: For 4xx/5xx HTTP responses.
+    """
+    headers = {
+        "X-Goog-Api-Key":  GOOGLE_MAPS_API_KEY,
+        # Request only the fields we actually use — smaller payload, faster response.
+        # 'legs' is needed for future pickup-point calculation (Step 7).
+        "X-Goog-FieldMask": (
+            "routes.duration,"
+            "routes.distanceMeters,"
+            "routes.polyline.encodedPolyline,"
+            "routes.legs"
+        ),
+    }
+    response = httpx.post(_ROUTES_URL, json=body, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+
+def _extract_route(response_json: dict) -> dict:
+    """
+    Extracts the first route from a Routes API response and normalises its
+    fields into the flat structure used throughout this application.
+
+    The Routes API returns duration as a string like "1234s" (an ISO 8601
+    duration with only a seconds component).  We strip the trailing "s" and
+    convert to int so callers can do arithmetic directly.
+
+    Parameters:
+        response_json (dict): Full parsed JSON response from _call_routes_api().
+
+    Returns:
+        dict: {
+            "duration_seconds": int,
+            "distance_meters":  int,
+            "encoded_polyline": str,  # for drawing the route on the map
+            "legs":             list, # raw leg objects for pickup-point logic
+        }
+    """
+    route = response_json["routes"][0]
+
+    # Duration is returned as e.g. "1234s" — strip the unit suffix before
+    # converting to int so callers receive a plain number they can do math on.
+    duration_seconds = int(route["duration"].rstrip("s"))
+
+    return {
+        "duration_seconds": duration_seconds,
+        "distance_meters":  route["distanceMeters"],
+        "encoded_polyline": route["polyline"]["encodedPolyline"],
+        # Legs contain per-segment steps used later for pickup-point detection.
+        # We preserve the raw API structure here so the routing module can
+        # iterate over them without needing to know about this module's internals.
+        "legs":             route.get("legs", []),
+    }
+
+
+def calculate_driver_route(
+    driver_coords:  dict,
+    meeting_point:  dict,
+    event_coords:   dict,
+) -> dict:
+    """
+    Calculates two driving routes for the personal car driver using the
+    Google Routes API:
+
+      Route A — base route (via meeting point):
+          driver home → meeting point → event venue
+          This is the standard route: the driver picks up the rest of the
+          team at the meeting point before heading to the venue.
+
+      Route B — direct route (no stopover):
+          driver home → event venue
+          This is the alternate route used to evaluate PEA candidates
+          (Step 6) and pickup points (Step 7): we look for locations that
+          lie ON this direct path and could serve as collection points.
+
+    Both routes use DRIVE mode with TRAFFIC_AWARE routing so that the
+    durations reflect realistic conditions, not just geometric distance.
+
+    Two separate API calls are made because the Routes API computes one
+    route per request (unlike the Distance Matrix which handles a full matrix).
+
+    Parameters:
+        driver_coords (dict): {"lat": float, "lng": float} — driver's home address.
+        meeting_point (dict): {"lat": float, "lng": float, ...} — the selected PE.
+                              The nearest_meeting_point() return dict is accepted directly.
+        event_coords  (dict): {"lat": float, "lng": float} — event venue.
+
+    Returns:
+        dict: {
+            "base_route": {
+                "duration_seconds": int,
+                "distance_meters":  int,
+                "encoded_polyline": str,   # draw Route A on the map
+                "legs":             list,  # raw legs for pickup-point calculation
+            },
+            "direct_route": {
+                "duration_seconds": int,
+                "distance_meters":  int,
+                "encoded_polyline": str,   # draw Route B on the map
+                "legs":             list,
+            },
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Route A: driver home → meeting point (intermediate) → event venue.
+    # The "intermediates" field inserts a mandatory waypoint between origin
+    # and destination.  The API plans the route to pass through it in order.
+    # -------------------------------------------------------------------------
+    body_a = {
+        "origin":      _latLng(driver_coords),
+        "destination": _latLng(event_coords),
+        "intermediates": [_latLng(meeting_point)],
+        "travelMode":        "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE",
+    }
+
+    # -------------------------------------------------------------------------
+    # Route B: driver home → event venue, no intermediates.
+    # This is the shortest/fastest direct path — used as the reference for
+    # evaluating whether a detour (to a PEA or pickup point) is worthwhile.
+    # -------------------------------------------------------------------------
+    body_b = {
+        "origin":      _latLng(driver_coords),
+        "destination": _latLng(event_coords),
+        "travelMode":        "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE",
+    }
+
+    response_a = _call_routes_api(body_a)
+    response_b = _call_routes_api(body_b)
+
+    return {
+        "base_route":   _extract_route(response_a),
+        "direct_route": _extract_route(response_b),
     }

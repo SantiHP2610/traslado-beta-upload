@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route
 from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle
 
 # CP coordinates are fixed constants defined in config.py — imported here
@@ -456,3 +456,103 @@ def endpoint_detect_personal_vehicle():
     # because the caller needs to know the driver's identity regardless of which
     # vehicle they were previously assigned to.
     return detect_personal_vehicle(data["staff"])
+
+
+@app.get(
+    "/calculate-driver-route",
+    summary="Calculate base and direct driving routes for the personal car driver",
+    description=(
+        "Reads the Excel to find the personal car driver, geocodes their home address "
+        "and the event venue, finds the nearest meeting point (PE), then calls the "
+        "Google Routes API to compute two routes: driver home → PE → event (base route) "
+        "and driver home → event (direct route, used for PEA and pickup-point evaluation). "
+        "Raises 422 if no personal vehicle is found in the staff list."
+    ),
+)
+def endpoint_calculate_driver_route():
+    """
+    Workflow:
+        1. Read the Excel for the full staff list and event data.
+        2. Detect the personal vehicle — if none, raise 422 immediately.
+        3. Build the driver's home address from Direccion + CP + Ciudad and geocode it.
+        4. Build the event address from direccion_evento + ciudad_evento and geocode it.
+        5. Call nearest_meeting_point() to select the PE closest to the event venue.
+        6. Call calculate_driver_route() with the three coordinate sets.
+
+    Returns a JSON object:
+    {
+        "base_route": {
+            "duration_seconds": int,
+            "distance_meters":  int,
+            "encoded_polyline": str,
+            "legs":             list
+        },
+        "direct_route": {
+            "duration_seconds": int,
+            "distance_meters":  int,
+            "encoded_polyline": str,
+            "legs":             list
+        }
+    }
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: confirm a personal vehicle exists.
+    # We check this before making any API calls — no point geocoding or routing
+    # if there is no driver to build a route for.
+    # -------------------------------------------------------------------------
+    vehicle_info = detect_personal_vehicle(data["staff"])
+    if not vehicle_info["has_personal_vehicle"]:
+        raise HTTPException(
+            status_code=422,
+            detail="No personal vehicle found in staff list.",
+        )
+
+    driver = vehicle_info["driver"]
+
+    # -------------------------------------------------------------------------
+    # Step 2: geocode the driver's home address.
+    # Address columns come from the Excel 'equipo' sheet — keys stay in Spanish.
+    # -------------------------------------------------------------------------
+    driver_address = (
+        f"{str(driver.get('Direccion', '')).strip()}, "
+        f"{str(driver.get('CP', '')).strip()}, "
+        f"{str(driver.get('Ciudad', '')).strip()}"
+    )
+    driver_coords = geocode(driver_address)
+    if driver_coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode driver address: '{driver_address}'",
+        )
+
+    # -------------------------------------------------------------------------
+    # Step 3: geocode the event venue address.
+    # -------------------------------------------------------------------------
+    event = data["event"]
+    event_address = (
+        f"{event.get('direccion_evento', '')}, "
+        f"{event.get('ciudad_evento', '')}"
+    )
+    event_coords = geocode(event_address)
+    if event_coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode event address: '{event_address}'",
+        )
+
+    # -------------------------------------------------------------------------
+    # Step 4: find the nearest meeting point (PE) to the event venue.
+    # This is the same PE used by the Uber vehicles and is the intermediate
+    # waypoint in Route A.
+    # -------------------------------------------------------------------------
+    try:
+        meeting_point = nearest_meeting_point(event_coords)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # -------------------------------------------------------------------------
+    # Step 5: calculate both routes via the Routes API and return the result.
+    # -------------------------------------------------------------------------
+    return calculate_driver_route(driver_coords, meeting_point, event_coords)
