@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -722,3 +722,125 @@ def endpoint_evaluate_pea():
         "pickup_if_pe_chosen":  pickup_if_pe_chosen,
         "pickup_if_pea_chosen": pickup_if_pea_chosen,
     }
+
+
+# -----------------------------------------------------------------------------
+# /assign-passengers request body model
+# -----------------------------------------------------------------------------
+
+class MeetingPointInput(BaseModel):
+    """
+    The meeting point the user has confirmed (PE or PEA).
+    Mirrors the lat/lng/name shape returned by nearest_meeting_point() and
+    evaluate_pea_candidates(), so the frontend can pass either result directly.
+    """
+    name: str
+    lat:  float
+    lng:  float
+
+
+class AssignPassengersRequest(BaseModel):
+    """
+    Body for POST /assign-passengers.
+
+    chosen_meeting_point: the PE or PEA the user selected at the end of the
+                          PEA evaluation step.
+    assigned_roles:       role strings already committed to the frescos vehicle
+                          and/or second miniflete; used to rebuild the remaining
+                          pool the same way /get-remaining-pool did.
+
+    TODO: once frontend state management is implemented, both fields will be
+    populated automatically from the results of the preceding steps and the
+    user will not need to supply them manually.
+    """
+    chosen_meeting_point: MeetingPointInput
+    assigned_roles:       list[str]
+
+
+@app.post(
+    "/assign-passengers",
+    summary="Assign remaining staff to personal vehicle and Uber groups",
+    description=(
+        "Reads the staff list from the Excel, rebuilds the remaining pool after "
+        "excluding the frescos-assigned roles, detects the personal vehicle driver, "
+        "and assigns every remaining employee to either the personal car or an Uber "
+        "group.  Personal car passengers are chosen by proximity to the confirmed "
+        "meeting point; Uber passengers are grouped in batches of MAX_PASSENGERS_UBER. "
+        "Raises 422 if no personal vehicle is found — use /assign-uber-only instead."
+    ),
+)
+def endpoint_assign_passengers(body: AssignPassengersRequest):
+    """
+    Workflow:
+        1. Read the Excel to obtain the full staff list.
+        2. Geocode all staff — coordinates are needed for proximity sorting.
+        3. Rebuild the remaining pool by excluding the frescos-assigned roles.
+        4. Detect the personal vehicle driver; raise 422 if none is found.
+        5. Call assign_vehicle_passengers() with the pool, driver, and the
+           user-confirmed meeting point.
+
+    Returns a JSON object:
+    {
+        "personal_vehicle": {
+            "driver":          { ... },
+            "passengers":      [ { ... }, ... ],
+            "total_occupants": int
+        },
+        "uber_groups": [
+            {
+                "group_number":  int,
+                "passengers":    [ { ... }, ... ],
+                "meeting_point": { "name": str, "lat": float, "lng": float }
+            },
+            ...
+        ],
+        "single_employee_warning": str | null
+    }
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: geocode all staff.
+    # assign_vehicle_passengers() sorts by Haversine distance to the meeting
+    # point, which requires coordinates on every employee dict.
+    # -------------------------------------------------------------------------
+    geocode_staff(data["staff"])
+
+    # -------------------------------------------------------------------------
+    # Step 2: rebuild the remaining pool by excluding frescos-assigned roles.
+    # We replicate the same filtering that /get-remaining-pool performs so that
+    # this endpoint can be called independently without requiring the caller to
+    # pass the pool explicitly.
+    # -------------------------------------------------------------------------
+    remaining_result = get_remaining_pool(data["staff"], body.assigned_roles)
+    remaining_pool   = remaining_result["remaining_pool"]
+
+    # -------------------------------------------------------------------------
+    # Step 3: detect the personal vehicle driver.
+    # If no employee has a personal car listed, this endpoint cannot proceed —
+    # all remaining staff must be routed via Uber, which is a separate flow.
+    # -------------------------------------------------------------------------
+    vehicle_info = detect_personal_vehicle(data["staff"])
+    if not vehicle_info["has_personal_vehicle"]:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No personal vehicle available — all staff must use Uber. "
+                "Use /assign-uber-only endpoint instead."
+            ),
+        )
+
+    driver = vehicle_info["driver"]
+
+    # -------------------------------------------------------------------------
+    # Step 4: assign passengers to personal vehicle and Uber groups.
+    # Convert the Pydantic model to a plain dict so assign_vehicle_passengers()
+    # receives the same shape as meeting point dicts returned by the maps module.
+    # -------------------------------------------------------------------------
+    meeting_point_dict = {
+        "name": body.chosen_meeting_point.name,
+        "lat":  body.chosen_meeting_point.lat,
+        "lng":  body.chosen_meeting_point.lng,
+    }
+
+    return assign_vehicle_passengers(remaining_pool, driver, meeting_point_dict)

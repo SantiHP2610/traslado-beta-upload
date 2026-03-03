@@ -31,6 +31,8 @@ from config import (
     PEA_MAX_TRANSIT_MINUTES,
     PEA_MIN_EXCLUSIVE_PREFERENCE,
     PEA_RADIUS_KM,
+    MAX_PASSENGERS_PER_CAR,
+    MAX_PASSENGERS_UBER,
     PICADA_GUEST_THRESHOLD,
     PICKUP_MAX_DETOUR_METERS,
     PICKUP_MAX_TRANSIT_MINUTES,
@@ -793,15 +795,15 @@ def find_pickup_candidate(
 
     Overview of the five-step algorithm:
 
-        Step 1 — Assign the 3 employees closest to the meeting point directly to
-                 the PE.  A pickup is only valuable if the employee's home is far
-                 from the PE but happens to lie near the driver's route.  The
-                 3-closest employees already have a short commute to the PE.
+        Step 1 — Assign the (pool_size − 1) employees closest to the meeting
+                 point directly to the PE.  A pickup is only valuable for an
+                 employee whose home is far from the PE but happens to lie near
+                 the driver's route.  The one employee farthest from the PE is
+                 always the best pickup candidate; everyone else goes to the PE.
 
-        Step 2 — Among the remaining employees, find the one whose home is
-                 closest (by straight-line distance) to any decoded polyline
-                 point.  That point on the polyline is the cross-point: the
-                 location where the driver naturally passes closest to the
+        Step 2 — For the single remaining employee (the one farthest from the
+                 PE), find their closest decoded polyline point (cross-point):
+                 the location where the driver naturally passes closest to that
                  employee's home.
 
         Step 3 — Verify that the pickup is actually worthwhile for the employee
@@ -853,7 +855,7 @@ def find_pickup_candidate(
                     ...
                 ],
             },
-            "employees_to_meeting_point": list[dict],  # the 3 closest to PE
+            "employees_to_meeting_point": list[dict],  # pool_size − 1 employees, closest to PE first
             "reason": None,
         }
 
@@ -872,11 +874,22 @@ def find_pickup_candidate(
     # -------------------------------------------------------------------------
     all_points = polyline_lib.decode(route_polyline)  # list of (lat, lng) tuples
 
+    # Guard: nothing to do with an empty pool
+    if not remaining_pool:
+        return {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": [],
+            "reason":                     "remaining pool is empty",
+        }
+
     # -------------------------------------------------------------------------
-    # Step 1: assign the 3 employees closest to the meeting point to the PE.
-    # These employees have a short public-transit commute to the meeting point,
-    # so a pickup on the route would save them little time.
-    # Employees without geocoded coordinates are sorted to the end (inf distance).
+    # Step 1: sort the pool by distance to the meeting point and split.
+    # The (pool_size − 1) employees closest to the PE have a short commute there
+    # already — a pickup on the route would save them little.  They go to the PE.
+    # The one employee farthest from the PE is the most likely to benefit and
+    # becomes the single pickup candidate.
+    # Employees without geocoded coordinates are sorted to the end (inf distance)
+    # so they always land in the PE group rather than becoming the pickup candidate.
     # -------------------------------------------------------------------------
     def _dist_to_mp(member: dict) -> float:
         coords = member.get("coordinates")
@@ -889,73 +902,57 @@ def find_pickup_candidate(
 
     sorted_by_mp_dist = sorted(remaining_pool, key=_dist_to_mp)
 
-    # The 3 shortest-distance employees go directly to the meeting point
-    employees_to_meeting_point = sorted_by_mp_dist[:3]
+    # All but the last go directly to the meeting point
+    employees_to_meeting_point = sorted_by_mp_dist[:-1]
+    # The last (farthest from PE) is the pickup candidate
+    pickup_candidate_member    = sorted_by_mp_dist[-1]
 
-    # If the pool is small enough that everyone is in the top-3, there is no
-    # remaining employee to evaluate for a pickup — return immediately.
-    if len(remaining_pool) <= 3:
+    # -------------------------------------------------------------------------
+    # Step 2: find the cross-point — the decoded polyline point closest to the
+    # pickup candidate's home.  This is where the driver naturally passes nearest
+    # to that employee, and is the centre of the Places API search in Step 4.
+    # -------------------------------------------------------------------------
+    candidate_coords = pickup_candidate_member.get("coordinates")
+
+    # If the farthest-from-PE employee has no geocoded address, we cannot place
+    # them on the route — give up and send everyone to the PE.
+    if candidate_coords is None:
         return {
             "pickup_candidate":           None,
             "employees_to_meeting_point": employees_to_meeting_point,
-            "reason":                     "all employees assigned to meeting point",
+            "reason":                     "pickup candidate has no geocoded coordinates",
         }
 
-    # The employees beyond the top-3 are candidates for a pickup assignment
-    pickup_pool = sorted_by_mp_dist[3:]
+    # Walk every decoded polyline point and find the one closest to the candidate
+    best_cross_point_tuple = None
+    best_dist_to_route     = float("inf")
 
-    # -------------------------------------------------------------------------
-    # Step 2: find the single pickup candidate — the employee whose home is
-    # closest (by Haversine) to any decoded polyline point.
-    # For each candidate employee, we find their nearest polyline point and
-    # record the minimum distance.  The employee with the global minimum wins.
-    # -------------------------------------------------------------------------
-    best_employee         = None
-    best_cross_point_tuple = None          # (lat, lng) of the nearest polyline point
-    best_dist_to_route    = float("inf")   # km to the nearest polyline point
+    for pt_lat, pt_lng in all_points:
+        d = _haversine_distance(candidate_coords["lat"], candidate_coords["lng"], pt_lat, pt_lng)
+        if d < best_dist_to_route:
+            best_dist_to_route     = d
+            best_cross_point_tuple = (pt_lat, pt_lng)
 
-    for member in pickup_pool:
-        coords = member.get("coordinates")
-        if coords is None:
-            continue  # skip employees whose address could not be geocoded
-
-        # Walk every decoded polyline point and find the one closest to this employee
-        min_dist    = float("inf")
-        nearest_pt  = None
-
-        for pt_lat, pt_lng in all_points:
-            d = _haversine_distance(coords["lat"], coords["lng"], pt_lat, pt_lng)
-            if d < min_dist:
-                min_dist   = d
-                nearest_pt = (pt_lat, pt_lng)
-
-        # Update the global best if this employee lives closer to the route
-        if min_dist < best_dist_to_route:
-            best_dist_to_route     = min_dist
-            best_employee          = member
-            best_cross_point_tuple = nearest_pt
-
-    # Guard: no valid candidate could be found (all employees lacked coordinates)
-    if best_employee is None or best_cross_point_tuple is None:
+    # Guard: empty polyline (should never happen with a valid Routes API response)
+    if best_cross_point_tuple is None:
         return {
             "pickup_candidate":           None,
             "employees_to_meeting_point": employees_to_meeting_point,
-            "reason":                     "no eligible employee found beyond meeting-point group",
+            "reason":                     "route polyline has no decoded points",
         }
 
     cross_point = {"lat": best_cross_point_tuple[0], "lng": best_cross_point_tuple[1]}
 
     # -------------------------------------------------------------------------
-    # Step 3: verify the employee's eligibility via public-transit times.
+    # Step 3: verify the pickup candidate's eligibility via public-transit times.
     # One Distance Matrix call with 1 origin and 2 destinations is more efficient
     # than two separate calls — the API returns both legs in a single response.
     #
-    # Origin:       employee's home coordinates
+    # Origin:        pickup candidate's home coordinates (already validated above)
     # Destination 0: cross-point (the pickup location on the route)
     # Destination 1: meeting point (the original PE or PEA)
     # -------------------------------------------------------------------------
-    employee_coords = best_employee["coordinates"]
-    origin = [{"lat": employee_coords["lat"], "lng": employee_coords["lng"]}]
+    origin = [{"lat": candidate_coords["lat"], "lng": candidate_coords["lng"]}]
 
     matrix = calculate_distances(
         origins=origin,
@@ -1109,7 +1106,7 @@ def find_pickup_candidate(
 
     return {
         "pickup_candidate": {
-            "employee":                       best_employee,
+            "employee":                       pickup_candidate_member,
             "cross_point":                    cross_point,
             # int() truncates the float — consistent with the spec and with how
             # the Distance Matrix API works (durations are whole seconds).
@@ -1120,4 +1117,154 @@ def find_pickup_candidate(
         },
         "employees_to_meeting_point": employees_to_meeting_point,
         "reason":                     None,
+    }
+
+
+def assign_vehicle_passengers(
+    remaining_pool:       list[dict],
+    driver:               dict,
+    chosen_meeting_point: dict,
+) -> dict:
+    """
+    Assigns every employee in the remaining staff pool to a specific vehicle
+    after the user has confirmed the final meeting point (PE or PEA).
+
+    This is the core of Step 4b.  By the time this function is called:
+      - The frescos vehicle has already taken its crew (Manager Senior and
+        optionally the Jefe de Parrilla Senior); they are not in remaining_pool.
+      - The personal car driver has been identified by detect_personal_vehicle().
+      - The user has chosen between the original PE and the PEA.
+
+    Three vehicles are assigned:
+      1. Personal car  — the driver plus up to MAX_PASSENGERS_PER_CAR passengers.
+         Passengers are chosen by proximity to the meeting point (closest first)
+         because they can reach the meeting point easily and board the car there.
+      2. Uber(s)       — everyone else, in batches of up to MAX_PASSENGERS_UBER.
+         Each batch represents one Uber booking.  Uber passengers go directly
+         to the chosen meeting point; no individual routing is computed.
+
+    Parameters:
+        remaining_pool       (list[dict]): Staff not yet assigned to any vehicle,
+                                           as returned by
+                                           get_remaining_pool()["remaining_pool"].
+                                           Each employee must have a "coordinates"
+                                           key added by geocode_staff().
+        driver               (dict):       The employee who owns the personal car,
+                                           as returned by
+                                           detect_personal_vehicle()["driver"].
+        chosen_meeting_point (dict):       The meeting point the user confirmed
+                                           (PE or PEA).  Must have "name", "lat",
+                                           and "lng" keys.
+
+    Returns:
+        dict: {
+            "personal_vehicle": {
+                "driver":          dict,        # the driver employee dict
+                "passengers":      list[dict],  # up to MAX_PASSENGERS_PER_CAR
+                "total_occupants": int          # 1 (driver) + len(passengers)
+            },
+            "uber_groups": [
+                {
+                    "group_number": int,
+                    "passengers":   list[dict],  # up to MAX_PASSENGERS_UBER each
+                    "meeting_point": dict         # the chosen_meeting_point
+                },
+                ...
+            ],
+            "single_employee_warning": str | None  # set when exactly 1 Uber passenger
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Step 1: remove the driver from the pool.
+    # The driver is already committed to the personal vehicle — they travel in
+    # it as the driver, not as a passenger.  We identify them by full name
+    # ("Nombre" + "Apellido") because both the driver dict and every pool entry
+    # originate from the same Excel rows, making the name a reliable key.
+    # If the driver was already excluded from the pool (e.g. they held one of
+    # the frescos roles), the list comprehension simply returns the pool unchanged.
+    # -------------------------------------------------------------------------
+    driver_full_name = (
+        f"{str(driver.get('Nombre', '')).strip()} "
+        f"{str(driver.get('Apellido', '')).strip()}"
+    ).strip()
+
+    pool_without_driver = [
+        member for member in remaining_pool
+        if (
+            f"{str(member.get('Nombre', '')).strip()} "
+            f"{str(member.get('Apellido', '')).strip()}"
+        ).strip() != driver_full_name
+    ]
+
+    # -------------------------------------------------------------------------
+    # Step 2: assign personal vehicle passengers.
+    # Employees are sorted by their straight-line distance to the chosen meeting
+    # point.  The MAX_PASSENGERS_PER_CAR closest employees go in the personal
+    # car — they can reach the meeting point easily on their own and then board
+    # the car together.  Employees without geocoded coordinates are sorted to
+    # the end (inf distance) so they don't accidentally take a car seat over
+    # someone with a valid address.
+    # -------------------------------------------------------------------------
+    def _dist_to_mp(member: dict) -> float:
+        coords = member.get("coordinates")
+        if coords is None:
+            return float("inf")
+        return _haversine_distance(
+            coords["lat"], coords["lng"],
+            chosen_meeting_point["lat"], chosen_meeting_point["lng"],
+        )
+
+    sorted_by_mp_dist = sorted(pool_without_driver, key=_dist_to_mp)
+
+    # The closest fill the personal car; the rest go to Uber
+    car_passengers  = sorted_by_mp_dist[:MAX_PASSENGERS_PER_CAR]
+    uber_passengers = sorted_by_mp_dist[MAX_PASSENGERS_PER_CAR:]
+
+    # -------------------------------------------------------------------------
+    # Step 3: group Uber passengers into batches.
+    # Python slice notation [i : i + MAX_PASSENGERS_UBER] naturally handles
+    # the last batch being smaller than MAX_PASSENGERS_UBER without any special
+    # casing — the slice simply returns whatever elements remain.
+    # All Uber vehicles go to the chosen meeting point; no per-passenger routing.
+    # -------------------------------------------------------------------------
+    uber_groups = []
+    for i in range(0, len(uber_passengers), MAX_PASSENGERS_UBER):
+        batch = uber_passengers[i : i + MAX_PASSENGERS_UBER]
+        uber_groups.append({
+            "group_number":  len(uber_groups) + 1,
+            "passengers":    batch,
+            # Every Uber group shares the same destination — the meeting point
+            # chosen by the user at the end of the PEA evaluation step.
+            "meeting_point": chosen_meeting_point,
+        })
+
+    # -------------------------------------------------------------------------
+    # Step 4: edge-case — single leftover employee.
+    # If exactly one employee is left after filling the personal car, they would
+    # form a one-person Uber group.  That is logistically unusual and may fall
+    # outside standard remuneration policy for solo bookings.
+    # TODO: consult manager — single remaining employee, alternative transport needed
+    # -------------------------------------------------------------------------
+    single_employee_warning = None
+    if len(uber_passengers) == 1:
+        lone      = uber_passengers[0]
+        lone_name = (
+            f"{str(lone.get('Nombre', '')).strip()} "
+            f"{str(lone.get('Apellido', '')).strip()}"
+        ).strip()
+        single_employee_warning = (
+            f"{lone_name} is the only employee remaining after personal vehicle "
+            f"assignment. A single-passenger Uber is unusual — consult the manager "
+            f"about alternative transport arrangements."
+        )
+
+    return {
+        "personal_vehicle": {
+            "driver":          driver,
+            "passengers":      car_passengers,
+            # total_occupants counts the driver as 1 seat; passengers fill the rest
+            "total_occupants": 1 + len(car_passengers),
+        },
+        "uber_groups":             uber_groups,
+        "single_employee_warning": single_employee_warning,
     }
