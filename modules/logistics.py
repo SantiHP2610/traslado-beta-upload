@@ -13,6 +13,9 @@ import math
 import unicodedata
 from datetime import datetime, timedelta
 
+import httpx
+import polyline as polyline_lib
+
 # Import all thresholds and keywords from the central constants file.
 # Using named constants instead of magic numbers makes the rules self-documenting
 # and easy to change in one place without hunting through logic code.
@@ -29,13 +32,21 @@ from config import (
     PEA_MIN_EXCLUSIVE_PREFERENCE,
     PEA_RADIUS_KM,
     PICADA_GUEST_THRESHOLD,
+    PICKUP_MAX_DETOUR_METERS,
+    PICKUP_MAX_TRANSIT_MINUTES,
+    PICKUP_MIN_TIME_SAVING_MINUTES,
+    PICKUP_PLACE_TYPES,
+    PICKUP_TOP_CANDIDATES,
     SECOND_MINIFLETE_CONDITIONS,
 )
 
-# calculate_distances is used by evaluate_pea_candidates() to get transit times
-# from each staff member to both the PEA candidate and the original meeting point.
-# This cross-module import works because uvicorn adds the project root to sys.path.
-from modules.maps_client import calculate_distances
+# calculate_distances is used by evaluate_pea_candidates() and find_pickup_candidate()
+# to get transit times via the Distance Matrix API.
+# GOOGLE_MAPS_API_KEY is imported so find_pickup_candidate() can authenticate the
+# Places API call it makes directly (the Places API call is inlined here rather
+# than delegated to maps_client to keep the full Step 7 logic in one function).
+# Both cross-module imports work because uvicorn adds the project root to sys.path.
+from modules.maps_client import calculate_distances, GOOGLE_MAPS_API_KEY
 
 
 # =============================================================================
@@ -762,4 +773,351 @@ def evaluate_pea_candidates(
         "exclusively_prefer_count": best_exclusively_prefer_count,
         "pea_near_original":        pea_near_original,
         "remuneration_note":        remuneration_note,
+    }
+
+
+def find_pickup_candidate(
+    route_polyline:  str,
+    remaining_pool:  list[dict],
+    meeting_point:   dict,
+) -> dict:
+    """
+    Searches for a single valid pickup point along the driver's route for the
+    employee most likely to benefit from one — reducing their commute to the
+    event without adding a detour for the driver.
+
+    Why only one pickup per trip?
+        The driver's route is fixed; adding multiple stops creates scheduling
+        complexity and risks delays at the event.  One carefully chosen pickup
+        is the ceiling of what this system proposes.
+
+    Overview of the five-step algorithm:
+
+        Step 1 — Assign the 3 employees closest to the meeting point directly to
+                 the PE.  A pickup is only valuable if the employee's home is far
+                 from the PE but happens to lie near the driver's route.  The
+                 3-closest employees already have a short commute to the PE.
+
+        Step 2 — Among the remaining employees, find the one whose home is
+                 closest (by straight-line distance) to any decoded polyline
+                 point.  That point on the polyline is the cross-point: the
+                 location where the driver naturally passes closest to the
+                 employee's home.
+
+        Step 3 — Verify that the pickup is actually worthwhile for the employee
+                 by comparing their public-transit times to the cross-point vs
+                 to the original meeting point.  Both a maximum transit time and
+                 a minimum time-saving threshold must be met.
+
+        Step 4 — Search the Places API (New) for gas stations and restaurants
+                 within PICKUP_MAX_DETOUR_METERS of the cross-point.  These are
+                 the candidate venues for the physical pickup location.
+
+        Step 5 — Filter the Places API results to keep only venues that lie
+                 within PICKUP_MAX_DETOUR_METERS of at least one decoded polyline
+                 point.  This removes venues on side streets that would force the
+                 driver off the main route.
+
+    Parameters:
+        route_polyline (str):      Encoded polyline of the driver's route
+                                   (base route for PE scenario; direct route for
+                                   PEA scenario).  The polyline is decoded and
+                                   used as the geometric reference for all
+                                   distance calculations.
+        remaining_pool (list[dict]): Staff not yet assigned to a vehicle.
+                                   Each employee must have a "coordinates" key
+                                   ({"lat": ..., "lng": ...}) added by
+                                   geocode_staff().
+        meeting_point (dict):      The PE (or PEA) that will be the staging
+                                   area.  Must have "lat" and "lng" keys.
+
+    Returns:
+        dict: One of two shapes:
+
+        When a valid pickup candidate is found:
+        {
+            "pickup_candidate": {
+                "employee":                        dict,   # full employee dict
+                "cross_point":                     {"lat": float, "lng": float},
+                "transit_time_to_pickup_minutes":  int,    # from employee home to cross-point
+                "transit_time_to_pe_minutes":      int,    # from employee home to meeting point
+                "time_saved_minutes":              int,    # pe_time − pickup_time
+                "place_options":                   [       # up to PICKUP_TOP_CANDIDATES places
+                    {
+                        "place_name":    str,
+                        "place_address": str,
+                        "lat":           float,
+                        "lng":           float,
+                        "place_types":   list[str],
+                    },
+                    ...
+                ],
+            },
+            "employees_to_meeting_point": list[dict],  # the 3 closest to PE
+            "reason": None,
+        }
+
+        When no valid candidate is found:
+        {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": list[dict],
+            "reason":                     str,  # explains why no pickup was assigned
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Decode the encoded polyline into a list of (lat, lng) tuples.
+    # The polyline library implements the Google Encoded Polyline Algorithm —
+    # the same encoding used by Routes API responses.
+    # We decode once and reuse the list across all subsequent distance checks.
+    # -------------------------------------------------------------------------
+    all_points = polyline_lib.decode(route_polyline)  # list of (lat, lng) tuples
+
+    # -------------------------------------------------------------------------
+    # Step 1: assign the 3 employees closest to the meeting point to the PE.
+    # These employees have a short public-transit commute to the meeting point,
+    # so a pickup on the route would save them little time.
+    # Employees without geocoded coordinates are sorted to the end (inf distance).
+    # -------------------------------------------------------------------------
+    def _dist_to_mp(member: dict) -> float:
+        coords = member.get("coordinates")
+        if coords is None:
+            return float("inf")
+        return _haversine_distance(
+            coords["lat"], coords["lng"],
+            meeting_point["lat"], meeting_point["lng"],
+        )
+
+    sorted_by_mp_dist = sorted(remaining_pool, key=_dist_to_mp)
+
+    # The 3 shortest-distance employees go directly to the meeting point
+    employees_to_meeting_point = sorted_by_mp_dist[:3]
+
+    # If the pool is small enough that everyone is in the top-3, there is no
+    # remaining employee to evaluate for a pickup — return immediately.
+    if len(remaining_pool) <= 3:
+        return {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": employees_to_meeting_point,
+            "reason":                     "all employees assigned to meeting point",
+        }
+
+    # The employees beyond the top-3 are candidates for a pickup assignment
+    pickup_pool = sorted_by_mp_dist[3:]
+
+    # -------------------------------------------------------------------------
+    # Step 2: find the single pickup candidate — the employee whose home is
+    # closest (by Haversine) to any decoded polyline point.
+    # For each candidate employee, we find their nearest polyline point and
+    # record the minimum distance.  The employee with the global minimum wins.
+    # -------------------------------------------------------------------------
+    best_employee         = None
+    best_cross_point_tuple = None          # (lat, lng) of the nearest polyline point
+    best_dist_to_route    = float("inf")   # km to the nearest polyline point
+
+    for member in pickup_pool:
+        coords = member.get("coordinates")
+        if coords is None:
+            continue  # skip employees whose address could not be geocoded
+
+        # Walk every decoded polyline point and find the one closest to this employee
+        min_dist    = float("inf")
+        nearest_pt  = None
+
+        for pt_lat, pt_lng in all_points:
+            d = _haversine_distance(coords["lat"], coords["lng"], pt_lat, pt_lng)
+            if d < min_dist:
+                min_dist   = d
+                nearest_pt = (pt_lat, pt_lng)
+
+        # Update the global best if this employee lives closer to the route
+        if min_dist < best_dist_to_route:
+            best_dist_to_route     = min_dist
+            best_employee          = member
+            best_cross_point_tuple = nearest_pt
+
+    # Guard: no valid candidate could be found (all employees lacked coordinates)
+    if best_employee is None or best_cross_point_tuple is None:
+        return {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": employees_to_meeting_point,
+            "reason":                     "no eligible employee found beyond meeting-point group",
+        }
+
+    cross_point = {"lat": best_cross_point_tuple[0], "lng": best_cross_point_tuple[1]}
+
+    # -------------------------------------------------------------------------
+    # Step 3: verify the employee's eligibility via public-transit times.
+    # One Distance Matrix call with 1 origin and 2 destinations is more efficient
+    # than two separate calls — the API returns both legs in a single response.
+    #
+    # Origin:       employee's home coordinates
+    # Destination 0: cross-point (the pickup location on the route)
+    # Destination 1: meeting point (the original PE or PEA)
+    # -------------------------------------------------------------------------
+    employee_coords = best_employee["coordinates"]
+    origin = [{"lat": employee_coords["lat"], "lng": employee_coords["lng"]}]
+
+    matrix = calculate_distances(
+        origins=origin,
+        destinations=[cross_point, {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}],
+        mode="transit",
+    )
+
+    elem_to_cross = matrix["rows"][0]["elements"][0]
+    elem_to_mp    = matrix["rows"][0]["elements"][1]
+
+    # If either leg has no transit route, the pickup is not viable
+    if elem_to_cross["status"] != "OK":
+        return {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": employees_to_meeting_point,
+            "reason": (
+                f"No transit route found from employee home to pickup point "
+                f"(Distance Matrix status: {elem_to_cross['status']})."
+            ),
+        }
+
+    if elem_to_mp["status"] != "OK":
+        return {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": employees_to_meeting_point,
+            "reason": (
+                f"No transit route found from employee home to meeting point "
+                f"(Distance Matrix status: {elem_to_mp['status']})."
+            ),
+        }
+
+    # Convert seconds → minutes (float precision retained for comparison;
+    # int conversion happens only in the final return value)
+    transit_to_cross_min = elem_to_cross["duration"]["value"] / 60
+    transit_to_mp_min    = elem_to_mp["duration"]["value"]   / 60
+    time_saved_min       = transit_to_mp_min - transit_to_cross_min
+
+    # Condition 1: the employee must be able to reach the pickup point in time
+    if transit_to_cross_min > PICKUP_MAX_TRANSIT_MINUTES:
+        return {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": employees_to_meeting_point,
+            "reason": (
+                f"Transit time to pickup point ({transit_to_cross_min:.0f} min) "
+                f"exceeds the limit of {PICKUP_MAX_TRANSIT_MINUTES} min."
+            ),
+        }
+
+    # Condition 2: the pickup must save a meaningful amount of time vs the PE
+    if time_saved_min < PICKUP_MIN_TIME_SAVING_MINUTES:
+        return {
+            "pickup_candidate":           None,
+            "employees_to_meeting_point": employees_to_meeting_point,
+            "reason": (
+                f"Time saved by pickup ({time_saved_min:.0f} min) is below the "
+                f"minimum of {PICKUP_MIN_TIME_SAVING_MINUTES} min."
+            ),
+        }
+
+    # -------------------------------------------------------------------------
+    # Step 4: search the Places API (New) for pickup venues around the cross-point.
+    # We look within PICKUP_MAX_DETOUR_METERS metres — a radius tight enough to
+    # ensure the venue is reachable from the road without a significant turn-off.
+    # -------------------------------------------------------------------------
+    places_body = {
+        "includedTypes": PICKUP_PLACE_TYPES,
+        "locationRestriction": {
+            "circle": {
+                "center": {
+                    "latitude":  cross_point["lat"],
+                    "longitude": cross_point["lng"],
+                },
+                # The API expects a float; cast in case PICKUP_MAX_DETOUR_METERS
+                # is defined as an int in config.py (Python float() is harmless
+                # on a float, so this is always safe).
+                "radius": float(PICKUP_MAX_DETOUR_METERS),
+            }
+        },
+    }
+    places_headers = {
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        # Request only the four fields we need — Places API (New) charges
+        # per field category; requesting fewer fields reduces cost.
+        "X-Goog-FieldMask": (
+            "places.displayName,"
+            "places.location,"
+            "places.types,"
+            "places.formattedAddress"
+        ),
+    }
+
+    places_response = httpx.post(
+        "https://places.googleapis.com/v1/places:searchNearby",
+        json=places_body,
+        headers=places_headers,
+    )
+    places_response.raise_for_status()
+    raw_places = places_response.json().get("places", [])
+
+    # -------------------------------------------------------------------------
+    # Step 5: filter places to keep only those that are genuinely ON the route.
+    # The Places API search uses a circular radius around the cross-point, so it
+    # may return venues on adjacent side streets.  We check the minimum distance
+    # from each venue to any decoded polyline point: if it exceeds
+    # PICKUP_MAX_DETOUR_METERS, the venue is off-route and is discarded.
+    #
+    # Accepted venues are sorted by their distance to the cross-point (ascending)
+    # so that the nearest, most convenient location is offered first.
+    # -------------------------------------------------------------------------
+    on_route_places: list[tuple[float, dict]] = []  # (dist_to_cross_m, place_dict)
+
+    for place in raw_places:
+        location  = place.get("location", {})
+        place_lat = location.get("latitude",  0.0)
+        place_lng = location.get("longitude", 0.0)
+
+        # Find the minimum Haversine distance (km) from this place to any
+        # decoded polyline point, then convert to metres for the threshold check.
+        min_dist_to_route_km = min(
+            _haversine_distance(place_lat, place_lng, pt_lat, pt_lng)
+            for pt_lat, pt_lng in all_points
+        )
+        min_dist_to_route_m = min_dist_to_route_km * 1000
+
+        # Discard venues that are farther than PICKUP_MAX_DETOUR_METERS from the
+        # route — they would require the driver to make a turn off the main road.
+        if min_dist_to_route_m > PICKUP_MAX_DETOUR_METERS:
+            continue
+
+        # Compute the distance from this venue to the cross-point for ordering
+        dist_to_cross_m = (
+            _haversine_distance(place_lat, place_lng, cross_point["lat"], cross_point["lng"])
+            * 1000
+        )
+        on_route_places.append((dist_to_cross_m, place, place_lat, place_lng))
+
+    # Sort ascending by distance to cross-point so the most convenient venue leads
+    on_route_places.sort(key=lambda x: x[0])
+
+    # Build the final list limited to PICKUP_TOP_CANDIDATES entries
+    place_options = [
+        {
+            "place_name":    p.get("displayName", {}).get("text", ""),
+            "place_address": p.get("formattedAddress", ""),
+            "lat":           p_lat,
+            "lng":           p_lng,
+            "place_types":   p.get("types", []),
+        }
+        for _, p, p_lat, p_lng in on_route_places[:PICKUP_TOP_CANDIDATES]
+    ]
+
+    return {
+        "pickup_candidate": {
+            "employee":                       best_employee,
+            "cross_point":                    cross_point,
+            # int() truncates the float — consistent with the spec and with how
+            # the Distance Matrix API works (durations are whole seconds).
+            "transit_time_to_pickup_minutes": int(transit_to_cross_min),
+            "transit_time_to_pe_minutes":     int(transit_to_mp_min),
+            "time_saved_minutes":             int(time_saved_min),
+            "place_options":                  place_options,
+        },
+        "employees_to_meeting_point": employees_to_meeting_point,
+        "reason":                     None,
     }

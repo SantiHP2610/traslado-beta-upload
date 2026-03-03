@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -681,6 +681,44 @@ def endpoint_evaluate_pea():
     remaining_pool    = remaining_result["remaining_pool"]
 
     # -------------------------------------------------------------------------
-    # Step 8: evaluate candidates and return the best qualifying PEA.
+    # Step 8: evaluate PEA candidates and select the best qualifying one.
     # -------------------------------------------------------------------------
-    return evaluate_pea_candidates(candidates, remaining_pool, meeting_point)
+    pea_result = evaluate_pea_candidates(candidates, remaining_pool, meeting_point)
+
+    # -------------------------------------------------------------------------
+    # Step 9: evaluate pickup point options under each meeting-point scenario.
+    #
+    # We run find_pickup_candidate() twice — once per scenario — because the
+    # valid pickup locations depend on both which route the driver takes and
+    # which meeting point is used as the reference for transit-time savings.
+    #
+    # Scenario A (PE chosen): driver follows the BASE route (home → PE → event);
+    #   pickup candidates lie along that route; transit savings measured vs PE.
+    # Scenario B (PEA chosen): driver follows the DIRECT route (home → event);
+    #   pickup candidates lie along that route; transit savings measured vs PEA.
+    #   Only computed when pea_proposed is True; otherwise set to None.
+    # -------------------------------------------------------------------------
+    pickup_if_pe_chosen = find_pickup_candidate(
+        route_polyline=routes["base_route"]["encoded_polyline"],
+        remaining_pool=remaining_pool,
+        meeting_point=meeting_point,
+    )
+
+    if pea_result["pea_proposed"]:
+        # pea_result["best_candidate"] has "lat", "lng", "name", "address" —
+        # compatible with the meeting_point interface expected by find_pickup_candidate().
+        pickup_if_pea_chosen = find_pickup_candidate(
+            route_polyline=routes["direct_route"]["encoded_polyline"],
+            remaining_pool=remaining_pool,
+            meeting_point=pea_result["best_candidate"],
+        )
+    else:
+        pickup_if_pea_chosen = None
+
+    # Merge the PEA evaluation result with both pickup scenarios into one response.
+    # The frontend uses all three to render the map and let the user decide.
+    return {
+        **pea_result,
+        "pickup_if_pe_chosen":  pickup_if_pe_chosen,
+        "pickup_if_pea_chosen": pickup_if_pea_chosen,
+    }

@@ -65,7 +65,21 @@ PEA_MIN_EXCLUSIVE_PREFERENCE = 2   # min number of staff who must exclusively pr
                                     # for it to be proposed to the user
 PEA_RADIUS_KM = 10                 # straight-line km from PEA candidate to original PE;
                                     # ≤ this → flagged "optimal"; > this → "consult_remuneration"
+
+# --- Pickup point parameters (Step 7) ---
 PICKUP_MIN_TIME_SAVING_MINUTES = 20 # min minutes saved vs going to PE to assign a pickup point
+PICKUP_MAX_DETOUR_METERS = 300      # Places API search radius (m) around the cross-point AND
+                                    # max straight-line distance (m) from a place to any polyline
+                                    # point to count as "on the route" (not on a side street)
+PICKUP_MAX_TRANSIT_MINUTES = 30     # max transit time (min) from employee home to pickup point
+PICKUP_TOP_CANDIDATES = 3           # number of top place options returned per pickup candidate,
+                                    # ordered by distance to cross-point ascending
+
+# Place types searched by Places API for pickup point candidates.
+# "gas_station" targets 24hs service stations on main roads.
+# "restaurant" is used as a proxy for McDonald's 24hs — Places API has no
+# specific type for fast food chains. Refine post-deployment if needed.
+PICKUP_PLACE_TYPES = ["gas_station", "restaurant"]
 
 # --- Production Center (CP — Centro de Producción) ---
 # Physical address where frescos and equipment are loaded before each event.
