@@ -117,6 +117,116 @@ def _haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> f
     return R * c
 
 
+# Seniority rank used to pick the highest-seniority employee when multiple
+# candidates match a role.  The values are arbitrary ordinals — only their
+# relative size matters.  Any Profesion string that contains none of these
+# keywords is ranked 0 (lowest priority) rather than raising an error.
+_SENIORITY_RANK: dict[str, int] = {
+    "senior": 3,
+    "medior": 2,
+    "junior": 1,
+}
+
+
+def _seniority_rank(profesion: str) -> int:
+    """
+    Extracts the seniority level embedded in a Profesion string and returns
+    its numeric rank so that callers can use max() to find the best match.
+
+    The Profesion column in the 'Equipo' sheet encodes both role and seniority
+    in a single string (e.g. "Jefe de Parrilla Senior", "Parrillero Medior").
+    There is no separate Senioridad column — seniority is always read from here.
+
+    Parameters:
+        profesion (str): Raw Profesion cell value from the staff dict.
+
+    Returns:
+        int: 3 for Senior, 2 for Medior, 1 for Junior, 0 if none matched.
+    """
+    normalised = _normalize(profesion)
+    for level, rank in _SENIORITY_RANK.items():
+        # level is already lowercase; _normalize() lowercased normalised
+        if level in normalised:
+            return rank
+    return 0  # unrecognised seniority — treated as lowest priority
+
+
+def _find_manager_senior(staff: list[dict]) -> dict:
+    """
+    Finds the employee whose Profesion is exactly "Manager Senior" (after
+    normalisation for case and accents).
+
+    Exact match is intentional: "Manager Senior" is a specific, unique role
+    per event — we do not want a "Manager Medior" to be selected if the
+    senior is absent, since that would silently assign the wrong person.
+
+    Parameters:
+        staff (list[dict]): Full staff list from read_excel()["staff"].
+
+    Returns:
+        dict: The matching employee dict.
+
+    Raises:
+        ValueError: If no employee with Profesion "Manager Senior" is found.
+    """
+    target = _normalize("Manager Senior")  # normalise once, compare many
+
+    for member in staff:
+        if _normalize(str(member.get("Profesion", ""))) == target:
+            return member
+
+    raise ValueError("No Manager Senior found in staff list")
+
+
+def _find_highest_parrilla(staff: list[dict]) -> dict:
+    """
+    Finds the highest-seniority employee whose Profesion contains "parrilla"
+    or "parrillero" (after normalisation).
+
+    Why substring match here (vs exact match for Manager Senior)?
+    Parrilla roles span several titles in the source data:
+    "Jefe de Parrilla Senior", "Parrillero Senior", "Parrillero Medior", etc.
+    We need to catch all of them and then pick the most senior, not just one
+    specific string.
+
+    Seniority order: Senior (3) > Medior (2) > Junior (1) > unknown (0).
+    If multiple employees share the same highest rank, the first one found
+    in the staff list wins (order is determined by the Excel sheet).
+
+    Parameters:
+        staff (list[dict]): Full staff list from read_excel()["staff"].
+
+    Returns:
+        dict: The highest-seniority Parrilla employee dict.
+
+    Raises:
+        ValueError: If no employee with a Parrilla role is found.
+    """
+    # Keywords that identify a parrilla role anywhere in the Profesion string.
+    # Both variants appear in real data ("Jefe de Parrilla" vs "Parrillero").
+    parrilla_keywords = {"parrilla", "parrillero"}
+
+    candidates = [
+        member for member in staff
+        if any(
+            kw in _normalize(str(member.get("Profesion", "")))
+            for kw in parrilla_keywords
+        )
+    ]
+
+    if not candidates:
+        raise ValueError("No Parrilla role found in staff list")
+
+    # max() with a key function selects the employee with the highest rank.
+    # If two employees share the same rank, max() returns the last one found
+    # (Python's max is not stable for equal elements), which is acceptable
+    # because seniority ties within the same role should not occur per event.
+    return max(
+        candidates,
+        key=lambda m: _seniority_rank(str(m.get("Profesion", ""))),
+    )
+
+
 def _row_contains(row: dict, keyword: str) -> bool:
     """
     Returns True if the normalised keyword appears anywhere in the
@@ -144,51 +254,68 @@ def _row_contains(row: dict, keyword: str) -> bool:
 # Public API
 # =============================================================================
 
-def determine_frescos_vehicle(has_own_van: bool) -> dict:
+def determine_frescos_vehicle(has_own_van: bool, staff: list[dict]) -> dict:
     """
     Determines which vehicle will transport the frescos (raw ingredients)
-    to the event venue and which staff roles are assigned to ride in it.
+    to the event venue and which specific employees are assigned to ride in it.
 
     Business rule:
       - If the company owns a van → use it and assign Manager Senior +
         the highest-seniority Parrillero, who are responsible for receiving
-        and managing supplies at the venue.
+        and inventorying the supplies at the venue.
       - If no van is available → hire a miniflete (small hired van) and assign
         only the Manager Senior, who oversees the logistics.
-        The Parrillero travels separately in this case because the miniflete's
-        capacity is often smaller and loading priority goes to the frescos.
+        The Parrillero travels separately because a hired miniflete's payload
+        capacity is smaller and loading priority goes to the frescos cargo.
+
+    Employee lookup uses the 'Profesion' column, which embeds both role and
+    seniority in a single string (e.g. "Manager Senior", "Jefe de Parrilla Senior").
+    See _find_manager_senior() and _find_highest_parrilla() for the rules.
 
     Parameters:
-        has_own_van (bool): True if the company's own van is available for
-                            this event, False if a miniflete must be hired.
+        has_own_van (bool):    True if the company's own van is available for
+                               this event, False if a miniflete must be hired.
+        staff (list[dict]):    Full staff list from read_excel()["staff"].
+                               Each dict must have a "Profesion" key, plus
+                               "Nombre" and "Apellido" for the display name.
 
     Returns:
         dict: {
-            "vehicle":        str,        # name of the vehicle
-            "assigned_roles": list[str],  # staff roles assigned to this vehicle
+            "vehicle":        str,       # "camioneta propia" | "miniflete contratado"
+            "assigned_names": list[str], # ["Nombre Apellido", ...] for display
         }
+
+    Raises:
+        ValueError: If no Manager Senior is found, or (for own van) no Parrilla
+                    role is found in the staff list.
     """
+    # Always locate the Manager Senior — they ride in either vehicle type.
+    # _find_manager_senior() raises ValueError if none is found, propagating
+    # cleanly to the endpoint's exception handler as a 422 detail.
+    manager = _find_manager_senior(staff)
+    manager_name = (
+        f"{manager.get('Nombre', '')} {manager.get('Apellido', '')}".strip()
+    )
+
     if has_own_van:
-        # The company van has ample space; Manager Senior and the highest-seniority
-        # Parrillero ride with the frescos to handle and inventory the cargo on arrival.
-        # TODO: Once the Excel structure is finalised, replace hardcoded role strings
-        # with a lookup that finds the actual employee matching each role.
-        # Logic needed: find "Manager Senior" by name from staff list,
-        # and find the highest-seniority "Parrillero" as "Jefe de Parrilla".
+        # The company van has ample cargo space; both the Manager Senior and
+        # the highest-seniority Parrillero travel with the frescos to handle
+        # receiving, cold-chain verification, and on-arrival setup.
+        parrilla = _find_highest_parrilla(staff)
+        parrilla_name = (
+            f"{parrilla.get('Nombre', '')} {parrilla.get('Apellido', '')}".strip()
+        )
         return {
-            "vehicle": "camioneta propia",
-            "assigned_roles": ["Manager Senior", "Jefe de Parrilla Senior"],
+            "vehicle":        "camioneta propia",
+            "assigned_names": [manager_name, parrilla_name],
         }
     else:
-        # A hired miniflete has less guaranteed space; only the Manager Senior
-        # accompanies the frescos to oversee delivery and sign off on quantities.
-        # TODO: Once the Excel structure is finalised, replace hardcoded role strings
-        # with a lookup that finds the actual employee matching each role.
-        # Logic needed: find "Manager Senior" by name from staff list,
-        # and find the highest-seniority "Parrillero" as "Jefe de Parrilla".
+        # A hired miniflete has limited guaranteed space; only the Manager
+        # Senior accompanies the frescos to oversee delivery and sign off
+        # on quantities.  The Parrillero is placed in the remaining pool.
         return {
-            "vehicle": "miniflete contratado",
-            "assigned_roles": ["Manager Senior"],
+            "vehicle":        "miniflete contratado",
+            "assigned_names": [manager_name],
         }
 
 
@@ -1557,7 +1684,7 @@ def build_final_output(
         dict: {
             "frescos_block": {
                 "vehicle":            str,
-                "assigned_roles":     list[str],
+                "assigned_names":     list[str],
                 "departure_from_cp":  str,        # "HH:MM"
                 "departure_breakdown": dict,       # full cp_departure result
                 "second_miniflete":   dict | None
@@ -1581,7 +1708,10 @@ def build_final_output(
 
     frescos_block = {
         "vehicle":             frescos_vehicle.get("vehicle"),
-        "assigned_roles":      frescos_vehicle.get("assigned_roles", []),
+        # Carry the actual employee names from build_assignment_summary()
+        # into the draggable output block so the dispatcher sees real names,
+        # not abstract role strings.
+        "assigned_names":      frescos_vehicle.get("assigned_names", []),
         "departure_from_cp":   cp_departure["departure_time"],
         # The full breakdown lets the frontend explain every subtracted minute,
         # making it easy for the manager to verify the formula at a glance.
@@ -1638,7 +1768,7 @@ def build_assignment_summary(
                                               None when called from the validate
                                               step before the user has confirmed.
         frescos_result          (dict):       Output of determine_frescos_vehicle(),
-                                              with "vehicle" and "assigned_roles".
+                                              with "vehicle" and "assigned_names".
         second_miniflete_result (dict | None): Output of determine_second_miniflete()
                                               when needs_second_miniflete is True,
                                               or None if not triggered.
@@ -1661,7 +1791,7 @@ def build_assignment_summary(
             ],
             "frescos_vehicle": {
                 "vehicle":        str,
-                "assigned_roles": list[str],
+                "assigned_names": list[str],
                 "departure_time": str | None    # "HH:MM"; None before confirm
             },
             "second_miniflete": dict | None,
@@ -1712,7 +1842,9 @@ def build_assignment_summary(
 
     frescos_vehicle = {
         "vehicle":        frescos_result.get("vehicle"),
-        "assigned_roles": frescos_result.get("assigned_roles", []),
+        # assigned_names carries the actual "Nombre Apellido" strings of the
+        # employees riding the frescos vehicle — used for display in the modal.
+        "assigned_names": frescos_result.get("assigned_names", []),
         # Mirrors departure_from_cp: present at confirm time, None at validate time
         "departure_time": departure_from_cp,
     }

@@ -218,33 +218,42 @@ class FrescosRequest(BaseModel):
 
 @app.post(
     "/determine-frescos",
-    summary="Determine the frescos vehicle and assigned staff roles",
+    summary="Determine the frescos vehicle and assigned employees",
     description=(
-        "Given whether the company owns a van for this event, returns which "
-        "vehicle will transport the frescos (raw ingredients) and which staff "
-        "roles are assigned to it.  No external APIs are called — the decision "
-        "is purely rule-based."
+        "Given whether the company owns a van for this event, reads the staff "
+        "list from the Excel, looks up the Manager Senior and (if own van) the "
+        "highest-seniority Parrilla employee, and returns which vehicle will "
+        "transport the frescos together with the actual employee names assigned "
+        "to it.  No external APIs are called — the decision is purely rule-based."
     ),
 )
 def endpoint_determine_frescos(body: FrescosRequest):
     """
-    Delegates directly to determine_frescos_vehicle() from the logistics module.
-
-    The Excel file is validated to exist (consistent with all other endpoints)
-    even though this particular rule does not need its data — it confirms the
-    event is properly configured before returning transport decisions.
+    Workflow:
+        1. Read the event Excel via _load_excel() to get the staff list.
+        2. Pass has_own_van and the staff list to determine_frescos_vehicle(),
+           which does a real employee lookup instead of returning hardcoded roles.
+        3. Return the result directly.
 
     Returns a JSON object:
     {
         "vehicle":        "camioneta propia" | "miniflete contratado",
-        "assigned_roles": ["Manager Senior"] | ["Manager Senior", "Jefe de Parrilla Senior"]
+        "assigned_names": ["Nombre Apellido", ...]   # actual employee names
     }
-    """
-    # Validate that the event Excel exists before returning any logistics advice.
-    # This guards against answering transport questions for a non-existent event.
-    _load_excel()
 
-    return determine_frescos_vehicle(body.has_own_van)
+    Raises 422 if the Excel has no Manager Senior, or (for own van) no Parrilla
+    role — both are caught from the ValueError raised by the lookup helpers and
+    reported as a human-readable detail string.
+    """
+    data = _load_excel()
+
+    try:
+        return determine_frescos_vehicle(body.has_own_van, data["staff"])
+    except ValueError as exc:
+        # _find_manager_senior() and _find_highest_parrilla() raise ValueError
+        # when the required role is absent.  Surfacing that message directly
+        # gives the operator an actionable explanation without a stack trace.
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.post(
@@ -979,14 +988,15 @@ def endpoint_validate_assignments(body: ValidateAssignmentsRequest):
 
     # -------------------------------------------------------------------------
     # Step 4: infer frescos vehicle type from assigned_roles.
-    # determine_frescos_vehicle() only needs has_own_van to choose between
-    # "camioneta propia" (van + Jefe de Parrilla) and "miniflete contratado"
-    # (hired van + Manager only).  Because assigned_roles was originally built
-    # from the /determine-frescos response, the presence of "Jefe de Parrilla
-    # Senior" in the list tells us has_own_van was True at that step.
+    # ValidateAssignmentsRequest does not carry has_own_van explicitly, but we
+    # can infer it: the frontend always includes the Parrilla role string in
+    # assigned_roles when a van was used.  Checking for "parrilla" (normalised,
+    # lowercase) is more robust than matching the exact role string exactly.
     # -------------------------------------------------------------------------
-    inferred_has_own_van = "Jefe de Parrilla Senior" in body.assigned_roles
-    frescos_result       = determine_frescos_vehicle(inferred_has_own_van)
+    inferred_has_own_van = any(
+        "parrilla" in r.lower() for r in body.assigned_roles
+    )
+    frescos_result = determine_frescos_vehicle(inferred_has_own_van, data["staff"])
 
     # -------------------------------------------------------------------------
     # Step 5: evaluate second miniflete — only needs the services list.
@@ -1077,9 +1087,9 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
     # Step 4: compute frescos result with the real has_own_van value.
     # Unlike the validate step (which infers it), here we have the authoritative
     # has_own_van flag from the user, so we call determine_frescos_vehicle()
-    # directly to get the canonical vehicle name and roles.
+    # directly to get the canonical vehicle name and assigned employee names.
     # -------------------------------------------------------------------------
-    frescos_result = determine_frescos_vehicle(body.has_own_van)
+    frescos_result = determine_frescos_vehicle(body.has_own_van, data["staff"])
 
     # -------------------------------------------------------------------------
     # Step 5: second miniflete.
@@ -1282,7 +1292,7 @@ def endpoint_final_output(body: FinalOutputRequest):
     # -------------------------------------------------------------------------
     # Step 5: frescos vehicle and second miniflete.
     # -------------------------------------------------------------------------
-    frescos_result        = determine_frescos_vehicle(body.has_own_van)
+    frescos_result        = determine_frescos_vehicle(body.has_own_van, data["staff"])
     second_miniflete_info = determine_second_miniflete(prestaciones)
     second_miniflete_result = (
         second_miniflete_info

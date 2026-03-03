@@ -85,10 +85,13 @@ All other code is in English.
 ## Full app flow (implemented progressively)
 
 ### Step 1 — Frescos vehicle (modules/logistics.py)
+Implemented: `determine_frescos_vehicle(has_own_van, staff)`.
 - User is asked: is the company van available?
-- If yes → "camioneta propia", assign Manager Senior + highest-seniority Parrillero
+- If yes → "camioneta propia", assign Manager Senior + highest-seniority Parrilla employee
 - If no → "miniflete contratado", assign Manager Senior only
-- Output: frescos vehicle + assigned staff → removed from staff pool
+- Employees are found by real lookup using `_find_manager_senior()` and `_find_highest_parrilla()`.
+- Output: `{"vehicle": str, "assigned_names": list[str]}` — actual employee names for display.
+- Assigned employees are removed from the remaining pool (Step 4) via role strings the frontend tracks.
 
 ### Step 2 — Second miniflete (modules/logistics.py)
 Evaluated independently from Step 1.
@@ -220,7 +223,7 @@ Do not build multi-vehicle routing logic.
 - `GET /read-excel` — returns structured JSON from Excel
 - `GET /geocode-staff` — staff list with coordinates
 - `GET /nearest-meeting-point` — closest of 3 fixed meeting points
-- `POST /determine-frescos` — frescos vehicle and assigned roles
+- `POST /determine-frescos` — frescos vehicle and assigned employee names (real lookup)
 - `POST /determine-second-miniflete` — whether second miniflete is needed
 - `POST /calculate-departure-time` — CP departure time for frescos vehicle(s)
 - `POST /get-remaining-pool` — remaining staff pool after frescos assignments, with charter/alternative flags
@@ -232,12 +235,17 @@ Do not build multi-vehicle routing logic.
 - `POST /confirm-assignments` — safety re-validates, then returns complete summary including CP departure time; populates both draggable output blocks
 - `POST /final-output` — final safety check + computes both departure times (CP and PE/PEA) + returns the two draggable map blocks (frescos_block + transport_block)
 
-### TODO: Role lookup not implemented
-`determine_frescos_vehicle()` returns hardcoded role strings.
-Replace with actual employee lookup using the Profesion column:
-- Manager Senior → find employee where Profesion contains "Manager" AND "Senior"
-- Jefe de Parrilla → find employee where Profesion contains "Parrilla" (highest seniority)
-  Seniority order for matching: "Senior" > "Medior" > "Junior" (embedded in the Profesion string).
+### Role lookup — implemented
+`determine_frescos_vehicle(has_own_van, staff)` does real employee lookups:
+- `_find_manager_senior(staff)` — exact normalised match on `"Manager Senior"`.
+  Raises `ValueError` if none found (propagated as HTTP 422).
+- `_find_highest_parrilla(staff)` — substring match for `"parrilla"` or `"parrillero"`
+  in the normalised Profesion string; picks the employee with the highest seniority
+  using `_seniority_rank()` which reads the seniority level embedded in Profesion.
+  Raises `ValueError` if none found.
+- `_seniority_rank(profesion)` — returns 3/2/1/0 for Senior/Medior/Junior/unknown.
+- Returns `{"vehicle": str, "assigned_names": list[str]}` where each name is
+  `"Nombre Apellido"` of the actual employee assigned.
 
 ### TODO: Places API caching for polyline points
 `find_pickup_candidate()` and `find_pea_candidates()` decode the polyline and iterate over its
