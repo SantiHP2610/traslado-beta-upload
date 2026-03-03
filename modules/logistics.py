@@ -1268,3 +1268,249 @@ def assign_vehicle_passengers(
         "uber_groups":             uber_groups,
         "single_employee_warning": single_employee_warning,
     }
+
+
+# =============================================================================
+# Step 8 helpers — validation and summary assembly
+# =============================================================================
+
+def validate_assignments(remaining_pool: list[dict], assignments: dict) -> dict:
+    """
+    Validates that every employee in remaining_pool has been assigned to exactly
+    one vehicle or pickup slot.  Called before allowing the user to proceed to
+    the final confirmation modal.
+
+    The function compares two sets:
+      - pool_names:     every employee who SHOULD be assigned (from remaining_pool)
+      - assigned_names: every employee who HAS been assigned (from assignments)
+
+    Any name in pool_names but not in assigned_names is "unassigned" — the user
+    forgot to place that employee.  Any name in assigned_names but not in
+    pool_names is "unknown" — it was typed in the frontend but does not match a
+    real employee in the pool (data error, likely a typo or stale state).
+
+    Both discrepancy types must be empty for the result to be valid.
+
+    Parameters:
+        remaining_pool (list[dict]): Staff not assigned to the frescos vehicle,
+                                     as returned by
+                                     get_remaining_pool()["remaining_pool"].
+                                     Each dict must have "Nombre" and "Apellido".
+        assignments    (dict):       User-submitted groupings with keys:
+                                       "driver"          (str)
+                                       "car_passengers"  (list[str])
+                                       "uber_groups"     (list[list[str]])
+                                       "pickup_employee" (str | None)
+                                     All name strings use "Nombre Apellido" format.
+
+    Returns:
+        dict: {
+            "valid":                bool,
+            "unassigned_employees": list[str],  # in pool but not assigned
+            "unknown_assignments":  list[str],  # assigned but not in pool
+            "message":              str         # human-readable summary
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Step 1: build a set of all names present in remaining_pool.
+    # Names are normalised to "Nombre Apellido" format — the same format the
+    # frontend sends inside the assignments dict — so comparisons are consistent
+    # regardless of extra whitespace from the Excel source.
+    # -------------------------------------------------------------------------
+    pool_names: set[str] = {
+        (
+            f"{str(member.get('Nombre', '')).strip()} "
+            f"{str(member.get('Apellido', '')).strip()}"
+        ).strip()
+        for member in remaining_pool
+    }
+
+    # -------------------------------------------------------------------------
+    # Step 2: collect every name that appears in the assignments dict.
+    # We gather names from all four slots: driver, car passengers, each Uber
+    # group (a list of lists), and the optional pickup employee.
+    # Using a set automatically deduplicates — a name appearing in two slots
+    # would still only count once here (it would still be a logical error, but
+    # that is a separate concern from the coverage check we are performing).
+    # -------------------------------------------------------------------------
+    assigned_names: set[str] = set()
+
+    # The driver is always a single "Nombre Apellido" string
+    driver_name = assignments.get("driver", "")
+    if driver_name:
+        assigned_names.add(driver_name.strip())
+
+    # car_passengers is a flat list of name strings
+    for name in assignments.get("car_passengers", []):
+        if name:
+            assigned_names.add(name.strip())
+
+    # uber_groups is a list of lists — flatten both levels
+    for group in assignments.get("uber_groups", []):
+        for name in group:
+            if name:
+                assigned_names.add(name.strip())
+
+    # pickup_employee is optional; only add when present
+    pickup_name = assignments.get("pickup_employee")
+    if pickup_name:
+        assigned_names.add(pickup_name.strip())
+
+    # -------------------------------------------------------------------------
+    # Step 3: compute discrepancies via set difference.
+    # Set difference is O(n) and produces exactly the names in one set but not
+    # the other — no looping or conditional chains required.
+    # Results are sorted for stable, human-readable output.
+    # -------------------------------------------------------------------------
+    unassigned = sorted(pool_names - assigned_names)   # missed by the user
+    unknown    = sorted(assigned_names - pool_names)   # not from this pool
+
+    valid = not unassigned and not unknown
+
+    # -------------------------------------------------------------------------
+    # Step 4: build a human-readable summary message.
+    # Each discrepancy type gets its own sentence so the user knows exactly
+    # what needs to be fixed before they can confirm.
+    # -------------------------------------------------------------------------
+    if valid:
+        message = "All employees are correctly assigned."
+    else:
+        parts = []
+        if unassigned:
+            parts.append(
+                f"{len(unassigned)} employee(s) not yet assigned: "
+                f"{', '.join(unassigned)}."
+            )
+        if unknown:
+            parts.append(
+                f"{len(unknown)} unknown assignment(s) — name(s) not found in "
+                f"the remaining pool (possible data error): {', '.join(unknown)}."
+            )
+        message = " ".join(parts)
+
+    return {
+        "valid":                valid,
+        "unassigned_employees": unassigned,
+        "unknown_assignments":  unknown,
+        "message":              message,
+    }
+
+
+def build_assignment_summary(
+    assignments:             dict,
+    chosen_meeting_point:    dict | None,
+    frescos_result:          dict,
+    second_miniflete_result: dict | None,
+    departure_time_result:   dict | None,
+) -> dict:
+    """
+    Assembles the full summary object displayed in the confirmation modal.
+
+    This is a pure data-assembly function — it makes no API calls and applies
+    no business rules.  All decisions (vehicle type, passenger groupings,
+    departure times) have already been computed by the time this is called;
+    this function simply reshapes those results into the structure the
+    frontend needs to render the confirmation modal and the final output blocks.
+
+    Parameters:
+        assignments             (dict):       User-confirmed assignments with keys
+                                              "driver", "car_passengers",
+                                              "uber_groups", "pickup_employee".
+        chosen_meeting_point    (dict | None): The PE or PEA the user selected,
+                                              with "name", "lat", "lng" keys.
+                                              None when called from the validate
+                                              step before the user has confirmed.
+        frescos_result          (dict):       Output of determine_frescos_vehicle(),
+                                              with "vehicle" and "assigned_roles".
+        second_miniflete_result (dict | None): Output of determine_second_miniflete()
+                                              when needs_second_miniflete is True,
+                                              or None if not triggered.
+        departure_time_result   (dict | None): Output of calculate_departure_time(),
+                                              or None when called from the validate
+                                              step before departure is computed.
+
+    Returns:
+        dict: {
+            "meeting_point":    dict | None,
+            "personal_vehicle": {
+                "driver":          str,
+                "passengers":      list[str],
+                "pickup_employee": str | None,
+                "pickup_place":    str | None   # TODO: pass from confirmed pickup
+            },
+            "uber_groups": [
+                { "group_number": int, "passengers": list[str] },
+                ...
+            ],
+            "frescos_vehicle": {
+                "vehicle":        str,
+                "assigned_roles": list[str],
+                "departure_time": str | None    # "HH:MM"; None before confirm
+            },
+            "second_miniflete": dict | None,
+            "departure_from_cp": str | None,    # "HH:MM"; None before confirm
+            "departure_from_pe": str | None     # always None — calculated in
+                                                # confirm step via Routes API
+                                                # TODO: wire once confirm is complete
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Personal vehicle section.
+    # pickup_place is a TODO: the pickup candidate venue name comes from the
+    # map interaction (user confirms a place from find_pickup_candidate()),
+    # but build_assignment_summary does not yet receive that result as a
+    # parameter.  Both pickup fields pass through from assignments as-is;
+    # pickup_place is explicitly None until the frontend wires it through.
+    # -------------------------------------------------------------------------
+    personal_vehicle = {
+        "driver":          assignments.get("driver"),
+        "passengers":      assignments.get("car_passengers", []),
+        "pickup_employee": assignments.get("pickup_employee"),
+        # TODO: add pickup_place parameter once frontend sends confirmed venue name
+        "pickup_place":    None,
+    }
+
+    # -------------------------------------------------------------------------
+    # Uber groups — convert from list[list[str]] to list[dict] with group numbers.
+    # The frontend needs group_number to label each separate Uber booking.
+    # enumerate starts at 0, so we add 1 to get 1-based group numbers.
+    # -------------------------------------------------------------------------
+    uber_groups = [
+        {"group_number": i + 1, "passengers": group}
+        for i, group in enumerate(assignments.get("uber_groups", []))
+    ]
+
+    # -------------------------------------------------------------------------
+    # Departure from CP — only available once calculate_departure_time() has
+    # been called (i.e. from the confirm endpoint, not the validate endpoint).
+    # We read it from departure_time_result["departure_time"] which is "HH:MM".
+    # Both the frescos_vehicle block and the top-level departure_from_cp field
+    # share the same value — they depart together.
+    # -------------------------------------------------------------------------
+    departure_from_cp = (
+        departure_time_result["departure_time"]
+        if departure_time_result
+        else None
+    )
+
+    frescos_vehicle = {
+        "vehicle":        frescos_result.get("vehicle"),
+        "assigned_roles": frescos_result.get("assigned_roles", []),
+        # Mirrors departure_from_cp: present at confirm time, None at validate time
+        "departure_time": departure_from_cp,
+    }
+
+    return {
+        "meeting_point":    chosen_meeting_point,
+        "personal_vehicle": personal_vehicle,
+        "uber_groups":      uber_groups,
+        "frescos_vehicle":  frescos_vehicle,
+        "second_miniflete": second_miniflete_result,
+        "departure_from_cp": departure_from_cp,
+        # departure_from_pe is the time the personal car and Uber vehicles depart
+        # from the chosen meeting point toward the event venue.  Computing it
+        # requires a Routes API call (meeting point → event) which is deferred
+        # to the confirm step once the full endpoint chain is wired.
+        # TODO: compute via Routes API in /confirm-assignments and pass in here.
+        "departure_from_pe": None,
+    }

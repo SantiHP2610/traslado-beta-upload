@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, validate_assignments, build_assignment_summary
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -844,3 +844,313 @@ def endpoint_assign_passengers(body: AssignPassengersRequest):
     }
 
     return assign_vehicle_passengers(remaining_pool, driver, meeting_point_dict)
+
+
+# =============================================================================
+# Step 8 — assignment validation and confirmation
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Shared sub-model for the assignments dict sent by the frontend.
+# Placed here (not inside the request model) so both /validate-assignments and
+# /confirm-assignments can reference the same model without duplication.
+# -----------------------------------------------------------------------------
+
+class AssignmentsInput(BaseModel):
+    """
+    The user-submitted vehicle groupings produced by the interactive map.
+
+    driver:          full name ("Nombre Apellido") of the personal car driver.
+    car_passengers:  full names of employees travelling in the personal car.
+    uber_groups:     each inner list is one Uber booking; names in "Nombre Apellido".
+    pickup_employee: full name of the employee picked up along the route, or None.
+    """
+    driver:          str
+    car_passengers:  list[str]
+    uber_groups:     list[list[str]]
+    pickup_employee: str | None = None
+
+
+class ValidateAssignmentsRequest(BaseModel):
+    """
+    Body for POST /validate-assignments.
+
+    assignments:    the user-submitted groupings to be validated.
+    assigned_roles: role strings already committed to the frescos vehicle and/or
+                    second miniflete (used to rebuild the remaining pool the same
+                    way /get-remaining-pool did in the earlier step).
+    """
+    assignments:    AssignmentsInput
+    assigned_roles: list[str]
+
+
+class ConfirmAssignmentsRequest(BaseModel):
+    """
+    Body for POST /confirm-assignments.
+
+    Extends ValidateAssignmentsRequest with the fields that are only known once
+    the user has made their final map decisions:
+
+    chosen_meeting_point: the PE or PEA the user confirmed on the map.
+    has_own_van:          whether the company van was available (needed to call
+                          determine_frescos_vehicle() and recover the exact
+                          vehicle name for the summary).
+    event_duration_hours: planned length of the event in hours; required to
+                          compute the CP departure time via calculate_departure_time().
+    picada_guests:        guest count for any picada service; required for the
+                          same calculation.  Pass 0 if none was contracted.
+    """
+    assignments:          AssignmentsInput
+    assigned_roles:       list[str]
+    chosen_meeting_point: MeetingPointInput   # reuse model from /assign-passengers
+    has_own_van:          bool
+    event_duration_hours: float
+    picada_guests:        int
+
+
+@app.post(
+    "/validate-assignments",
+    summary="Validate that every remaining employee has been assigned to a vehicle",
+    description=(
+        "Reads the Excel, rebuilds the remaining staff pool after excluding the "
+        "frescos-assigned roles, and checks that every employee in that pool "
+        "appears exactly once in the submitted assignments.  Returns 422 with the "
+        "list of unassigned employees if validation fails.  On success, returns a "
+        "partial assignment summary (without departure times, which are computed "
+        "only at the confirm step) for the user to review in the confirmation modal."
+    ),
+)
+def endpoint_validate_assignments(body: ValidateAssignmentsRequest):
+    """
+    Workflow:
+        1. Read the Excel to obtain the staff list and services.
+        2. Geocode all staff — needed for coordinates in any subsequent steps.
+        3. Rebuild the remaining pool by excluding the frescos-assigned roles.
+        4. Call validate_assignments() to check coverage.
+           If invalid → 422 with the list of unassigned / unknown employees.
+        5. Infer the frescos vehicle type from assigned_roles so we do not need
+           has_own_van in this lighter request body.
+        6. Compute the second miniflete result from the services sheet.
+        7. Call build_assignment_summary() and return it for modal preview.
+           departure_from_cp and departure_from_pe are None at this stage —
+           they are computed in the confirm step.
+
+    Returns a JSON object matching the build_assignment_summary() shape, or:
+    {
+        "detail": {
+            "valid":                false,
+            "unassigned_employees": [...],
+            "unknown_assignments":  [...],
+            "message":              "..."
+        }
+    }
+    on validation failure (HTTP 422).
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: geocode all staff.
+    # Coordinates are needed for subsequent steps in the full flow; geocoding
+    # here ensures the enriched dicts are available to every helper called below.
+    # -------------------------------------------------------------------------
+    geocode_staff(data["staff"])
+
+    # -------------------------------------------------------------------------
+    # Step 2: rebuild the remaining pool — same filtering as /get-remaining-pool.
+    # -------------------------------------------------------------------------
+    remaining_result = get_remaining_pool(data["staff"], body.assigned_roles)
+    remaining_pool   = remaining_result["remaining_pool"]
+
+    # -------------------------------------------------------------------------
+    # Step 3: validate coverage.
+    # Convert the Pydantic model to a plain dict so validate_assignments()
+    # receives the same shape as the raw frontend JSON.
+    # -------------------------------------------------------------------------
+    assignments_dict = body.assignments.model_dump()
+    validation       = validate_assignments(remaining_pool, assignments_dict)
+
+    if not validation["valid"]:
+        # Return the full validation detail as the error body so the frontend
+        # can highlight exactly which employees are missing or mistyped.
+        raise HTTPException(status_code=422, detail=validation)
+
+    # -------------------------------------------------------------------------
+    # Step 4: infer frescos vehicle type from assigned_roles.
+    # determine_frescos_vehicle() only needs has_own_van to choose between
+    # "camioneta propia" (van + Jefe de Parrilla) and "miniflete contratado"
+    # (hired van + Manager only).  Because assigned_roles was originally built
+    # from the /determine-frescos response, the presence of "Jefe de Parrilla
+    # Senior" in the list tells us has_own_van was True at that step.
+    # -------------------------------------------------------------------------
+    inferred_has_own_van = "Jefe de Parrilla Senior" in body.assigned_roles
+    frescos_result       = determine_frescos_vehicle(inferred_has_own_van)
+
+    # -------------------------------------------------------------------------
+    # Step 5: evaluate second miniflete — only needs the services list.
+    # Pass None to the summary if a second miniflete is not needed so the
+    # frontend knows to hide that section of the modal.
+    # -------------------------------------------------------------------------
+    second_miniflete_info   = determine_second_miniflete(data["services"])
+    second_miniflete_result = (
+        second_miniflete_info
+        if second_miniflete_info["needs_second_miniflete"]
+        else None
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 6: assemble the partial summary.
+    # chosen_meeting_point and departure_time_result are None here — the user
+    # has not yet clicked "Confirm" on the map modal, so those values are not
+    # available.  The frontend renders the summary with those fields blank and
+    # fills them in after the user confirms.
+    # -------------------------------------------------------------------------
+    return build_assignment_summary(
+        assignments=assignments_dict,
+        chosen_meeting_point=None,
+        frescos_result=frescos_result,
+        second_miniflete_result=second_miniflete_result,
+        departure_time_result=None,
+    )
+
+
+@app.post(
+    "/confirm-assignments",
+    summary="Final confirmation of all assignments — returns the complete event summary",
+    description=(
+        "Called only after the user has reviewed the preview modal and clicked "
+        "Confirm.  Re-validates assignments as a safety check, then computes the "
+        "full summary including the CP departure time.  Returns the complete "
+        "summary object that populates both draggable output blocks on the map."
+    ),
+)
+def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
+    """
+    Workflow:
+        1. Read the Excel to obtain staff list and services.
+        2. Geocode all staff.
+        3. Rebuild the remaining pool.
+        4. Safety-validate assignments again — guards against stale frontend state.
+           Returns 422 if invalid (same shape as /validate-assignments).
+        5. Call determine_frescos_vehicle(has_own_van) for the exact vehicle name.
+        6. Evaluate second miniflete from the services sheet.
+        7. Geocode the event venue and query the Distance Matrix API for the
+           driving time from CP to the event venue.
+        8. Call calculate_departure_time() to get departure_from_cp.
+        9. Call build_assignment_summary() with all computed results and return
+           the complete confirmed summary.
+
+    Returns a JSON object matching the build_assignment_summary() shape with
+    departure_from_cp populated.  departure_from_pe is always None at this stage.
+
+    # TODO: compute departure_from_pe here using the Routes API
+    # (meeting_point → event_venue) once the confirm step is fully wired into
+    # the frontend flow and the chosen meeting point is available to route from.
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: geocode all staff.
+    # -------------------------------------------------------------------------
+    geocode_staff(data["staff"])
+
+    # -------------------------------------------------------------------------
+    # Step 2: rebuild remaining pool.
+    # -------------------------------------------------------------------------
+    remaining_result = get_remaining_pool(data["staff"], body.assigned_roles)
+    remaining_pool   = remaining_result["remaining_pool"]
+
+    # -------------------------------------------------------------------------
+    # Step 3: safety re-validation.
+    # The user may have been on the map for a while; re-checking here prevents
+    # a corrupted assignment from being persisted as "confirmed".
+    # -------------------------------------------------------------------------
+    assignments_dict = body.assignments.model_dump()
+    validation       = validate_assignments(remaining_pool, assignments_dict)
+
+    if not validation["valid"]:
+        raise HTTPException(status_code=422, detail=validation)
+
+    # -------------------------------------------------------------------------
+    # Step 4: compute frescos result with the real has_own_van value.
+    # Unlike the validate step (which infers it), here we have the authoritative
+    # has_own_van flag from the user, so we call determine_frescos_vehicle()
+    # directly to get the canonical vehicle name and roles.
+    # -------------------------------------------------------------------------
+    frescos_result = determine_frescos_vehicle(body.has_own_van)
+
+    # -------------------------------------------------------------------------
+    # Step 5: second miniflete.
+    # -------------------------------------------------------------------------
+    second_miniflete_info   = determine_second_miniflete(data["services"])
+    second_miniflete_result = (
+        second_miniflete_info
+        if second_miniflete_info["needs_second_miniflete"]
+        else None
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 6: compute CP departure time.
+    # We need to geocode the event venue and query the Distance Matrix API for
+    # driving time from the CP to the event, then feed that into
+    # calculate_departure_time() alongside the event duration and picada guests.
+    # -------------------------------------------------------------------------
+    event = data["event"]
+    event_address = (
+        f"{event.get('direccion_evento', '')}, "
+        f"{event.get('ciudad_evento', '')}"
+    )
+    event_coords = geocode(event_address)
+    if event_coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode the event address: '{event_address}'",
+        )
+
+    hora_inicio = str(event.get("hora_inicio", "")).strip()
+    if not hora_inicio:
+        raise HTTPException(
+            status_code=422,
+            detail="'hora_inicio' is missing or empty in the Excel event sheet.",
+        )
+
+    cp_origin        = [{"lat": CP_LAT, "lng": CP_LNG}]
+    event_destination = [{"lat": event_coords["lat"], "lng": event_coords["lng"]}]
+    matrix           = calculate_distances(cp_origin, event_destination)
+    element          = matrix["rows"][0]["elements"][0]
+
+    if element["status"] != "OK":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Distance Matrix API could not find a route from the CP to "
+                f"'{event_address}'. Status: {element['status']}"
+            ),
+        )
+
+    travel_seconds = element["duration"]["value"]
+
+    departure_time_result = calculate_departure_time(
+        event_time_str=hora_inicio,
+        travel_seconds=travel_seconds,
+        event_duration_hours=body.event_duration_hours,
+        picada_guests=body.picada_guests,
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 7: assemble and return the complete confirmed summary.
+    # chosen_meeting_point is now available (the user confirmed it on the map),
+    # so the meeting_point field in the summary will be populated.
+    # -------------------------------------------------------------------------
+    chosen_meeting_point_dict = {
+        "name": body.chosen_meeting_point.name,
+        "lat":  body.chosen_meeting_point.lat,
+        "lng":  body.chosen_meeting_point.lng,
+    }
+
+    return build_assignment_summary(
+        assignments=assignments_dict,
+        chosen_meeting_point=chosen_meeting_point_dict,
+        frescos_result=frescos_result,
+        second_miniflete_result=second_miniflete_result,
+        departure_time_result=departure_time_result,
+    )

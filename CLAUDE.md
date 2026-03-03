@@ -216,6 +216,8 @@ Do not build multi-vehicle routing logic.
 - `GET /calculate-driver-route` — Routes API: base route (home→PE→event) and direct route (home→event)
 - `GET /evaluate-pea` — full PEA + pickup pipeline: geocode staff → driver route → PEA evaluation → pickup candidates for both PE and PEA scenarios
 - `POST /assign-passengers` — assigns remaining staff to personal car + Uber groups after user confirms meeting point
+- `POST /validate-assignments` — validates full employee coverage; if valid, returns partial summary (no departure times) for preview modal
+- `POST /confirm-assignments` — safety re-validates, then returns complete summary including CP departure time; populates both draggable output blocks
 
 ### TODO: Excel not finalised
 `_generar_excel.py` needs to be updated to include a "Senioridad" column
@@ -239,6 +241,22 @@ and re-query the same points.
 metres.  When the frontend map is built, add a visual circle overlay around each cross-point
 and each candidate venue so that the CEO and manager can visually verify that the pickup
 radius feels right before going live.
+
+### TODO: departure_from_pe not yet computed
+`build_assignment_summary()` always returns `departure_from_pe: null`.
+Once the confirm step is fully wired, add a Routes API call inside
+`/confirm-assignments` (chosen_meeting_point → event_venue) and pass the
+resulting duration into `build_assignment_summary()` as a new parameter.
+
+### Step 8 functions (modules/logistics.py)
+`validate_assignments(remaining_pool, assignments)` — compares pool names vs
+assigned names; returns `valid`, `unassigned_employees`, `unknown_assignments`,
+and a human-readable `message`.
+
+`build_assignment_summary(assignments, chosen_meeting_point, frescos_result,
+second_miniflete_result, departure_time_result)` — pure data assembly; produces
+the confirmation modal dict.  `chosen_meeting_point` and `departure_time_result`
+may be None when called from the validate step.
 
 ### TODO: Frontend not started
 React + Vite + @vis.gl/react-google-maps + shadcn/ui.
@@ -297,9 +315,9 @@ Both blocks are draggable and can be repositioned freely over the map.
 The map stays fully interactive underneath.
 
 ### Map viewport
-Events can span from Pilar to Temperley — the map must be able to zoom out
-to show all staff addresses and routes simultaneously.
-Do not constrain the map viewport to CABA only.
+The map must not be constrained to CABA. Routes can be long (e.g. Pilar to Temperley are
+examples of possible extremes, not a fixed requirement).
+The viewport must zoom to fit all staff addresses and routes simultaneously.
 
 ### Employee database (pending)
 TODO: implement employees.json to store employee data and cached coordinates.
