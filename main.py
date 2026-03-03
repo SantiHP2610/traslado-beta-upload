@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, validate_assignments, build_assignment_summary
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -89,7 +89,10 @@ def endpoint_read_excel():
 
     Returns a JSON with the structure:
     {
-        "event":    { "presupuesto": ..., "tipo": ..., ... },
+        "event":    { "tipo": ..., "ocasion": ..., "direccion_evento": ...,
+                      "ciudad_evento": ..., "hora_inicio": ..., "comensales": ...,
+                      "comensales_veggie": ..., "descripcion_locacion": ...,
+                      "empresa": ..., "observaciones": [...], "fecha": ... },
         "staff":    [ { "Profesion": ..., "Nombre": ..., ... }, ... ],
         "services": [ { "Servicio": ..., "Detalle": ..., "Cantidad": ... }, ... ]
     }
@@ -1153,4 +1156,240 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
         frescos_result=frescos_result,
         second_miniflete_result=second_miniflete_result,
         departure_time_result=departure_time_result,
+    )
+
+
+# =============================================================================
+# Step 8 — final output
+# =============================================================================
+
+class FinalOutputRequest(BaseModel):
+    """
+    Body for POST /final-output.
+
+    Similar to ConfirmAssignmentsRequest but without event_duration_hours and
+    picada_guests: both values are read from the Excel (or temporarily hardcoded)
+    inside the endpoint rather than supplied by the frontend.  The design
+    intention is that all event-level data eventually comes from the Excel
+    'evento' sheet, not from repeated form input.
+
+    assignments:          the user-confirmed vehicle groupings.
+    assigned_roles:       roles already committed to the frescos vehicle.
+    chosen_meeting_point: the PE or PEA the user confirmed on the map.
+    has_own_van:          whether the company van was available for this event.
+    """
+    assignments:          AssignmentsInput
+    assigned_roles:       list[str]
+    chosen_meeting_point: MeetingPointInput
+    has_own_van:          bool
+
+
+@app.post(
+    "/final-output",
+    summary="Build the complete final output for both draggable map blocks",
+    description=(
+        "Called immediately after the user clicks Confirm on the assignment modal. "
+        "Re-validates assignments as a final safety check, then computes both "
+        "departure times (CP for frescos, PE/PEA for staff vehicles) and assembles "
+        "the two draggable output blocks shown on the map: the frescos block and "
+        "the transport block."
+    ),
+)
+def endpoint_final_output(body: FinalOutputRequest):
+    """
+    Workflow:
+        1. Read the Excel for staff, services, event data (hora_inicio, comensales,
+           prestaciones).
+        2. Geocode all staff.
+        3. Rebuild the remaining pool.
+        4. Final safety re-validation of assignments.
+        5. Compute frescos_result and second_miniflete_result.
+        6. Geocode the event venue address.
+        7. Distance Matrix: CP → event → calculate_departure_time() → cp_departure.
+        8. Distance Matrix: PE/PEA → event → calculate_pe_departure_time() → pe_departure.
+        9. Assemble confirmed_summary via build_assignment_summary().
+       10. Assemble and return the two draggable blocks via build_final_output().
+
+    Returns a JSON object:
+    {
+        "frescos_block": {
+            "vehicle":             str,
+            "assigned_roles":      list[str],
+            "departure_from_cp":   "HH:MM",
+            "departure_breakdown": dict,
+            "second_miniflete":    dict | None
+        },
+        "transport_block": {
+            "meeting_point":       dict,
+            "departure_from_pe":   "HH:MM",
+            "departure_breakdown": dict,
+            "personal_vehicle":    dict,
+            "uber_groups":         list[dict]
+        }
+    }
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: read event-level fields from the Excel.
+    # 'hora_inicio' and 'comensales' live in the 'evento' sheet (field/value
+    # format); 'services' is the parsed 'prestaciones' sheet.
+    # -------------------------------------------------------------------------
+    event        = data["event"]
+    hora_inicio  = str(event.get("hora_inicio", "")).strip()
+    if not hora_inicio:
+        raise HTTPException(
+            status_code=422,
+            detail="'hora_inicio' is missing or empty in the Excel event sheet.",
+        )
+
+    try:
+        comensales = int(event.get("comensales", 0))
+    except (ValueError, TypeError):
+        comensales = 0
+
+    prestaciones = data["services"]
+
+    # TODO: read event_duration_hours from the Excel 'evento' sheet once the
+    # field is added.  The planned event duration affects the extra-prep block
+    # in both departure formulas.  Until the Excel is finalised, 5.0 hours is
+    # used as a reasonable default for a mid-size catering event.
+    event_duration_hours = 5.0
+
+    # -------------------------------------------------------------------------
+    # Step 2: geocode all staff.
+    # -------------------------------------------------------------------------
+    geocode_staff(data["staff"])
+
+    # -------------------------------------------------------------------------
+    # Step 3: rebuild the remaining pool.
+    # -------------------------------------------------------------------------
+    remaining_result = get_remaining_pool(data["staff"], body.assigned_roles)
+    remaining_pool   = remaining_result["remaining_pool"]
+
+    # -------------------------------------------------------------------------
+    # Step 4: final safety re-validation.
+    # This is the last line of defence before writing confirmed output — we check
+    # again even though the user already passed /validate-assignments, because
+    # frontend state can drift between the two calls (e.g. a network retry that
+    # carried stale assignments).
+    # -------------------------------------------------------------------------
+    assignments_dict = body.assignments.model_dump()
+    validation       = validate_assignments(remaining_pool, assignments_dict)
+    if not validation["valid"]:
+        raise HTTPException(status_code=422, detail=validation)
+
+    # -------------------------------------------------------------------------
+    # Step 5: frescos vehicle and second miniflete.
+    # -------------------------------------------------------------------------
+    frescos_result        = determine_frescos_vehicle(body.has_own_van)
+    second_miniflete_info = determine_second_miniflete(prestaciones)
+    second_miniflete_result = (
+        second_miniflete_info
+        if second_miniflete_info["needs_second_miniflete"]
+        else None
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 6: geocode the event venue.
+    # -------------------------------------------------------------------------
+    event_address = (
+        f"{event.get('direccion_evento', '')}, "
+        f"{event.get('ciudad_evento', '')}"
+    )
+    event_coords = geocode(event_address)
+    if event_coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode the event address: '{event_address}'",
+        )
+
+    event_destination = [{"lat": event_coords["lat"], "lng": event_coords["lng"]}]
+
+    # -------------------------------------------------------------------------
+    # Step 7: CP → event driving time → CP departure time.
+    # The CP is the fixed production centre; its coordinates come from config.py.
+    # -------------------------------------------------------------------------
+    cp_origin = [{"lat": CP_LAT, "lng": CP_LNG}]
+    cp_matrix = calculate_distances(cp_origin, event_destination)
+    cp_element = cp_matrix["rows"][0]["elements"][0]
+
+    if cp_element["status"] != "OK":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Distance Matrix API could not find a route from the CP to "
+                f"'{event_address}'. Status: {cp_element['status']}"
+            ),
+        )
+
+    # Picada guests: detect from prestaciones and use comensales as the count.
+    # calculate_departure_time() expects an integer guest count for the picada
+    # check; we pass comensales when picada is contracted, else 0.
+    from modules.logistics import _normalize, _row_contains  # private helpers
+    kw_picada   = _normalize("picada")
+    picada_detected = any(_row_contains(r, kw_picada) for r in prestaciones)
+    picada_guests_cp = comensales if picada_detected else 0
+
+    cp_departure = calculate_departure_time(
+        event_time_str=hora_inicio,
+        travel_seconds=cp_element["duration"]["value"],
+        event_duration_hours=event_duration_hours,
+        picada_guests=picada_guests_cp,
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 8: PE/PEA → event driving time → PE departure time.
+    # The meeting point is the one the user confirmed on the map (PE or PEA).
+    # -------------------------------------------------------------------------
+    pe_origin = [{
+        "lat": body.chosen_meeting_point.lat,
+        "lng": body.chosen_meeting_point.lng,
+    }]
+    pe_matrix  = calculate_distances(pe_origin, event_destination)
+    pe_element = pe_matrix["rows"][0]["elements"][0]
+
+    if pe_element["status"] != "OK":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Distance Matrix API could not find a route from the meeting point "
+                f"to '{event_address}'. Status: {pe_element['status']}"
+            ),
+        )
+
+    pe_departure = calculate_pe_departure_time(
+        event_time_str=hora_inicio,
+        travel_seconds=pe_element["duration"]["value"],
+        event_duration_hours=event_duration_hours,
+        prestaciones=prestaciones,
+        comensales=comensales,
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 9: assemble the confirmed summary (assignment groupings + meeting point).
+    # We pass cp_departure as departure_time_result so the frescos_vehicle block
+    # inside confirmed_summary already has the correct departure_time string.
+    # -------------------------------------------------------------------------
+    chosen_meeting_point_dict = {
+        "name": body.chosen_meeting_point.name,
+        "lat":  body.chosen_meeting_point.lat,
+        "lng":  body.chosen_meeting_point.lng,
+    }
+
+    confirmed_summary = build_assignment_summary(
+        assignments=assignments_dict,
+        chosen_meeting_point=chosen_meeting_point_dict,
+        frescos_result=frescos_result,
+        second_miniflete_result=second_miniflete_result,
+        departure_time_result=cp_departure,
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 10: assemble and return the two draggable output blocks.
+    # -------------------------------------------------------------------------
+    return build_final_output(
+        confirmed_summary=confirmed_summary,
+        pe_departure=pe_departure,
+        cp_departure=cp_departure,
     )

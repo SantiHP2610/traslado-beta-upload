@@ -1396,6 +1396,223 @@ def validate_assignments(remaining_pool: list[dict], assignments: dict) -> dict:
     }
 
 
+def calculate_pe_departure_time(
+    event_time_str:       str,
+    travel_seconds:       int,
+    event_duration_hours: float,
+    prestaciones:         list[dict],
+    comensales:           int,
+) -> dict:
+    """
+    Calculates departure time from the meeting point (PE or PEA) for all
+    staff vehicles — the personal car and every Uber group.
+
+    The formula mirrors the CP departure formula (calculate_departure_time())
+    with one key difference: there is NO loading time component.  Loading the
+    frescos at the CP is a CP-specific task; staff leaving from the meeting
+    point only need travel time, prep time, and a buffer margin.
+
+    Formula:
+        departure = event_time
+                    − DEPARTURE_PREP_HOURS      (setup time at venue)
+                    − travel_minutes            (PE/PEA → event, rounded up)
+                    − DEPARTURE_BUFFER_MINUTES  (last-minute margin)
+                    [ − LONG_EVENT_EXTRA_HOURS  (if event is long OR picada triggered) ]
+
+    The extra prep block is applied when EITHER condition is true (OR logic):
+      - event_duration_hours >= LONG_EVENT_DURATION_THRESHOLD  (≥ 8 h event)
+      - picada is contracted AND comensales >= PICADA_GUEST_THRESHOLD
+
+    Picada is detected by searching every prestaciones row using _row_contains()
+    with the "picada" keyword from MENU_KEYWORDS.  This keeps the picada check
+    inside this function rather than requiring the caller to pre-compute a
+    picada_guests integer — the function is self-contained.
+
+    Parameters:
+        event_time_str       (str):        Event start time as "HH:MM".
+        travel_seconds       (int):        Driving time in seconds from the
+                                           meeting point to the event venue,
+                                           as returned by the Distance Matrix API.
+        event_duration_hours (float):      Total planned duration of the event
+                                           in hours.
+        prestaciones         (list[dict]): Rows from the 'prestaciones' sheet,
+                                           each with "Servicio", "Detalle",
+                                           "Cantidad" keys.
+        comensales           (int):        Total guest count for the event,
+                                           read from the 'evento' sheet.
+
+    Returns:
+        dict: {
+            "departure_time": str,   # "HH:MM"
+            "breakdown": {
+                "event_time":                 str,       # "HH:MM" (same as event_time_str)
+                "prep_hours":                 int,       # DEPARTURE_PREP_HOURS constant
+                "travel_minutes":             int,       # travel_seconds ÷ 60, rounded up
+                "buffer_minutes":             int,       # DEPARTURE_BUFFER_MINUTES constant
+                "extra_prep_hours":           int,       # LONG_EVENT_EXTRA_HOURS or 0
+                "extra_prep_reason":          list[str] | None,
+                                                         # ["long event"], ["picada"],
+                                                         # ["long event", "picada"], or None
+                "total_minutes_before_event": int        # sum of all deductions in minutes
+            }
+        }
+    """
+    # Parse the event start time into a datetime so timedelta arithmetic works.
+    # We use today's date as a throwaway placeholder — only HH:MM matters.
+    event_time = datetime.strptime(event_time_str, "%H:%M")
+
+    # Convert travel seconds to minutes, rounding UP.
+    # Ceiling ensures we never cut arrival margin short — one extra minute of
+    # buffer is far cheaper than arriving late at an event venue.
+    travel_minutes = math.ceil(travel_seconds / 60)
+
+    # Fixed deductions that always apply for the PE departure.
+    # Note: LOADING_TIME_MINUTES is intentionally absent here — loading the
+    # frescos is only relevant at the CP, not at the meeting point.
+    total_minutes = (
+        DEPARTURE_PREP_HOURS * 60   # hours → minutes for timedelta arithmetic
+        + travel_minutes
+        + DEPARTURE_BUFFER_MINUTES
+    )
+
+    # -------------------------------------------------------------------------
+    # Picada detection from the prestaciones sheet.
+    # Normalise the keyword once so _row_contains() can do a plain substring
+    # match without worrying about accents or casing.
+    # The threshold check (comensales >= PICADA_GUEST_THRESHOLD) guards against
+    # small private events where a "picada" is listed but the volume is too low
+    # to require the extra setup block.
+    # -------------------------------------------------------------------------
+    kw_picada  = _normalize(MENU_KEYWORDS["picada"])
+    has_picada = any(_row_contains(row, kw_picada) for row in prestaciones)
+    picada_triggers_extra = has_picada and comensales >= PICADA_GUEST_THRESHOLD
+
+    # -------------------------------------------------------------------------
+    # Extra prep block — OR logic, added only once even when both fire.
+    # Each fired condition is recorded independently in extra_prep_reason so the
+    # frontend can explain exactly why the departure was moved earlier.
+    # -------------------------------------------------------------------------
+    extra_prep_reasons: list[str] = []
+
+    if event_duration_hours >= LONG_EVENT_DURATION_THRESHOLD:
+        extra_prep_reasons.append("long event")
+
+    if picada_triggers_extra:
+        extra_prep_reasons.append("picada")
+
+    if extra_prep_reasons:
+        total_minutes += LONG_EVENT_EXTRA_HOURS * 60   # hours → minutes
+
+    # Subtract total lead time from event start to get the wall-clock departure.
+    departure_time = event_time - timedelta(minutes=total_minutes)
+
+    return {
+        "departure_time": departure_time.strftime("%H:%M"),
+        "breakdown": {
+            "event_time":   event_time_str,
+            "prep_hours":   DEPARTURE_PREP_HOURS,
+            "travel_minutes": travel_minutes,
+            "buffer_minutes": DEPARTURE_BUFFER_MINUTES,
+            # extra_prep_hours is 0 when no extra prep is needed; the frontend
+            # can check this field to decide whether to show the extra block.
+            "extra_prep_hours": LONG_EVENT_EXTRA_HOURS if extra_prep_reasons else 0,
+            # None (not an empty list) signals "no extra prep" — distinguishes
+            # "not triggered" from "triggered with an empty list" which would
+            # be an impossible state given the logic above.
+            "extra_prep_reason": extra_prep_reasons if extra_prep_reasons else None,
+            "total_minutes_before_event": total_minutes,
+        },
+    }
+
+
+def build_final_output(
+    confirmed_summary: dict,
+    pe_departure:      dict,
+    cp_departure:      dict,
+) -> dict:
+    """
+    Assembles the complete final output displayed in the two draggable blocks
+    on the map after the user clicks Confirm.
+
+    Block 1 — Frescos block:  departure from the CP for the frescos vehicle
+              and the second miniflete (if any).
+    Block 2 — Transport block: departure from the meeting point (PE or PEA)
+              for the personal vehicle and all Uber groups.
+
+    This is a pure data-assembly function — it makes no API calls and applies
+    no business rules.  All results passed in have already been computed and
+    validated by the calling endpoint before this function is called.
+
+    Parameters:
+        confirmed_summary (dict): Output of build_assignment_summary() — contains
+                                  meeting_point, personal_vehicle, uber_groups,
+                                  frescos_vehicle, and second_miniflete.
+        pe_departure      (dict): Output of calculate_pe_departure_time() —
+                                  contains departure_time and a full breakdown dict.
+        cp_departure      (dict): Output of calculate_departure_time() —
+                                  contains departure_time, extra_prep_applied,
+                                  extra_prep_reason, and total_minutes_before_event.
+
+    Returns:
+        dict: {
+            "frescos_block": {
+                "vehicle":            str,
+                "assigned_roles":     list[str],
+                "departure_from_cp":  str,        # "HH:MM"
+                "departure_breakdown": dict,       # full cp_departure result
+                "second_miniflete":   dict | None
+            },
+            "transport_block": {
+                "meeting_point":       dict,
+                "departure_from_pe":   str,        # "HH:MM"
+                "departure_breakdown": dict,       # full pe_departure result
+                "personal_vehicle":    dict,       # driver + passengers + pickup
+                "uber_groups":         list[dict]
+            }
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Frescos block — everything the dispatcher needs to brief the frescos crew.
+    # The full cp_departure dict is included as departure_breakdown so the
+    # frontend can render a tooltip or expandable row showing every component
+    # of the formula (prep, travel, buffer, loading, extra if any).
+    # -------------------------------------------------------------------------
+    frescos_vehicle = confirmed_summary.get("frescos_vehicle", {})
+
+    frescos_block = {
+        "vehicle":             frescos_vehicle.get("vehicle"),
+        "assigned_roles":      frescos_vehicle.get("assigned_roles", []),
+        "departure_from_cp":   cp_departure["departure_time"],
+        # The full breakdown lets the frontend explain every subtracted minute,
+        # making it easy for the manager to verify the formula at a glance.
+        "departure_breakdown": cp_departure,
+        "second_miniflete":    confirmed_summary.get("second_miniflete"),
+    }
+
+    # -------------------------------------------------------------------------
+    # Transport block — everything the coordinator needs to brief the staff
+    # travelling by personal car and Uber to the meeting point.
+    # The full pe_departure dict (including its nested breakdown sub-dict) is
+    # included so the frontend can show the same component-level detail as the
+    # frescos block, just without the loading time row.
+    # -------------------------------------------------------------------------
+    transport_block = {
+        "meeting_point":       confirmed_summary.get("meeting_point"),
+        "departure_from_pe":   pe_departure["departure_time"],
+        # pe_departure already contains a "breakdown" sub-dict with every
+        # formula component; passing the full result keeps the transport block
+        # consistent in shape with the frescos block.
+        "departure_breakdown": pe_departure,
+        "personal_vehicle":    confirmed_summary.get("personal_vehicle"),
+        "uber_groups":         confirmed_summary.get("uber_groups", []),
+    }
+
+    return {
+        "frescos_block":   frescos_block,
+        "transport_block": transport_block,
+    }
+
+
 def build_assignment_summary(
     assignments:             dict,
     chosen_meeting_point:    dict | None,

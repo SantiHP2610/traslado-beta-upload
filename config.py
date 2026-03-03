@@ -26,6 +26,10 @@ MENU_KEYWORDS = {
     "asado_finger_food": "asado finger food",
     "bebidas": "acompañamiento bebidas",
     "estacion_fuegos": "estacion de fuegos",
+    # "picada" is a starter spread served before the main course.
+    # When contracted AND guest count is high, extra prep time is needed
+    # for both the CP departure and the PE/PEA departure.
+    "picada": "picada",
 }
 
 # --- Vehicle capacity ---

@@ -43,27 +43,39 @@ app-traslado-personal/
 
 ## Excel structure (3 sheets)
 
-### Sheet: "evento" (campo / valor format)
-| campo | valor |
-|---|---|
-| presupuesto | QH... |
-| tipo | Asado Finger Food |
-| ocasion | Cumpleaños |
-| direccion_evento | Av. ... |
-| ciudad_evento | CABA |
-| hora_inicio | 20:00 |
-| comensales | 100 |
-| menores | 15 |
-| notas | ... |
+Sheet names are capitalised: **Evento**, **Equipo**, **Prestaciones**.
+Field names are in Spanish (from the Access DB export). `excel_reader.py` maps them
+to internal English keys via `_EVENT_FIELD_MAP` — all other code uses internal names.
 
-### Sheet: "equipo" (table format, row 1 = headers)
-Columns: Profesion, Senioridad, Nombre, Apellido, Direccion, CP, Ciudad, Auto, Patente
-- **Auto** column: if not null, contains car make/model — this employee has a personal car
-- **Senioridad** values: "Senior" > "Medior" > "Junior"
-- There are always exactly 2 Parrilleros per event, never two Seniors
+### Sheet: "Evento" (field/value pairs — NO header row)
+| Excel field name (Spanish) | Internal key (English) | Notes |
+|---|---|---|
+| Menu | tipo | e.g. "Asado Finger Food" |
+| Evento | ocasion | e.g. "Cumpleaños" |
+| Locacion | direccion_evento | Full address string used for geocoding |
+| *(derived from Locacion)* | ciudad_evento | Last comma-separated token, trailing `.` stripped |
+| DescripcionLocacion | descripcion_locacion | Free-text venue description |
+| Empresa | empresa | Client company name (may be None) |
+| Observaciones * (podes ponerlas todas juntas?) | observaciones | List of strings; split on literal `\n` |
+| Fecha | fecha | Date string as returned by openpyxl |
+| Horario | hora_inicio | Formatted as "HH:MM" string (openpyxl returns datetime.time) |
+| Comensales carne | comensales | Integer |
+| Comensales veggie | comensales_veggie | Integer |
 
-### Sheet: "prestaciones" (table format, row 1 = headers)
+### Sheet: "Equipo" (table format, row 1 = headers)
+Columns: Profesion, Nombre, Apellido, Direccion, CP, Ciudad, Auto, Patente
+- **Seniority is embedded in Profesion** — there is no separate Senioridad column.
+  Examples: "Manager Senior", "Camarero Medior", "Parrillero Junior".
+- **Auto** column: non-empty, non-"NO" value → employee has a personal car (make/model).
+  "NO" (case-insensitive) is normalised to "" by the reader — same as empty.
+- Trailing `None` columns from the Access export are ignored (only first 8 read).
+- Rows where Profesion is None or empty are skipped (spacer/junk rows).
+- `\xa0` (non-breaking space) is stripped from all string values.
+- There are always exactly 2 Parrilleros per event, never two Seniors.
+
+### Sheet: "Prestaciones" (table format, row 1 = headers)
 Columns: Servicio, Detalle, Cantidad
+- Trailing `None` columns beyond the first 3 are ignored.
 
 **Excel column names stay in Spanish** — they come from the source file (Access DB).
 All other code is in English.
@@ -218,17 +230,14 @@ Do not build multi-vehicle routing logic.
 - `POST /assign-passengers` — assigns remaining staff to personal car + Uber groups after user confirms meeting point
 - `POST /validate-assignments` — validates full employee coverage; if valid, returns partial summary (no departure times) for preview modal
 - `POST /confirm-assignments` — safety re-validates, then returns complete summary including CP departure time; populates both draggable output blocks
-
-### TODO: Excel not finalised
-`_generar_excel.py` needs to be updated to include a "Senioridad" column
-with values Senior/Medior/Junior, and ensure exactly 2 Parrilleros per event
-with never two Seniors.
+- `POST /final-output` — final safety check + computes both departure times (CP and PE/PEA) + returns the two draggable map blocks (frescos_block + transport_block)
 
 ### TODO: Role lookup not implemented
 `determine_frescos_vehicle()` returns hardcoded role strings.
-Once Excel is finalised, replace with actual employee lookup:
-- Manager Senior → find by Profesion == "Manager" AND Senioridad == "Senior"
-- Jefe de Parrilla → find Parrillero with highest Senioridad
+Replace with actual employee lookup using the Profesion column:
+- Manager Senior → find employee where Profesion contains "Manager" AND "Senior"
+- Jefe de Parrilla → find employee where Profesion contains "Parrilla" (highest seniority)
+  Seniority order for matching: "Senior" > "Medior" > "Junior" (embedded in the Profesion string).
 
 ### TODO: Places API caching for polyline points
 `find_pickup_candidate()` and `find_pea_candidates()` decode the polyline and iterate over its
@@ -257,6 +266,16 @@ and a human-readable `message`.
 second_miniflete_result, departure_time_result)` — pure data assembly; produces
 the confirmation modal dict.  `chosen_meeting_point` and `departure_time_result`
 may be None when called from the validate step.
+
+`calculate_pe_departure_time(event_time_str, travel_seconds, event_duration_hours,
+prestaciones, comensales)` — departure time from the meeting point (PE or PEA).
+Same formula as CP departure minus LOADING_TIME_MINUTES.  Detects picada from
+prestaciones rows using `_row_contains()`.  Returns `departure_time` + full
+`breakdown` dict with every formula component explicit.
+
+`build_final_output(confirmed_summary, pe_departure, cp_departure)` — pure data
+assembly; reshapes the three pre-computed results into `frescos_block` and
+`transport_block` for the two draggable map modals.
 
 ### TODO: Frontend not started
 React + Vite + @vis.gl/react-google-maps + shadcn/ui.
