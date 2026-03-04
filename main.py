@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -39,6 +40,42 @@ app = FastAPI(
         "Modules: Excel data reading, staff geocoding, and meeting-point routing."
     ),
     version="0.2.0",
+)
+
+# -----------------------------------------------------------------------------
+# CORS middleware.
+#
+# Why CORS is needed:
+#   Browsers enforce the Same-Origin Policy: a page at origin A is not
+#   allowed to read a response from origin B unless origin B explicitly
+#   opts in via the Access-Control-Allow-Origin response header.  The
+#   frontend runs at http://localhost:5173 (Vite dev server) while the
+#   backend runs at http://127.0.0.1:8000 (uvicorn) — these are different
+#   origins (different host), so every browser request is blocked by
+#   default.  CORSMiddleware adds the required headers to every response.
+#
+# Why both localhost and 127.0.0.1?
+#   Even though localhost resolves to 127.0.0.1 at the DNS/hosts level,
+#   the browser compares origin strings literally — "localhost" and
+#   "127.0.0.1" are treated as distinct origins.  Depending on whether
+#   the developer opens the app as http://localhost:5173 or
+#   http://127.0.0.1:5173, a different Origin header is sent.  Listing
+#   both ensures neither variant is blocked.
+#
+# allow_credentials=False because we use no cookies or HTTP auth.
+# allow_methods=["GET", "POST"] matches exactly the HTTP methods our
+#   endpoints use — no DELETE, PUT, or PATCH exist in this app.
+# allow_headers=["Content-Type"] is the only non-simple header axios sends.
+# -----------------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 # -----------------------------------------------------------------------------
@@ -575,11 +612,12 @@ def endpoint_calculate_driver_route():
     summary="Evaluate alternative meeting point (PEA) candidates along the driver's direct route",
     description=(
         "Runs the full PEA evaluation pipeline: geocodes all staff, finds the nearest "
-        "meeting point (PE), computes the driver's direct route, searches for transit "
-        "hubs along that route, then evaluates each candidate against the remaining "
-        "staff pool using public-transport travel times.  Returns the best qualifying "
-        "PEA (if any), how many staff exclusively prefer it, and a proximity flag that "
-        "determines whether driver remuneration needs to be reviewed."
+        "meeting point (PE), computes the driver's base and direct routes, searches for "
+        "transit hubs along the direct route, then evaluates each candidate against the "
+        "remaining staff pool using public-transport travel times.  Returns up to 3 ranked "
+        "PEA candidates (if any) and both route polylines for the frontend to render.  "
+        "Pickup logic is separate — use POST /find-pickup on demand once the user selects "
+        "an employee from the map."
     ),
 )
 def endpoint_evaluate_pea():
@@ -592,26 +630,64 @@ def endpoint_evaluate_pea():
         4. Use the driver's geocoded coordinates (already set in step 2).
         5. Geocode the event venue address.
         6. Find the nearest meeting point (PE) to the event venue.
-        7. Calculate the driver's direct route (home → event, no stopover).
+        7. Calculate both driver routes (base: home→PE→event, direct: home→event).
+           Both polylines are returned so the frontend can render each scenario.
         8. Search for PEA candidates along the direct route polyline.
         9. Build the remaining staff pool by removing the frescos-assigned roles.
            TODO: replace the hardcoded role list with the result of /determine-frescos
            and /determine-second-miniflete once role lookup is implemented.
-       10. Evaluate the candidates against the pool and return the best result.
+       10. Evaluate the candidates against the pool and return ranked results.
+
+    Pickup logic is intentionally excluded here.  It runs on demand via
+    POST /find-pickup only when the user explicitly selects an employee on the
+    map — making every API call at this stage would be wasteful because the
+    user may never request a pickup, or may request it for a different employee
+    than the algorithm would suggest.
 
     Returns a JSON object:
     {
-        "pea_proposed":             true | false,
-        "best_candidate":           {
-            "name":    str,
-            "address": str,
-            "lat":     float,
-            "lng":     float,
-            "types":   list[str]
-        } | null,
-        "exclusively_prefer_count": int,
-        "pea_near_original":        true | false,
-        "remuneration_note":        str | null
+        "meeting_point": {
+            "name":             str,
+            "address":          str,
+            "lat":              float,
+            "lng":              float,
+            "duration_seconds": int,
+            "duration_text":    str,
+            "distance_meters":  int,
+            "distance_text":    str
+        },
+        "driver_routes": {
+            "base_route":   { "duration_seconds": int, "distance_meters": int,
+                              "encoded_polyline": str, "legs": list },
+            "direct_route": { "duration_seconds": int, "distance_meters": int,
+                              "encoded_polyline": str, "legs": list }
+        },
+        "pea_evaluation": {
+            "has_candidates": bool,
+            "candidates": [
+                {
+                    "name":                     str,
+                    "address":                  str,
+                    "lat":                      float,
+                    "lng":                      float,
+                    "median_transit_minutes":   float,
+                    "exclusively_prefer_count": int,
+                    "pea_near_original":        bool,
+                    "remuneration_note":        str | null,
+                    "staff_metrics": [
+                        {
+                            "employee_name":            str,
+                            "transit_to_candidate_min": float,
+                            "transit_to_pe_min":        float,
+                            "time_saved_min":           float,
+                            "exceeds_max_transit":      bool
+                        },
+                        ...
+                    ]
+                },
+                ...  # up to 3, ranked by median_transit_minutes ascending
+            ]
+        }
     }
     """
     data = _load_excel()
@@ -670,11 +746,15 @@ def endpoint_evaluate_pea():
         raise HTTPException(status_code=422, detail=str(exc))
 
     # -------------------------------------------------------------------------
-    # Step 5: compute the driver's direct route (home → event, no stopover).
-    # The direct route polyline is what we search for transit hub candidates —
-    # we want stations the driver would naturally pass, not detour to.
+    # Step 5: compute both driver routes.
+    # The base route (home → PE → event) is the path the driver takes when the
+    # original PE is confirmed.  The direct route (home → event, no stopover)
+    # is used to search for PEA candidates — we want stations the driver would
+    # naturally pass, not ones that require a detour.
+    # Both polylines are returned so the frontend can render each scenario and
+    # pass the correct one to POST /find-pickup when the user requests it.
     # -------------------------------------------------------------------------
-    routes       = calculate_driver_route(driver_coords, meeting_point, event_coords)
+    routes          = calculate_driver_route(driver_coords, meeting_point, event_coords)
     direct_polyline = routes["direct_route"]["encoded_polyline"]
 
     # -------------------------------------------------------------------------
@@ -688,56 +768,24 @@ def endpoint_evaluate_pea():
     # /determine-frescos and /determine-second-miniflete once role lookup is
     # implemented.  For now we use the two default frescos roles.
     # -------------------------------------------------------------------------
-    assigned_roles    = ["Manager Senior", "Jefe de Parrilla Senior"]
-    remaining_result  = get_remaining_pool(data["staff"], assigned_roles)
-    remaining_pool    = remaining_result["remaining_pool"]
+    assigned_roles   = ["Manager Senior", "Jefe de Parrilla Senior"]
+    remaining_result = get_remaining_pool(data["staff"], assigned_roles)
+    remaining_pool   = remaining_result["remaining_pool"]
 
     # -------------------------------------------------------------------------
-    # Step 8: evaluate PEA candidates and select the best qualifying one.
+    # Step 8: evaluate PEA candidates and return ranked results.
     # -------------------------------------------------------------------------
     pea_result = evaluate_pea_candidates(candidates, remaining_pool, meeting_point)
 
-    # -------------------------------------------------------------------------
-    # Step 9: evaluate pickup point options under each meeting-point scenario.
-    #
-    # We run find_pickup_candidate() twice — once per scenario — because the
-    # valid pickup locations depend on both which route the driver takes and
-    # which meeting point is used as the reference for transit-time savings.
-    #
-    # Scenario A (PE chosen): driver follows the BASE route (home → PE → event);
-    #   pickup candidates lie along that route; transit savings measured vs PE.
-    # Scenario B (PEA chosen): driver follows the DIRECT route (home → event);
-    #   pickup candidates lie along that route; transit savings measured vs PEA.
-    #   Only computed when pea_proposed is True; otherwise set to None.
-    # -------------------------------------------------------------------------
-    pickup_if_pe_chosen = find_pickup_candidate(
-        route_polyline=routes["base_route"]["encoded_polyline"],
-        remaining_pool=remaining_pool,
-        meeting_point=meeting_point,
-    )
-
-    if pea_result["pea_proposed"]:
-        # pea_result["best_candidate"] has "lat", "lng", "name", "address" —
-        # compatible with the meeting_point interface expected by find_pickup_candidate().
-        pickup_if_pea_chosen = find_pickup_candidate(
-            route_polyline=routes["direct_route"]["encoded_polyline"],
-            remaining_pool=remaining_pool,
-            meeting_point=pea_result["best_candidate"],
-        )
-    else:
-        pickup_if_pea_chosen = None
-
-    # Merge the PEA evaluation result with both pickup scenarios into one response.
-    # The frontend uses all three to render the map and let the user decide.
     return {
-        **pea_result,
-        "pickup_if_pe_chosen":  pickup_if_pe_chosen,
-        "pickup_if_pea_chosen": pickup_if_pea_chosen,
+        "meeting_point":  meeting_point,
+        "driver_routes":  routes,
+        "pea_evaluation": pea_result,
     }
 
 
 # -----------------------------------------------------------------------------
-# /assign-passengers request body model
+# /assign-passengers request body model (also reused by /find-pickup)
 # -----------------------------------------------------------------------------
 
 class MeetingPointInput(BaseModel):
@@ -745,10 +793,163 @@ class MeetingPointInput(BaseModel):
     The meeting point the user has confirmed (PE or PEA).
     Mirrors the lat/lng/name shape returned by nearest_meeting_point() and
     evaluate_pea_candidates(), so the frontend can pass either result directly.
+    Reused by FindPickupRequest and AssignPassengersRequest.
     """
     name: str
     lat:  float
     lng:  float
+
+
+# =============================================================================
+# Step 7 — on-demand pickup search
+# =============================================================================
+
+class FindPickupRequest(BaseModel):
+    """
+    Body for POST /find-pickup.
+
+    employee_name:  Full name ("Nombre Apellido") of the employee the user
+                    selected on the map.  Used to look up the employee in the
+                    geocoded staff list so that their coordinates come from the
+                    single source of truth (the Excel), not from the frontend.
+
+    route_polyline: The encoded polyline of the driver's chosen route.
+                    The frontend supplies this because only it knows which
+                    scenario the user selected:
+                      - PE chosen  → base route polyline  (home → PE → event)
+                      - PEA chosen → direct route polyline (home → event)
+                    The backend has no persistent state between requests, so
+                    it cannot infer the active scenario on its own.
+
+    meeting_point:  The confirmed PE or PEA.  Transit-time savings for the
+                    employee are measured against this point.
+    """
+    employee_name:  str
+    route_polyline: str
+    meeting_point:  MeetingPointInput
+
+
+@app.post(
+    "/find-pickup",
+    summary="Find pickup venue options for a specific employee along the driver's route",
+    description=(
+        "Called on demand when the user opens the map context menu for an employee "
+        "and selects 'Find pickup on route'.  Geocodes the full staff list, locates "
+        "the named employee, then searches for transit-hub pickup venues along the "
+        "provided route polyline using the Distance Matrix and Places APIs.  "
+        "Returns transit-time data and candidate venues so the manager can decide "
+        "whether to offer the pickup.  Always returns 200 — if no result is possible "
+        "the response has pickup_candidate: null with an explanatory reason string."
+    ),
+)
+def endpoint_find_pickup(body: FindPickupRequest):
+    """
+    Why this endpoint is on-demand rather than called automatically:
+        Pickup evaluation makes two external API calls (Distance Matrix +
+        Places API) per employee.  Running it automatically for every candidate
+        on every page load would burn quota unnecessarily — most events will
+        not use a pickup at all.  Instead, the frontend calls this endpoint
+        only when the user explicitly opens the context menu and requests it.
+
+    Why the polyline comes from the frontend:
+        The backend is stateless.  After /evaluate-pea returns, it retains no
+        memory of which scenario the user is considering.  Only the frontend
+        knows whether the user selected the PE or PEA as the confirmed meeting
+        point, and therefore which route polyline is the active one.  The
+        frontend passes the correct polyline back so the search targets the
+        route the driver will actually take.
+
+    Why we re-geocode from the Excel rather than accepting the full employee dict:
+        Accepting arbitrary employee data from the frontend would create a
+        second source of truth and open the door to stale or tampered data.
+        Re-reading from the Excel keeps the backend authoritative: coordinates
+        always come from the same geocoding call we made during /evaluate-pea,
+        and any data-entry error in the Excel is caught consistently.
+
+    Workflow:
+        1. Read the Excel and geocode all staff.
+        2. Find the employee whose "Nombre Apellido" matches employee_name.
+           Raise 422 if no match is found.
+        3. Call find_pickup_candidate() with the matched employee, the
+           route polyline, and the meeting point from the request body.
+        4. Return the result directly — pickup_candidate: null is a valid
+           outcome (e.g. no transit route exists) and is not an HTTP error.
+
+    Returns a JSON object — see find_pickup_candidate() for the full schema.
+    Two possible shapes:
+
+    When a result is available (even with empty place_options):
+    {
+        "pickup_candidate": {
+            "employee":                       { ... },
+            "cross_point":                    { "lat": float, "lng": float },
+            "transit_time_to_pickup_minutes": int,
+            "transit_time_to_pe_minutes":     int,
+            "time_saved_minutes":             int,
+            "transit_warning":                bool,
+            "time_saving_warning":            bool,
+            "place_options":                  [ { ... }, ... ]
+        },
+        "reason": null
+    }
+
+    When no result is possible (genuine impossibility):
+    {
+        "pickup_candidate": null,
+        "reason": str
+    }
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: geocode all staff.
+    # We always geocode the full list rather than only the requested employee
+    # because geocode_staff() enriches dicts in-place and the function is
+    # designed to batch-process the list.  The extra geocoding calls are
+    # inexpensive relative to the Distance Matrix + Places calls that follow,
+    # and it keeps this endpoint consistent with /evaluate-pea.
+    # -------------------------------------------------------------------------
+    geocode_staff(data["staff"])
+
+    # -------------------------------------------------------------------------
+    # Step 2: find the matching employee.
+    # We match on "Nombre Apellido" — the same format the frontend uses to
+    # identify employees on the map and the format returned by /geocode-staff.
+    # -------------------------------------------------------------------------
+    full_name = body.employee_name.strip()
+    matched_employee = None
+    for emp in data["staff"]:
+        emp_full_name = f"{emp.get('Nombre', '')} {emp.get('Apellido', '')}".strip()
+        if emp_full_name == full_name:
+            matched_employee = emp
+            break
+
+    if matched_employee is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Employee '{full_name}' not found in staff list.",
+        )
+
+    # -------------------------------------------------------------------------
+    # Step 3: convert the Pydantic meeting-point model to a plain dict.
+    # find_pickup_candidate() expects the same shape as the dicts returned by
+    # nearest_meeting_point() — {"name": str, "lat": float, "lng": float}.
+    # -------------------------------------------------------------------------
+    meeting_point_dict = {
+        "name": body.meeting_point.name,
+        "lat":  body.meeting_point.lat,
+        "lng":  body.meeting_point.lng,
+    }
+
+    # -------------------------------------------------------------------------
+    # Step 4: run the pickup search and return the result directly.
+    # pickup_candidate: null is a valid response (impossibility, not an error).
+    # -------------------------------------------------------------------------
+    return find_pickup_candidate(
+        route_polyline=body.route_polyline,
+        employee=matched_employee,
+        meeting_point=meeting_point_dict,
+    )
 
 
 class AssignPassengersRequest(BaseModel):

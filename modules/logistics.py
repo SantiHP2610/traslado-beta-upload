@@ -10,6 +10,7 @@
 # =============================================================================
 
 import math
+import statistics
 import unicodedata
 from datetime import datetime, timedelta
 
@@ -29,7 +30,6 @@ from config import (
     MENU_KEYWORDS,
     PEA_EXCLUSIVE_DIFF_MINUTES,
     PEA_MAX_TRANSIT_MINUTES,
-    PEA_MIN_EXCLUSIVE_PREFERENCE,
     PEA_RADIUS_KM,
     MAX_PASSENGERS_PER_CAR,
     MAX_PASSENGERS_UBER,
@@ -700,45 +700,52 @@ def evaluate_pea_candidates(
     meeting_point: dict,
 ) -> dict:
     """
-    Evaluates PEA (Punto de Encuentro Alternativo) candidates against the
-    remaining staff pool and the original meeting point, and selects the
-    best candidate to propose to the user — if one qualifies.
+    Evaluates ALL PEA (Punto de Encuentro Alternativo) candidates against the
+    remaining staff pool and the original meeting point, ranks them, and
+    returns the top 3 so the user can choose on the map.
 
-    PEA proposal rules (ALL must hold for a candidate to qualify):
-      1. ALL staff in remaining_pool can reach the candidate in
-         ≤ PEA_MAX_TRANSIT_MINUTES (25 min) by public transit.
-      2. AT LEAST PEA_MIN_EXCLUSIVE_PREFERENCE (2) staff "exclusively prefer"
-         the candidate, defined as:
-             transit_time_to_original_PE − transit_time_to_candidate
-             ≥ PEA_EXCLUSIVE_DIFF_MINUTES (20 min)
+    Why top-3 instead of a single winner?
+        The old approach applied hard gates that silently discarded many valid
+        options.  Showing the three best candidates lets the manager apply
+        contextual knowledge (familiarity with a station, parking near one,
+        etc.) that the algorithm cannot capture.
 
     Evaluation strategy — one Distance Matrix call per candidate:
-        Origins:      each employee in remaining_pool who has coordinates (N rows)
+        Origins:      each geocoded employee in remaining_pool (N rows)
         Destinations: [candidate, meeting_point]  (2 columns)
         Mode:         "transit"
         → Returns an N×2 matrix.
-          Column 0 = each employee's transit time to the candidate PEA.
-          Column 1 = each employee's transit time to the original meeting point.
-        Batching both destinations into one call avoids N×2 separate requests
-        per candidate, keeping API usage proportional to len(candidates).
+          Column 0 = transit time from each employee to the candidate PEA.
+          Column 1 = transit time from each employee to the original PE.
+        Batching both destinations into one call keeps API calls proportional
+        to len(candidates), not len(candidates) × len(staff).
 
-    Best-candidate selection:
-        Among all qualifying candidates, the one with the highest
-        exclusively_prefer_count is selected.  Ties are broken by order of
-        appearance in the candidates list (i.e. first qualifying candidate
-        encountered with that count wins).
+    Validity filter:
+        A candidate is skipped entirely if ANY employee has status != "OK" for
+        either leg — this means no transit route was found and there is nothing
+        useful to show the user for that employee.
 
-    Proximity flag (pea_near_original):
-        Straight-line distance from the selected PEA to the original meeting
-        point, computed via _haversine_distance() — no extra API call needed.
-        ≤ PEA_RADIUS_KM (10 km) → "optimal"      (driver pay reference unchanged)
-        > PEA_RADIUS_KM          → "consult_remuneration" (pay start point unclear)
+    Ranking metric — MEDIAN transit time to candidate:
+        Median is used instead of mean to limit the influence of one outlier
+        employee who lives far from everything.  A candidate is good if the
+        majority of the team can reach it quickly, regardless of one edge case.
+
+    Per-employee informational fields (not gates):
+        - exceeds_max_transit: True if transit_to_candidate > PEA_MAX_TRANSIT_MINUTES.
+          Shown on the map as a warning badge — lets manager spot who would
+          have a long journey without automatically disqualifying the candidate.
+        - exclusively_prefer_count: number of staff who save ≥ PEA_EXCLUSIVE_DIFF_MINUTES
+          by going to this PEA instead of the original PE.  Informational only.
+
+    Proximity flag per candidate:
+        Straight-line distance from PEA to original PE via _haversine_distance().
+        ≤ PEA_RADIUS_KM (10 km) → pea_near_original = True  (driver pay unchanged)
+        > PEA_RADIUS_KM          → pea_near_original = False (remuneration_note set)
 
     Parameters:
         candidates     (list[dict]): Transit hub candidates from find_pea_candidates().
                                      Each must have "lat", "lng", "name", "address".
-        remaining_pool (list[dict]): Staff who still need a vehicle, from
-                                     get_remaining_pool()["remaining_pool"].
+        remaining_pool (list[dict]): Staff who still need a vehicle.
                                      Each must have a "coordinates" key added by
                                      geocode_staff() ({"lat": ..., "lng": ...}).
         meeting_point  (dict):       The original PE from nearest_meeting_point().
@@ -746,58 +753,70 @@ def evaluate_pea_candidates(
 
     Returns:
         dict: {
-            "pea_proposed":             bool,        # True if a qualifying PEA was found
-            "best_candidate":           dict | None, # the winning candidate dict, or None
-            "exclusively_prefer_count": int,         # how many staff exclusively prefer the PEA;
-                                                     # 0 when pea_proposed is False
-            "pea_near_original":        bool,        # True if PEA is within PEA_RADIUS_KM of PE
-            "remuneration_note":        str | None,  # user-facing note when PEA is far from PE
+            "candidates": [
+                {
+                    "name":                     str,
+                    "address":                  str,
+                    "lat":                      float,
+                    "lng":                      float,
+                    "median_transit_minutes":   float,
+                    "exclusively_prefer_count": int,       # informational
+                    "pea_near_original":        bool,
+                    "remuneration_note":        str | None,
+                    "staff_metrics": [
+                        {
+                            "employee_name":             str,   # "Nombre Apellido"
+                            "transit_to_candidate_min":  float,
+                            "transit_to_pe_min":         float,
+                            "time_saved_min":            float,
+                            "exceeds_max_transit":       bool,
+                        },
+                        ...
+                    ]
+                },
+                ...  # up to 3 candidates, ranked by median_transit_minutes ascending
+            ],
+            "has_candidates": bool  # True if at least one valid candidate was found
         }
     """
     # -------------------------------------------------------------------------
     # Early exits: nothing to evaluate if there are no candidates or no staff.
     # -------------------------------------------------------------------------
-    _empty_result = {
-        "pea_proposed":             False,
-        "best_candidate":           None,
-        "exclusively_prefer_count": 0,
-        "pea_near_original":        False,
-        "remuneration_note":        None,
-    }
+    _empty = {"candidates": [], "has_candidates": False}
 
     if not candidates or not remaining_pool:
-        return _empty_result
+        return _empty
 
-    # Extract each employee's coordinates for the Distance Matrix origins.
-    # Employees whose address failed to geocode are skipped — this guard
-    # prevents a KeyError from breaking the whole evaluation if one address
-    # was unresolvable.
-    staff_coords = [
-        member["coordinates"]
-        for member in remaining_pool
-        if member.get("coordinates") is not None
+    # Build parallel lists of coordinates and display names for geocoded staff.
+    # We keep them in the same order so index i in geocoded_members corresponds
+    # to row i in the Distance Matrix response.
+    geocoded_members = [
+        m for m in remaining_pool if m.get("coordinates") is not None
+    ]
+    if not geocoded_members:
+        return _empty
+
+    staff_coords = [m["coordinates"] for m in geocoded_members]
+    staff_names  = [
+        f"{m.get('Nombre', '')} {m.get('Apellido', '')}".strip()
+        for m in geocoded_members
     ]
 
-    if not staff_coords:
-        return _empty_result
-
-    # The original meeting point is always the second destination (column 1) in
-    # every matrix call, so we build it once and reuse it for all candidates.
+    # The original meeting point is always the second destination (column 1)
+    # in every matrix call — build it once and reuse across all candidates.
     mp_destination = {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}
 
     # -------------------------------------------------------------------------
-    # Evaluate each candidate.
-    # We keep track of the best qualifying candidate seen so far and its score.
+    # Evaluate every candidate and collect the valid ones.
     # -------------------------------------------------------------------------
-    best_candidate              = None
-    best_exclusively_prefer_count = 0
+    valid_candidates: list[dict] = []
 
     for candidate in candidates:
         candidate_destination = {"lat": candidate["lat"], "lng": candidate["lng"]}
 
-        # One Distance Matrix call: N staff × 2 destinations (candidate + original PE).
-        # "transit" mode returns public-transport travel times — the metric that
-        # matters for staff who travel to meeting points independently of the car.
+        # One Distance Matrix call: N staff × 2 destinations.
+        # "transit" returns public-transport travel times — the metric that
+        # matters for staff travelling to the meeting point independently.
         matrix = calculate_distances(
             origins=staff_coords,
             destinations=[candidate_destination, mp_destination],
@@ -808,293 +827,413 @@ def evaluate_pea_candidates(
 
         # -------------------------------------------------------------------------
         # Per-employee analysis.
-        # all_can_reach:            True until we find one employee who can't make it.
-        # exclusively_prefer_count: incremented for each employee who saves enough
-        #                           time by going to the candidate instead of the PE.
+        # We build staff_metrics as we go; if any employee has no transit route
+        # (status != "OK") we discard the entire candidate — showing a partial
+        # picture would mislead the manager about who can actually attend.
         # -------------------------------------------------------------------------
-        all_can_reach            = True
-        exclusively_prefer_count = 0
+        staff_metrics: list[dict] = []
+        skip_candidate = False
 
-        for row in rows:
+        for i, row in enumerate(rows):
             elements = row.get("elements", [])
 
-            # Column 0: employee → candidate PEA
-            # Column 1: employee → original meeting point
-            # If the API returns fewer than 2 elements, the data is incomplete —
-            # treat the candidate as unreachable to avoid incorrect conclusions.
+            # The matrix returns 2 elements per row (one per destination).
+            # Fewer than 2 means the API response is malformed — skip the candidate.
             if len(elements) < 2:
-                all_can_reach = False
+                skip_candidate = True
                 break
 
             elem_to_candidate = elements[0]
             elem_to_meeting   = elements[1]
 
-            # Both legs must be OK; ZERO_RESULTS means no transit route was found.
+            # ZERO_RESULTS or any non-OK status means no transit route exists for
+            # this employee to one of the two destinations — skip the whole candidate.
             if elem_to_candidate["status"] != "OK" or elem_to_meeting["status"] != "OK":
-                all_can_reach = False
+                skip_candidate = True
                 break
 
-            # Convert seconds → minutes for comparison against config thresholds.
-            # Integer division would lose precision; float division is safe here
-            # because the thresholds are whole-minute boundaries.
-            minutes_to_candidate = elem_to_candidate["duration"]["value"] / 60
-            minutes_to_meeting   = elem_to_meeting["duration"]["value"]   / 60
+            # Convert seconds → float minutes.  Float preserves sub-minute precision
+            # for the median calculation; thresholds in config are whole-minute values
+            # so the comparison is still accurate.
+            transit_to_candidate_min = elem_to_candidate["duration"]["value"] / 60
+            transit_to_pe_min        = elem_to_meeting["duration"]["value"]   / 60
+            time_saved_min           = transit_to_pe_min - transit_to_candidate_min
 
-            # Rule 1: every employee must be able to reach the candidate in time
-            if minutes_to_candidate > PEA_MAX_TRANSIT_MINUTES:
-                all_can_reach = False
-                break
+            staff_metrics.append({
+                "employee_name":            staff_names[i],
+                "transit_to_candidate_min": transit_to_candidate_min,
+                "transit_to_pe_min":        transit_to_pe_min,
+                "time_saved_min":           time_saved_min,
+                # Flag shown on the map as a warning badge — not a disqualifier.
+                # Lets the manager see at a glance who would have a long journey.
+                "exceeds_max_transit":      transit_to_candidate_min > PEA_MAX_TRANSIT_MINUTES,
+            })
 
-            # Rule 2: count employees who strongly prefer the candidate.
-            # "Exclusively prefers" means the savings are large enough that
-            # going to the original PE would be a significant burden for them.
-            time_saved = minutes_to_meeting - minutes_to_candidate
-            if time_saved >= PEA_EXCLUSIVE_DIFF_MINUTES:
-                exclusively_prefer_count += 1
-
-        # A candidate is disqualified if any employee cannot reach it, or if
-        # fewer staff than the threshold exclusively prefer it over the original PE.
-        if not all_can_reach:
+        if skip_candidate:
             continue
 
-        if exclusively_prefer_count < PEA_MIN_EXCLUSIVE_PREFERENCE:
-            continue
+        # -------------------------------------------------------------------------
+        # Ranking metric: MEDIAN transit time to candidate across all employees.
+        # statistics.median() handles both odd and even list lengths correctly
+        # (for even counts it returns the mean of the two middle values).
+        # -------------------------------------------------------------------------
+        transit_times    = [m["transit_to_candidate_min"] for m in staff_metrics]
+        median_transit   = statistics.median(transit_times)
 
-        # This candidate qualifies — update the best if it has a higher score.
-        # Ties are resolved by order in candidates list (first wins).
-        if exclusively_prefer_count > best_exclusively_prefer_count:
-            best_exclusively_prefer_count = exclusively_prefer_count
-            best_candidate                = candidate
+        # Informational count: employees who strongly prefer this PEA over the PE.
+        # "Exclusively prefers" = transit to PE minus transit to PEA ≥ threshold.
+        exclusively_prefer_count = sum(
+            1 for m in staff_metrics
+            if m["time_saved_min"] >= PEA_EXCLUSIVE_DIFF_MINUTES
+        )
 
-    # -------------------------------------------------------------------------
-    # Proximity check for the winning candidate.
-    # Haversine gives us a cost-free straight-line distance from the PEA to
-    # the original PE — accurate enough for the 10 km threshold.
-    # -------------------------------------------------------------------------
-    pea_proposed = best_candidate is not None
-
-    if pea_proposed:
-        distance_km   = _haversine_distance(
-            best_candidate["lat"], best_candidate["lng"],
-            meeting_point["lat"],  meeting_point["lng"],
+        # -------------------------------------------------------------------------
+        # Proximity flag: straight-line distance from PEA to original PE.
+        # Haversine is exact enough for a 10 km threshold with no API cost.
+        # -------------------------------------------------------------------------
+        distance_km       = _haversine_distance(
+            candidate["lat"], candidate["lng"],
+            meeting_point["lat"], meeting_point["lng"],
         )
         pea_near_original = distance_km <= PEA_RADIUS_KM
-    else:
-        pea_near_original = False
+
+        remuneration_note = (
+            None if pea_near_original
+            else (
+                f"This PEA is more than {PEA_RADIUS_KM} km from the original "
+                f"meeting point ({meeting_point['name']}). "
+                f"Driver pay start point should be reviewed with remuneration."
+            )
+        )
+
+        valid_candidates.append({
+            "name":                     candidate["name"],
+            "address":                  candidate["address"],
+            "lat":                      candidate["lat"],
+            "lng":                      candidate["lng"],
+            "median_transit_minutes":   median_transit,
+            "exclusively_prefer_count": exclusively_prefer_count,
+            "pea_near_original":        pea_near_original,
+            "remuneration_note":        remuneration_note,
+            "staff_metrics":            staff_metrics,
+        })
 
     # -------------------------------------------------------------------------
-    # Remuneration note: only relevant when a far PEA is proposed, because
-    # the driver's paid kilometres typically start from the original meeting
-    # point.  A distant PEA could change that reference point.
+    # Rank valid candidates by median transit time (ascending) and return top 3.
+    # Ascending order means the first candidate is the easiest to reach for
+    # most employees — a natural default for the map highlight.
     # -------------------------------------------------------------------------
-    if pea_proposed and not pea_near_original:
-        remuneration_note = (
-            f"The selected PEA is more than {PEA_RADIUS_KM} km from the "
-            f"original meeting point ({meeting_point['name']}). "
-            f"Driver pay start point should be reviewed with remuneration."
-        )
-    else:
-        remuneration_note = None
+    valid_candidates.sort(key=lambda c: c["median_transit_minutes"])
+    top_candidates = valid_candidates[:3]
 
     return {
-        "pea_proposed":             pea_proposed,
-        "best_candidate":           best_candidate,
-        "exclusively_prefer_count": best_exclusively_prefer_count,
-        "pea_near_original":        pea_near_original,
-        "remuneration_note":        remuneration_note,
+        "candidates":     top_candidates,
+        "has_candidates": len(top_candidates) > 0,
+    }
+
+
+def get_pickup_highlight(
+    remaining_pool: list[dict],
+    route_polyline: str,
+    meeting_point:  dict,
+) -> dict:
+    """
+    Identifies the employee most likely to benefit from a pickup and the
+    point on the driver's route where the car passes closest to their home.
+    Pure geometry — no API calls made.
+
+    This is called when the map first loads to give the user a visual hint
+    before they run the full `find_pickup_candidate()` pipeline (which makes
+    Distance Matrix and Places API calls).  The highlight is a cheap,
+    instant approximation: it narrows attention to the right person and the
+    right stretch of road without committing to any route deviation.
+
+    ── Why the farthest-from-PE employee? ──────────────────────────────────
+    The remaining pool will be split later: the majority walk or take transit
+    to the meeting point, and one employee may be picked up along the way.
+    The most useful pickup is the one that saves the most transit time.
+    Transit time correlates strongly with distance to the meeting point, so
+    the employee who lives farthest from the PE is the one for whom a pickup
+    detour pays off the most — they are the highest-value candidate.
+
+    ── Why Haversine instead of the Distance Matrix API? ───────────────────
+    Haversine gives exact great-circle (straight-line) distances with no
+    network latency, no quota cost, and no failure mode.  For the purpose of
+    ranking employees by proximity and finding the closest polyline point, the
+    difference between straight-line and road distance is negligible: we are
+    not computing a route here, only selecting a reference point on the
+    polyline to centre the map highlight on.  The Distance Matrix API is
+    reserved for the later step where precise transit times are needed.
+
+    ── What is the cross-point? ────────────────────────────────────────────
+    The encoded polyline is a compressed sequence of lat/lng samples along
+    the driver's road path.  Decoding it yields those sample points.  The
+    cross-point is the sample closest (by Haversine) to the employee's home.
+    Geometrically it is the polyline vertex nearest to the candidate — the
+    spot on the road where the driver "crosses" closest to that employee.
+    It is not necessarily on the shortest path to the employee's home; it is
+    the point that minimises the straight-line detour the driver would have
+    to make.  The frontend places a pin here so the manager can immediately
+    see whether the crossing feels reasonable before triggering the full
+    Places API search.
+
+    Parameters:
+        remaining_pool (list[dict]): Staff not yet assigned to a vehicle.
+                                     Each employee must have a "coordinates"
+                                     key ({lat, lng}) added by geocode_staff().
+        route_polyline (str):        Encoded polyline of the chosen route
+                                     (base route for PE, direct route for PEA).
+        meeting_point  (dict):       The chosen PE or PEA; must have "lat" / "lng".
+
+    Returns:
+        dict: {
+            "highlight_candidate": {
+                "employee":    dict,                        # full employee dict
+                "cross_point": {"lat": float, "lng": float}
+            },
+            "reason": None
+        }
+        — or, when no candidate can be identified —
+        {
+            "highlight_candidate": None,
+            "reason": str   # explains why
+        }
+    """
+    # ── Guard: pool must be non-empty ────────────────────────────────────
+    if not remaining_pool:
+        return {
+            "highlight_candidate": None,
+            "reason": "Remaining pool is empty — no employees to evaluate.",
+        }
+
+    # ── Guard: polyline must decode to at least one point ────────────────
+    all_points = polyline_lib.decode(route_polyline) if route_polyline else []
+    if not all_points:
+        return {
+            "highlight_candidate": None,
+            "reason": "Route polyline is empty — cannot determine cross-point.",
+        }
+
+    mp_lat = meeting_point["lat"]
+    mp_lng = meeting_point["lng"]
+
+    # ── Step 1: sort pool by Haversine distance to meeting_point ─────────
+    # Employees without coordinates are pushed to the end with inf distance
+    # so they do not accidentally become the selected candidate.
+    def _dist_to_mp(member: dict) -> float:
+        coords = member.get("coordinates")
+        if not coords:
+            return float("inf")
+        return _haversine_distance(
+            coords["lat"], coords["lng"], mp_lat, mp_lng
+        )
+
+    sorted_pool = sorted(remaining_pool, key=_dist_to_mp)
+
+    # The farthest employee is the last after ascending sort.
+    candidate = sorted_pool[-1]
+    candidate_coords = candidate.get("coordinates")
+
+    if not candidate_coords:
+        return {
+            "highlight_candidate": None,
+            "reason": (
+                "The farthest employee from the meeting point has no geocoded "
+                "coordinates — cannot compute a cross-point."
+            ),
+        }
+
+    cand_lat = candidate_coords["lat"]
+    cand_lng = candidate_coords["lng"]
+
+    # ── Step 2: find the polyline point closest to the candidate's home ──
+    # We iterate every decoded point and track the minimum Haversine distance.
+    # This is an O(n) scan — polylines can have hundreds of points but the
+    # operation is microseconds per point with no I/O, so no sampling needed.
+    best_dist  = float("inf")
+    cross_lat  = all_points[0][0]
+    cross_lng  = all_points[0][1]
+
+    for lat, lng in all_points:
+        dist = _haversine_distance(lat, lng, cand_lat, cand_lng)
+        if dist < best_dist:
+            best_dist = dist
+            cross_lat = lat
+            cross_lng = lng
+
+    return {
+        "highlight_candidate": {
+            "employee":    candidate,
+            "cross_point": {"lat": cross_lat, "lng": cross_lng},
+        },
+        "reason": None,
     }
 
 
 def find_pickup_candidate(
-    route_polyline:  str,
-    remaining_pool:  list[dict],
-    meeting_point:   dict,
+    route_polyline: str,
+    employee:       dict,
+    meeting_point:  dict,
 ) -> dict:
     """
-    Searches for a single valid pickup point along the driver's route for the
-    employee most likely to benefit from one — reducing their commute to the
-    event without adding a detour for the driver.
+    Searches for pickup venue options along the driver's route for a specific
+    employee the user has selected on the map, then returns the transit-time
+    data and candidate places so the manager can decide whether to confirm
+    the pickup.
 
-    Why only one pickup per trip?
-        The driver's route is fixed; adding multiple stops creates scheduling
-        complexity and risks delays at the event.  One carefully chosen pickup
-        is the ceiling of what this system proposes.
+    ── Relationship to get_pickup_highlight() ──────────────────────────────
+    get_pickup_highlight() is a cheap, geometry-only pre-flight that runs when
+    the map loads: it identifies who the likely pickup candidate is and pins
+    the cross-point so the manager sees an immediate visual cue.
 
-    Overview of the five-step algorithm:
+    This function is called ON DEMAND — only when the user explicitly opens
+    the map context menu and selects "Find pickup on route" for a specific
+    employee.  It makes real API calls (Distance Matrix + Places API) and is
+    therefore intentionally deferred until the user asks for it.
 
-        Step 1 — Assign the (pool_size − 1) employees closest to the meeting
-                 point directly to the PE.  A pickup is only valuable for an
-                 employee whose home is far from the PE but happens to lie near
-                 the driver's route.  The one employee farthest from the PE is
-                 always the best pickup candidate; everyone else goes to the PE.
+    ── Overview of the four-step algorithm ─────────────────────────────────
+        Step 1 — Cross-point (geometry only).
+                 Decode the route polyline; find the vertex closest to the
+                 employee's home via Haversine.  This is where the driver
+                 passes nearest to that employee.
 
-        Step 2 — For the single remaining employee (the one farthest from the
-                 PE), find their closest decoded polyline point (cross-point):
-                 the location where the driver naturally passes closest to that
-                 employee's home.
+        Step 2 — Transit-time check (Distance Matrix API).
+                 One call, 1 origin × 2 destinations: employee home →
+                 cross-point AND employee home → meeting point.  Returns
+                 the time saved by going to the cross-point instead of the PE.
 
-        Step 3 — Verify that the pickup is actually worthwhile for the employee
-                 by comparing their public-transit times to the cross-point vs
-                 to the original meeting point.  Both a maximum transit time and
-                 a minimum time-saving threshold must be met.
+        Step 3 — Places API search.
+                 Search for pickup-suitable venues within PICKUP_MAX_DETOUR_METERS
+                 of the cross-point.
 
-        Step 4 — Search the Places API (New) for gas stations and restaurants
-                 within PICKUP_MAX_DETOUR_METERS of the cross-point.  These are
-                 the candidate venues for the physical pickup location.
+        Step 4 — On-route filter.
+                 Keep only venues whose minimum distance to any polyline point
+                 is within PICKUP_MAX_DETOUR_METERS.  Sort by distance to
+                 cross-point; return top PICKUP_TOP_CANDIDATES.
 
-        Step 5 — Filter the Places API results to keep only venues that lie
-                 within PICKUP_MAX_DETOUR_METERS of at least one decoded polyline
-                 point.  This removes venues on side streets that would force the
-                 driver off the main route.
+    ── Why the threshold gates were removed ────────────────────────────────
+    The old version returned None when transit_to_cross exceeded
+    PICKUP_MAX_TRANSIT_MINUTES or when time_saved was below
+    PICKUP_MIN_TIME_SAVING_MINUTES.  Those were threshold judgments — opinions
+    about whether the pickup is "worth it".  That judgment now belongs to the
+    manager who is actively looking at the map.  The thresholds are still
+    computed and surfaced as boolean warning flags so the manager has the
+    relevant information, but they no longer suppress the result.
+
+    In contrast, the remaining early returns (no coordinates, empty polyline,
+    non-OK Distance Matrix status) are kept because they indicate genuine
+    impossibility: there is literally nothing to show the user.  Returning
+    a result with no data would be misleading; returning None with a reason
+    lets the frontend display an actionable error message instead.
 
     Parameters:
-        route_polyline (str):      Encoded polyline of the driver's route
-                                   (base route for PE scenario; direct route for
-                                   PEA scenario).  The polyline is decoded and
-                                   used as the geometric reference for all
-                                   distance calculations.
-        remaining_pool (list[dict]): Staff not yet assigned to a vehicle.
-                                   Each employee must have a "coordinates" key
-                                   ({"lat": ..., "lng": ...}) added by
-                                   geocode_staff().
-        meeting_point (dict):      The PE (or PEA) that will be the staging
-                                   area.  Must have "lat" and "lng" keys.
+        route_polyline (str):  Encoded polyline of the driver's route.
+                               Base route (home → PE → event) for the PE
+                               scenario; direct route (home → event) for the
+                               PEA scenario.
+        employee (dict):       Full employee dict for the specific person the
+                               user selected.  Must have a "coordinates" key
+                               ({"lat": float, "lng": float}) already set by
+                               geocode_staff().
+        meeting_point (dict):  The chosen PE or PEA.  Must have "lat" / "lng".
 
     Returns:
-        dict: One of two shapes:
+        dict: One of two shapes.
 
-        When a valid pickup candidate is found:
+        When a candidate result is available (even with empty place_options):
         {
             "pickup_candidate": {
-                "employee":                        dict,   # full employee dict
+                "employee":                        dict,
                 "cross_point":                     {"lat": float, "lng": float},
-                "transit_time_to_pickup_minutes":  int,    # from employee home to cross-point
-                "transit_time_to_pe_minutes":      int,    # from employee home to meeting point
-                "time_saved_minutes":              int,    # pe_time − pickup_time
-                "place_options":                   [       # up to PICKUP_TOP_CANDIDATES places
-                    {
-                        "place_name":    str,
-                        "place_address": str,
-                        "lat":           float,
-                        "lng":           float,
-                        "place_types":   list[str],
-                    },
-                    ...
-                ],
+                "transit_time_to_pickup_minutes":  int,
+                "transit_time_to_pe_minutes":      int,
+                "time_saved_minutes":              int,
+                "transit_warning":                 bool,  # True if transit to cross-point
+                                                          # exceeds PICKUP_MAX_TRANSIT_MINUTES
+                "time_saving_warning":             bool,  # True if time saved is below
+                                                          # PICKUP_MIN_TIME_SAVING_MINUTES
+                "place_options":                   list[dict]  # may be empty
             },
-            "employees_to_meeting_point": list[dict],  # pool_size − 1 employees, closest to PE first
-            "reason": None,
+            "reason": None
         }
 
-        When no valid candidate is found:
+        When no result is possible (genuine impossibility):
         {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": list[dict],
-            "reason":                     str,  # explains why no pickup was assigned
+            "pickup_candidate": None,
+            "reason": str
         }
     """
-    # -------------------------------------------------------------------------
-    # Decode the encoded polyline into a list of (lat, lng) tuples.
-    # The polyline library implements the Google Encoded Polyline Algorithm —
-    # the same encoding used by Routes API responses.
-    # We decode once and reuse the list across all subsequent distance checks.
-    # -------------------------------------------------------------------------
-    all_points = polyline_lib.decode(route_polyline)  # list of (lat, lng) tuples
+    # ── Step 1: cross-point via Haversine scan ────────────────────────────
+    #
+    # Decode the route polyline into (lat, lng) tuples.  We do this first so
+    # the empty-polyline guard can fire before we attempt anything else.
+    all_points = polyline_lib.decode(route_polyline)
 
-    # Guard: nothing to do with an empty pool
-    if not remaining_pool:
+    # Genuinely impossible — nothing to show without a polyline.
+    # This should not happen with a valid Routes API response, but the guard
+    # prevents an obscure IndexError if something upstream went wrong.
+    if not all_points:
         return {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": [],
-            "reason":                     "remaining pool is empty",
+            "pickup_candidate": None,
+            "reason": "Route polyline has no decoded points.",
         }
 
-    # -------------------------------------------------------------------------
-    # Step 1: sort the pool by distance to the meeting point and split.
-    # The (pool_size − 1) employees closest to the PE have a short commute there
-    # already — a pickup on the route would save them little.  They go to the PE.
-    # The one employee farthest from the PE is the most likely to benefit and
-    # becomes the single pickup candidate.
-    # Employees without geocoded coordinates are sorted to the end (inf distance)
-    # so they always land in the PE group rather than becoming the pickup candidate.
-    # -------------------------------------------------------------------------
-    def _dist_to_mp(member: dict) -> float:
-        coords = member.get("coordinates")
-        if coords is None:
-            return float("inf")
-        return _haversine_distance(
-            coords["lat"], coords["lng"],
-            meeting_point["lat"], meeting_point["lng"],
-        )
+    candidate_coords = employee.get("coordinates")
 
-    sorted_by_mp_dist = sorted(remaining_pool, key=_dist_to_mp)
-
-    # All but the last go directly to the meeting point
-    employees_to_meeting_point = sorted_by_mp_dist[:-1]
-    # The last (farthest from PE) is the pickup candidate
-    pickup_candidate_member    = sorted_by_mp_dist[-1]
-
-    # -------------------------------------------------------------------------
-    # Step 2: find the cross-point — the decoded polyline point closest to the
-    # pickup candidate's home.  This is where the driver naturally passes nearest
-    # to that employee, and is the centre of the Places API search in Step 4.
-    # -------------------------------------------------------------------------
-    candidate_coords = pickup_candidate_member.get("coordinates")
-
-    # If the farthest-from-PE employee has no geocoded address, we cannot place
-    # them on the route — give up and send everyone to the PE.
+    # Genuinely impossible — we cannot place an employee on the route without
+    # knowing where they live.  The caller is expected to pass only geocoded
+    # employees, but we guard defensively to avoid a silent KeyError.
     if candidate_coords is None:
         return {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": employees_to_meeting_point,
-            "reason":                     "pickup candidate has no geocoded coordinates",
+            "pickup_candidate": None,
+            "reason": "Employee has no geocoded coordinates.",
         }
 
-    # Walk every decoded polyline point and find the one closest to the candidate
-    best_cross_point_tuple = None
-    best_dist_to_route     = float("inf")
+    # Walk every decoded polyline vertex and find the one closest to the
+    # employee's home address.  This is the cross-point: the spot on the road
+    # where the driver is geometrically nearest to the employee.
+    # Haversine is used (not the Distance Matrix) because this is a geometric
+    # "nearest vertex" search, not a routing problem — no API cost, no latency.
+    best_dist      = float("inf")
+    cross_lat      = all_points[0][0]
+    cross_lng      = all_points[0][1]
 
     for pt_lat, pt_lng in all_points:
         d = _haversine_distance(candidate_coords["lat"], candidate_coords["lng"], pt_lat, pt_lng)
-        if d < best_dist_to_route:
-            best_dist_to_route     = d
-            best_cross_point_tuple = (pt_lat, pt_lng)
+        if d < best_dist:
+            best_dist = d
+            cross_lat = pt_lat
+            cross_lng = pt_lng
 
-    # Guard: empty polyline (should never happen with a valid Routes API response)
-    if best_cross_point_tuple is None:
-        return {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": employees_to_meeting_point,
-            "reason":                     "route polyline has no decoded points",
-        }
+    cross_point = {"lat": cross_lat, "lng": cross_lng}
 
-    cross_point = {"lat": best_cross_point_tuple[0], "lng": best_cross_point_tuple[1]}
-
-    # -------------------------------------------------------------------------
-    # Step 3: verify the pickup candidate's eligibility via public-transit times.
-    # One Distance Matrix call with 1 origin and 2 destinations is more efficient
-    # than two separate calls — the API returns both legs in a single response.
+    # ── Step 2: transit-time check via Distance Matrix ────────────────────
     #
-    # Origin:        pickup candidate's home coordinates (already validated above)
-    # Destination 0: cross-point (the pickup location on the route)
-    # Destination 1: meeting point (the original PE or PEA)
-    # -------------------------------------------------------------------------
+    # One call with 1 origin and 2 destinations avoids a second API round-trip.
+    # Destination 0 → cross-point:    time the employee needs to reach the pickup
+    # Destination 1 → meeting point:  time they would need without the pickup
+    # The difference is the time saved by offering the pickup.
     origin = [{"lat": candidate_coords["lat"], "lng": candidate_coords["lng"]}]
 
     matrix = calculate_distances(
         origins=origin,
-        destinations=[cross_point, {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}],
+        destinations=[
+            cross_point,
+            {"lat": meeting_point["lat"], "lng": meeting_point["lng"]},
+        ],
         mode="transit",
     )
 
     elem_to_cross = matrix["rows"][0]["elements"][0]
     elem_to_mp    = matrix["rows"][0]["elements"][1]
 
-    # If either leg has no transit route, the pickup is not viable
+    # Genuinely impossible — ZERO_RESULTS means public transit cannot reach
+    # the cross-point or the meeting point from this employee's home.
+    # There is no data to display; return None so the frontend can show a
+    # clear error rather than an empty panel.
     if elem_to_cross["status"] != "OK":
         return {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": employees_to_meeting_point,
+            "pickup_candidate": None,
             "reason": (
                 f"No transit route found from employee home to pickup point "
                 f"(Distance Matrix status: {elem_to_cross['status']})."
@@ -1103,47 +1242,31 @@ def find_pickup_candidate(
 
     if elem_to_mp["status"] != "OK":
         return {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": employees_to_meeting_point,
+            "pickup_candidate": None,
             "reason": (
                 f"No transit route found from employee home to meeting point "
                 f"(Distance Matrix status: {elem_to_mp['status']})."
             ),
         }
 
-    # Convert seconds → minutes (float precision retained for comparison;
-    # int conversion happens only in the final return value)
+    # Float minutes retained for threshold comparisons; int() applied only in
+    # the final return value, consistent with how the API returns whole seconds.
     transit_to_cross_min = elem_to_cross["duration"]["value"] / 60
     transit_to_mp_min    = elem_to_mp["duration"]["value"]   / 60
     time_saved_min       = transit_to_mp_min - transit_to_cross_min
 
-    # Condition 1: the employee must be able to reach the pickup point in time
-    if transit_to_cross_min > PICKUP_MAX_TRANSIT_MINUTES:
-        return {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": employees_to_meeting_point,
-            "reason": (
-                f"Transit time to pickup point ({transit_to_cross_min:.0f} min) "
-                f"exceeds the limit of {PICKUP_MAX_TRANSIT_MINUTES} min."
-            ),
-        }
+    # Threshold judgments — surfaced as informational warnings, not gates.
+    # The manager sees these badges on the map and decides whether the pickup
+    # makes sense given the full context (employee circumstances, event timing,
+    # etc.).  Suppressing the result here would remove the manager's agency.
+    transit_warning      = transit_to_cross_min > PICKUP_MAX_TRANSIT_MINUTES
+    time_saving_warning  = time_saved_min       < PICKUP_MIN_TIME_SAVING_MINUTES
 
-    # Condition 2: the pickup must save a meaningful amount of time vs the PE
-    if time_saved_min < PICKUP_MIN_TIME_SAVING_MINUTES:
-        return {
-            "pickup_candidate":           None,
-            "employees_to_meeting_point": employees_to_meeting_point,
-            "reason": (
-                f"Time saved by pickup ({time_saved_min:.0f} min) is below the "
-                f"minimum of {PICKUP_MIN_TIME_SAVING_MINUTES} min."
-            ),
-        }
-
-    # -------------------------------------------------------------------------
-    # Step 4: search the Places API (New) for pickup venues around the cross-point.
-    # We look within PICKUP_MAX_DETOUR_METERS metres — a radius tight enough to
-    # ensure the venue is reachable from the road without a significant turn-off.
-    # -------------------------------------------------------------------------
+    # ── Step 3: Places API search around the cross-point ─────────────────
+    #
+    # We look for pickup-suitable venues within PICKUP_MAX_DETOUR_METERS metres
+    # of the cross-point.  The radius is tight so that any found venue is
+    # reachable from the road without a significant turn-off by the driver.
     places_body = {
         "includedTypes": PICKUP_PLACE_TYPES,
         "locationRestriction": {
@@ -1153,16 +1276,15 @@ def find_pickup_candidate(
                     "longitude": cross_point["lng"],
                 },
                 # The API expects a float; cast in case PICKUP_MAX_DETOUR_METERS
-                # is defined as an int in config.py (Python float() is harmless
-                # on a float, so this is always safe).
+                # is defined as an int in config.py (float() is a no-op on float).
                 "radius": float(PICKUP_MAX_DETOUR_METERS),
             }
         },
     }
     places_headers = {
         "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-        # Request only the four fields we need — Places API (New) charges
-        # per field category; requesting fewer fields reduces cost.
+        # Request only the four fields we use — Places API (New) charges per
+        # field category, so omitting unused fields reduces cost.
         "X-Goog-FieldMask": (
             "places.displayName,"
             "places.location,"
@@ -1179,47 +1301,43 @@ def find_pickup_candidate(
     places_response.raise_for_status()
     raw_places = places_response.json().get("places", [])
 
-    # -------------------------------------------------------------------------
-    # Step 5: filter places to keep only those that are genuinely ON the route.
-    # The Places API search uses a circular radius around the cross-point, so it
-    # may return venues on adjacent side streets.  We check the minimum distance
-    # from each venue to any decoded polyline point: if it exceeds
-    # PICKUP_MAX_DETOUR_METERS, the venue is off-route and is discarded.
+    # ── Step 4: on-route filter ───────────────────────────────────────────
     #
-    # Accepted venues are sorted by their distance to the cross-point (ascending)
-    # so that the nearest, most convenient location is offered first.
-    # -------------------------------------------------------------------------
-    on_route_places: list[tuple[float, dict]] = []  # (dist_to_cross_m, place_dict)
+    # The circular Places API search may return venues on adjacent side streets
+    # that would require the driver to turn off the main road.  We keep only
+    # venues whose minimum straight-line distance to any polyline vertex is
+    # within PICKUP_MAX_DETOUR_METERS — a proxy for "on the road the driver
+    # is already taking".  Venues are sorted by distance to the cross-point
+    # so the most convenient option is offered first.
+    #
+    # If no venues pass the filter, place_options is an empty list.  We still
+    # return the candidate with the transit-time data: the manager may want to
+    # see the numbers even if no specific venue was found, and they can choose
+    # a spot manually on the map.
+    on_route_places: list[tuple[float, dict, float, float]] = []
 
     for place in raw_places:
         location  = place.get("location", {})
         place_lat = location.get("latitude",  0.0)
         place_lng = location.get("longitude", 0.0)
 
-        # Find the minimum Haversine distance (km) from this place to any
-        # decoded polyline point, then convert to metres for the threshold check.
-        min_dist_to_route_km = min(
+        # Minimum distance from this venue to any polyline vertex, in metres
+        min_dist_to_route_m = min(
             _haversine_distance(place_lat, place_lng, pt_lat, pt_lng)
             for pt_lat, pt_lng in all_points
-        )
-        min_dist_to_route_m = min_dist_to_route_km * 1000
+        ) * 1000
 
-        # Discard venues that are farther than PICKUP_MAX_DETOUR_METERS from the
-        # route — they would require the driver to make a turn off the main road.
         if min_dist_to_route_m > PICKUP_MAX_DETOUR_METERS:
-            continue
+            continue  # off-route: would require driver to detour
 
-        # Compute the distance from this venue to the cross-point for ordering
         dist_to_cross_m = (
             _haversine_distance(place_lat, place_lng, cross_point["lat"], cross_point["lng"])
             * 1000
         )
         on_route_places.append((dist_to_cross_m, place, place_lat, place_lng))
 
-    # Sort ascending by distance to cross-point so the most convenient venue leads
     on_route_places.sort(key=lambda x: x[0])
 
-    # Build the final list limited to PICKUP_TOP_CANDIDATES entries
     place_options = [
         {
             "place_name":    p.get("displayName", {}).get("text", ""),
@@ -1233,17 +1351,19 @@ def find_pickup_candidate(
 
     return {
         "pickup_candidate": {
-            "employee":                       pickup_candidate_member,
+            "employee":                       employee,
             "cross_point":                    cross_point,
-            # int() truncates the float — consistent with the spec and with how
-            # the Distance Matrix API works (durations are whole seconds).
             "transit_time_to_pickup_minutes": int(transit_to_cross_min),
             "transit_time_to_pe_minutes":     int(transit_to_mp_min),
             "time_saved_minutes":             int(time_saved_min),
+            # Warning flags: threshold judgments surfaced for the manager,
+            # not gates that suppress the result.  True = manager should
+            # review; False = within the recommended operating range.
+            "transit_warning":                transit_warning,
+            "time_saving_warning":            time_saving_warning,
             "place_options":                  place_options,
         },
-        "employees_to_meeting_point": employees_to_meeting_point,
-        "reason":                     None,
+        "reason": None,
     }
 
 

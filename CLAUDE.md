@@ -152,39 +152,59 @@ Candidate search implemented: `find_pea_candidates(direct_route_polyline)` — P
 - Types searched: transit_station, subway_station, train_station, bus_station
 - Deduplicates results by formattedAddress (stable unique key)
 - Returns list of {name, address, lat, lng, types} — no evaluation, no scoring
+- Feeds into evaluate_pea_candidates() which ranks and returns up to 3 candidates
 
 Evaluation implemented: `evaluate_pea_candidates(candidates, remaining_pool, meeting_point)` — in modules/logistics.py.
 - For each candidate: one Distance Matrix call (N staff × 2 destinations: candidate + PE, transit mode)
-- A candidate qualifies when ALL staff reach it in ≤ PEA_MAX_TRANSIT_MINUTES (25min) AND
-  AT LEAST PEA_MIN_EXCLUSIVE_PREFERENCE (2) staff "exclusively prefer" it:
-  "exclusively prefers PEA" = transit_time_to_PE − transit_time_to_PEA ≥ PEA_EXCLUSIVE_DIFF_MINUTES (20min)
-- Best candidate = highest exclusively_prefer_count among qualifying candidates
-- Proximity check via Haversine (no API call): straight-line km from PEA to original PE
-  ≤ PEA_RADIUS_KM (10 km) → "optimal"; > 10 km → "consult_remuneration"
+- ALL candidates are evaluated — there are no disqualifying gates
+- Per-employee `exceeds_max_transit` flag set when transit time > PEA_MAX_TRANSIT_MINUTES (25 min);
+  this is informational only — the candidate is still returned
+- `exclusively_prefer_count` counts staff whose (transit_to_PE − transit_to_PEA) ≥ PEA_EXCLUSIVE_DIFF_MINUTES (20 min);
+  informational field — not a filter
+- `PEA_MIN_EXCLUSIVE_PREFERENCE` (2) is a reference value exposed to the UI;
+  it does not suppress any candidate
+- Candidates ranked by median transit time ascending; top 3 returned
+- Proximity check via Haversine per candidate: straight-line km from PEA to original PE
+  ≤ PEA_RADIUS_KM (10 km) → flagged "optimal"; > 10 km → "consult_remuneration"
+- Returns `{"has_candidates": bool, "candidates": [...up to 3 ranked dicts...]}`
+- Each candidate dict includes: name, address, lat, lng, median_transit_minutes,
+  exclusively_prefer_count, pea_near_original, remuneration_note, staff_metrics list
 - Full pipeline exposed at `GET /evaluate-pea`
 
 User sees map and decides: keep original meeting point or switch to PEA.
 
 ### Step 7 — Pickup points (modules/logistics.py)
 Only for personal car vehicle. Maximum 1 pickup point per trip.
-Implemented: `find_pickup_candidate(route_polyline, remaining_pool, meeting_point)`.
+
+Two functions cover this step:
+
+`get_pickup_highlight(remaining_pool, route_polyline, meeting_point)` — pure geometry, no API calls.
+- Sorts the remaining pool by Haversine distance to the meeting point; the farthest employee
+  is the natural pickup candidate
+- Finds that employee's closest decoded polyline vertex (cross_point)
+- Returns `{"highlight_candidate": {"employee": dict, "cross_point": {lat, lng}}, "reason": None}`
+  or `{"highlight_candidate": None, "reason": str}` if the pool is empty or has no coordinates
+- Called automatically when the map loads to show an immediate visual hint
+
+`find_pickup_candidate(route_polyline, employee, meeting_point)` — called ON DEMAND only, when
+the user opens the map context menu for a specific employee and selects "Find pickup on route".
+Signature takes a single `employee` dict (not the full pool — pool sorting is done by
+`get_pickup_highlight()` and the user may override the suggestion).
 
 Algorithm:
-1. Sort pool by Haversine distance to meeting_point. The (pool_size − 1) closest → employees_to_meeting_point (go to PE directly).
-   The 1 farthest → pickup candidate (always exactly 1, regardless of pool size).
-2. For the pickup candidate, find their closest decoded polyline point (cross_point).
-3. Verify eligibility via Distance Matrix transit call (1 origin × 2 destinations: cross_point + PE):
-   - Transit time to cross_point ≤ PICKUP_MAX_TRANSIT_MINUTES (30 min)
-   - Time saved (transit to PE − transit to cross_point) ≥ PICKUP_MIN_TIME_SAVING_MINUTES (20 min)
-4. Search Places API (New) around cross_point, radius = PICKUP_MAX_DETOUR_METERS (300 m), types = PICKUP_PLACE_TYPES.
-5. Filter results: keep only places where min Haversine distance to any polyline point ≤ PICKUP_MAX_DETOUR_METERS.
+1. Decode route polyline; find the decoded vertex closest to the employee's home (cross_point).
+2. Distance Matrix transit call (1 origin × 2 destinations: cross_point + meeting_point):
+   - `transit_warning` = True if transit time to cross_point > PICKUP_MAX_TRANSIT_MINUTES (30 min)
+   - `time_saving_warning` = True if time saved < PICKUP_MIN_TIME_SAVING_MINUTES (20 min)
+   - Both are informational flags — they do not suppress the result; the manager decides
+   - Non-OK Distance Matrix status → returns `pickup_candidate: null` with reason (genuine impossibility)
+3. Search Places API (New) around cross_point, radius = PICKUP_MAX_DETOUR_METERS (300 m), types = PICKUP_PLACE_TYPES.
+4. Filter results: keep only places where min Haversine distance to any polyline point ≤ PICKUP_MAX_DETOUR_METERS.
    Return top PICKUP_TOP_CANDIDATES (3) ordered by distance to cross_point ascending.
+   If no places pass the filter, returns result with `place_options: []` — not suppressed.
 
-Called twice inside `GET /evaluate-pea`:
-- `pickup_if_pe_chosen`:  base_route polyline + PE as meeting_point
-- `pickup_if_pea_chosen`: direct_route polyline + PEA best_candidate as meeting_point (None if pea_proposed is False)
-
-User sees all candidate venues on map with full detail before confirming.
+Exposed at `POST /find-pickup` (on demand).
+User sees all candidate venues on map with transit data and warning flags before confirming.
 Uber vehicles do NOT get pickup points — they go to the meeting point only.
 
 ### Step 8 — Final output
@@ -229,7 +249,8 @@ Do not build multi-vehicle routing logic.
 - `POST /get-remaining-pool` — remaining staff pool after frescos assignments, with charter/alternative flags
 - `GET /detect-personal-vehicle` — checks "Auto" column; returns driver, vehicle description, and warning if multiple cars found
 - `GET /calculate-driver-route` — Routes API: base route (home→PE→event) and direct route (home→event)
-- `GET /evaluate-pea` — full PEA + pickup pipeline: geocode staff → driver route → PEA evaluation → pickup candidates for both PE and PEA scenarios
+- `GET /evaluate-pea` — geocode staff → driver routes → PEA candidate search → ranked evaluation; returns `{meeting_point, driver_routes, pea_evaluation}` with up to 3 candidates; no pickup logic
+- `POST /find-pickup` — on-demand pickup search for a specific employee; accepts `{employee_name, route_polyline, meeting_point}`; returns `find_pickup_candidate()` result directly
 - `POST /assign-passengers` — assigns remaining staff to personal car + Uber groups after user confirms meeting point
 - `POST /validate-assignments` — validates full employee coverage; if valid, returns partial summary (no departure times) for preview modal
 - `POST /confirm-assignments` — safety re-validates, then returns complete summary including CP departure time; populates both draggable output blocks
@@ -248,10 +269,15 @@ Do not build multi-vehicle routing logic.
   `"Nombre Apellido"` of the actual employee assigned.
 
 ### TODO: Places API caching for polyline points
-`find_pickup_candidate()` and `find_pea_candidates()` decode the polyline and iterate over its
-points on every call.  Post-deployment, add caching keyed on the encoded polyline string so
-that repeated calls for the same route (e.g. same driver, same event address) do not re-decode
-and re-query the same points.
+`find_pea_candidates()` decodes the polyline and iterates over its points on every call.
+Post-deployment, add caching keyed on the encoded polyline string so that repeated calls
+for the same route (e.g. same driver, same event address) do not re-decode and re-query
+the same points.
+
+`find_pickup_candidate()` is now called on demand (one employee at a time via `POST /find-pickup`).
+Post-deployment, add caching keyed on `(employee_name, route_polyline)` so that repeated
+requests for the same employee on the same route do not re-run the Distance Matrix and
+Places API calls.
 
 ### TODO: Frontend pickup map highlight for CEO and manager review
 `PICKUP_MAX_DETOUR_METERS` (and `_PLACES_SEARCH_RADIUS` in maps_client.py) are currently in

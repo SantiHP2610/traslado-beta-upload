@@ -62,20 +62,48 @@ EVENT_PREP_HOURS_WITH_PICADA = 2
 PICADA_THRESHOLD_GUESTS = 100
 
 # --- Alternative Meeting Point (PEA) parameters ---
-PEA_MAX_TRANSIT_MINUTES = 25       # max travel time by public transit to PEA to be "convenient"
-PEA_EXCLUSIVE_DIFF_MINUTES = 20    # min difference (in minutes) between transit time to PE
-                                    # and transit time to PEA to count as "exclusively prefers PEA"
-PEA_MIN_EXCLUSIVE_PREFERENCE = 2   # min number of staff who must exclusively prefer PEA
-                                    # for it to be proposed to the user
-PEA_RADIUS_KM = 10                 # straight-line km from PEA candidate to original PE;
-                                    # ≤ this → flagged "optimal"; > this → "consult_remuneration"
+#
+# These constants inform the UI — they do not gate the flow.
+# All PEA candidates are evaluated and the top 3 are returned regardless of
+# whether any threshold is crossed.  The values below control how warning
+# flags and informational counts are computed so the manager has the context
+# to make the final call.  The system does not decide for them.
+PEA_MAX_TRANSIT_MINUTES = 25       # threshold used to populate the per-employee
+                                    # "exceeds_max_transit" warning flag in staff_metrics;
+                                    # flagged employees may find the PEA inconvenient,
+                                    # but the candidate is still returned for the manager to assess
+PEA_EXCLUSIVE_DIFF_MINUTES = 20    # difference (in minutes) between transit time to PE and
+                                    # transit time to PEA at which an employee is counted as
+                                    # "exclusively preferring" the PEA; populates the informational
+                                    # exclusively_prefer_count field shown to the manager
+PEA_MIN_EXCLUSIVE_PREFERENCE = 2   # reference value shown alongside exclusively_prefer_count
+                                    # in the UI so the manager can gauge whether enough staff
+                                    # benefit from the PEA to make it worthwhile; does not
+                                    # filter or suppress any candidate
+PEA_RADIUS_KM = 10                 # straight-line km from each PEA candidate to the original PE;
+                                    # ≤ this → candidate flagged "optimal" (no remuneration review);
+                                    # > this → candidate flagged "consult_remuneration";
+                                    # computed per candidate — all candidates are returned regardless
 
 # --- Pickup point parameters (Step 7) ---
-PICKUP_MIN_TIME_SAVING_MINUTES = 20 # min minutes saved vs going to PE to assign a pickup point
+#
+# These constants inform the UI — they do not gate the flow.
+# find_pickup_candidate() always returns a result when it is technically
+# possible (i.e. the Distance Matrix can route the employee).  The values
+# below control how warning flags are computed so the manager has the
+# context to decide whether the pickup makes sense for this specific event
+# and employee.  The system does not suppress results on their behalf.
+PICKUP_MIN_TIME_SAVING_MINUTES = 20 # threshold used to populate the "time_saving_warning" flag
+                                    # in the pickup result; if the employee saves fewer minutes
+                                    # than this by going to the cross-point instead of the PE,
+                                    # the flag is True so the manager can weigh the trade-off
 PICKUP_MAX_DETOUR_METERS = 300      # Places API search radius (m) around the cross-point AND
                                     # max straight-line distance (m) from a place to any polyline
                                     # point to count as "on the route" (not on a side street)
-PICKUP_MAX_TRANSIT_MINUTES = 30     # max transit time (min) from employee home to pickup point
+PICKUP_MAX_TRANSIT_MINUTES = 30     # threshold used to populate the "transit_warning" flag
+                                    # in the pickup result; if the employee's transit time to
+                                    # the cross-point exceeds this, the flag is True so the
+                                    # manager can consider whether the trip is practical
 PICKUP_TOP_CANDIDATES = 3           # number of top place options returned per pickup candidate,
                                     # ordered by distance to cross-point ascending
 
