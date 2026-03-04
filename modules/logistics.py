@@ -22,6 +22,7 @@ import polyline as polyline_lib
 # and easy to change in one place without hunting through logic code.
 from config import (
     CHARTER_THRESHOLD,
+    CLUSTER_RADIUS_KM,
     DEPARTURE_BUFFER_MINUTES,
     DEPARTURE_PREP_HOURS,
     LOADING_TIME_MINUTES,
@@ -694,151 +695,128 @@ def detect_personal_vehicle(staff: list[dict]) -> dict:
     }
 
 
-def evaluate_pea_candidates(
-    candidates: list[dict],
-    remaining_pool: list[dict],
-    meeting_point: dict,
-) -> dict:
+def _cluster_by_proximity(geocoded_members: list[dict]) -> list[list[dict]]:
     """
-    Evaluates ALL PEA (Punto de Encuentro Alternativo) candidates against the
-    remaining staff pool and the original meeting point, ranks them, and
-    returns the top 3 so the user can choose on the map.
+    Groups employees into geographic clusters using a greedy radius-based algorithm.
 
-    Why top-3 instead of a single winner?
-        The old approach applied hard gates that silently discarded many valid
-        options.  Showing the three best candidates lets the manager apply
-        contextual knowledge (familiarity with a station, parking near one,
-        etc.) that the algorithm cannot capture.
+    Why geographic clustering before transit evaluation?
+        A PEA optimised on the global median across all employees can land on a
+        compromise point that serves nobody particularly well — especially when the
+        team lives in opposite parts of Buenos Aires.  An employee in the north and
+        an employee in the south may both have "mediocre" transit times to a central
+        PEA when each would have had "excellent" transit times to a PEA near their
+        own neighbourhood.  Clustering first lets the algorithm find a candidate
+        that genuinely serves each geographic group rather than averaging two groups
+        into a location neither of them would have chosen.
 
-    Evaluation strategy — one Distance Matrix call per candidate:
-        Origins:      each geocoded employee in remaining_pool (N rows)
-        Destinations: [candidate, meeting_point]  (2 columns)
-        Mode:         "transit"
-        → Returns an N×2 matrix.
-          Column 0 = transit time from each employee to the candidate PEA.
-          Column 1 = transit time from each employee to the original PE.
-        Batching both destinations into one call keeps API calls proportional
-        to len(candidates), not len(candidates) × len(staff).
+    Why simple radius clustering instead of k-means?
+        k-means requires specifying k (the number of clusters) upfront.  For this
+        problem we do not know in advance how many geographic groups the staff form
+        — that depends on the specific event roster, which changes every event.
+        Radius-based clustering discovers k naturally: a new cluster is created only
+        when an employee lives farther than CLUSTER_RADIUS_KM from all existing
+        cluster seeds.  The clusters also carry real geographic meaning ("employees
+        within 8 km of each other") rather than the abstract Voronoi partitioning
+        that k-means produces, which makes them easier to explain to the manager.
 
-    Validity filter:
-        A candidate is skipped entirely if ANY employee has status != "OK" for
-        either leg — this means no transit route was found and there is nothing
-        useful to show the user for that employee.
-
-    Ranking metric — MEDIAN transit time to candidate:
-        Median is used instead of mean to limit the influence of one outlier
-        employee who lives far from everything.  A candidate is good if the
-        majority of the team can reach it quickly, regardless of one edge case.
-
-    Per-employee informational fields (not gates):
-        - exceeds_max_transit: True if transit_to_candidate > PEA_MAX_TRANSIT_MINUTES.
-          Shown on the map as a warning badge — lets manager spot who would
-          have a long journey without automatically disqualifying the candidate.
-        - exclusively_prefer_count: number of staff who save ≥ PEA_EXCLUSIVE_DIFF_MINUTES
-          by going to this PEA instead of the original PE.  Informational only.
-
-    Proximity flag per candidate:
-        Straight-line distance from PEA to original PE via _haversine_distance().
-        ≤ PEA_RADIUS_KM (10 km) → pea_near_original = True  (driver pay unchanged)
-        > PEA_RADIUS_KM          → pea_near_original = False (remuneration_note set)
+    Algorithm — greedy first-fit:
+        For each employee (in order of appearance in the remaining pool):
+            - Compute Haversine distance to the seed (first member) of every
+              existing cluster.
+            - If any cluster seed is within CLUSTER_RADIUS_KM → append to that
+              cluster.  Stop at the first match (first-fit).
+            - If no cluster is close enough → create a new singleton cluster
+              with this employee as its seed.
+        An employee belongs to at most one cluster.
 
     Parameters:
-        candidates     (list[dict]): Transit hub candidates from find_pea_candidates().
-                                     Each must have "lat", "lng", "name", "address".
-        remaining_pool (list[dict]): Staff who still need a vehicle.
-                                     Each must have a "coordinates" key added by
-                                     geocode_staff() ({"lat": ..., "lng": ...}).
-        meeting_point  (dict):       The original PE from nearest_meeting_point().
-                                     Must have "lat", "lng", and "name" keys.
+        geocoded_members (list[dict]): Staff with a valid "coordinates" key
+                                       ({\"lat\": float, \"lng\": float}).
 
     Returns:
-        dict: {
-            "candidates": [
-                {
-                    "name":                     str,
-                    "address":                  str,
-                    "lat":                      float,
-                    "lng":                      float,
-                    "median_transit_minutes":   float,
-                    "exclusively_prefer_count": int,       # informational
-                    "pea_near_original":        bool,
-                    "remuneration_note":        str | None,
-                    "staff_metrics": [
-                        {
-                            "employee_name":             str,   # "Nombre Apellido"
-                            "transit_to_candidate_min":  float,
-                            "transit_to_pe_min":         float,
-                            "time_saved_min":            float,
-                            "exceeds_max_transit":       bool,
-                        },
-                        ...
-                    ]
-                },
-                ...  # up to 3 candidates, ranked by median_transit_minutes ascending
-            ],
-            "has_candidates": bool  # True if at least one valid candidate was found
-        }
+        list[list[dict]]: One inner list per cluster; each inner list contains
+                          the employee dicts that belong to that cluster.
+                          Guaranteed non-empty (at least one singleton cluster).
     """
-    # -------------------------------------------------------------------------
-    # Early exits: nothing to evaluate if there are no candidates or no staff.
-    # -------------------------------------------------------------------------
-    _empty = {"candidates": [], "has_candidates": False}
+    clusters: list[list[dict]] = []
 
-    if not candidates or not remaining_pool:
-        return _empty
+    for emp in geocoded_members:
+        coords = emp["coordinates"]
+        placed = False
 
-    # Build parallel lists of coordinates and display names for geocoded staff.
-    # We keep them in the same order so index i in geocoded_members corresponds
-    # to row i in the Distance Matrix response.
-    geocoded_members = [
-        m for m in remaining_pool if m.get("coordinates") is not None
-    ]
-    if not geocoded_members:
-        return _empty
+        for cluster in clusters:
+            seed = cluster[0]["coordinates"]
+            if (
+                _haversine_distance(
+                    coords["lat"], coords["lng"],
+                    seed["lat"],   seed["lng"],
+                )
+                <= CLUSTER_RADIUS_KM
+            ):
+                cluster.append(emp)
+                placed = True
+                break  # first-fit: stop at the first matching cluster
 
-    staff_coords = [m["coordinates"] for m in geocoded_members]
+        if not placed:
+            clusters.append([emp])
+
+    return clusters
+
+
+def _best_candidate_for_cluster(
+    candidates:     list[dict],
+    cluster:        list[dict],
+    mp_destination: dict,
+    meeting_point:  dict,
+) -> dict | None:
+    """
+    Evaluates all PEA candidates against one geographic cluster of employees
+    and returns the candidate with the lowest median transit time for that
+    group, or None if no candidate has a valid transit route for all members.
+
+    One Distance Matrix call per candidate:
+        Origins:      cluster members (cluster_size rows)
+        Destinations: [candidate, original_PE]  (2 columns)
+        Mode:         "transit"
+    The all-or-nothing validity rule is preserved from the original function:
+    if ANY cluster member has a non-OK status for either destination, the
+    entire candidate is skipped — a partial picture would mislead the manager.
+
+    Parameters:
+        candidates      (list[dict]): PEA candidate places (transit hubs).
+        cluster         (list[dict]): Employee dicts with "coordinates" set.
+        mp_destination  (dict):       {\"lat\": …, \"lng\": …} of the original PE.
+        meeting_point   (dict):       Full meeting-point dict (name + coords).
+
+    Returns:
+        dict | None: Best candidate dict with cluster_members and staff_metrics,
+                     or None if every candidate is unreachable for ≥ 1 member.
+    """
+    staff_coords = [m["coordinates"] for m in cluster]
     staff_names  = [
         f"{m.get('Nombre', '')} {m.get('Apellido', '')}".strip()
-        for m in geocoded_members
+        for m in cluster
     ]
 
-    # The original meeting point is always the second destination (column 1)
-    # in every matrix call — build it once and reuse across all candidates.
-    mp_destination = {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}
-
-    # -------------------------------------------------------------------------
-    # Evaluate every candidate and collect the valid ones.
-    # -------------------------------------------------------------------------
     valid_candidates: list[dict] = []
 
     for candidate in candidates:
         candidate_destination = {"lat": candidate["lat"], "lng": candidate["lng"]}
 
-        # One Distance Matrix call: N staff × 2 destinations.
-        # "transit" returns public-transport travel times — the metric that
-        # matters for staff travelling to the meeting point independently.
         matrix = calculate_distances(
             origins=staff_coords,
             destinations=[candidate_destination, mp_destination],
             mode="transit",
         )
 
-        rows = matrix.get("rows", [])
-
-        # -------------------------------------------------------------------------
-        # Per-employee analysis.
-        # We build staff_metrics as we go; if any employee has no transit route
-        # (status != "OK") we discard the entire candidate — showing a partial
-        # picture would mislead the manager about who can actually attend.
-        # -------------------------------------------------------------------------
+        rows          = matrix.get("rows", [])
         staff_metrics: list[dict] = []
         skip_candidate = False
 
         for i, row in enumerate(rows):
             elements = row.get("elements", [])
 
-            # The matrix returns 2 elements per row (one per destination).
-            # Fewer than 2 means the API response is malformed — skip the candidate.
+            # Fewer than 2 elements means the API response is malformed.
             if len(elements) < 2:
                 skip_candidate = True
                 break
@@ -846,15 +824,11 @@ def evaluate_pea_candidates(
             elem_to_candidate = elements[0]
             elem_to_meeting   = elements[1]
 
-            # ZERO_RESULTS or any non-OK status means no transit route exists for
-            # this employee to one of the two destinations — skip the whole candidate.
+            # Non-OK status = no transit route for this member → skip candidate.
             if elem_to_candidate["status"] != "OK" or elem_to_meeting["status"] != "OK":
                 skip_candidate = True
                 break
 
-            # Convert seconds → float minutes.  Float preserves sub-minute precision
-            # for the median calculation; thresholds in config are whole-minute values
-            # so the comparison is still accurate.
             transit_to_candidate_min = elem_to_candidate["duration"]["value"] / 60
             transit_to_pe_min        = elem_to_meeting["duration"]["value"]   / 60
             time_saved_min           = transit_to_pe_min - transit_to_candidate_min
@@ -864,33 +838,21 @@ def evaluate_pea_candidates(
                 "transit_to_candidate_min": transit_to_candidate_min,
                 "transit_to_pe_min":        transit_to_pe_min,
                 "time_saved_min":           time_saved_min,
-                # Flag shown on the map as a warning badge — not a disqualifier.
-                # Lets the manager see at a glance who would have a long journey.
+                # Warning badge — not a disqualifier.
                 "exceeds_max_transit":      transit_to_candidate_min > PEA_MAX_TRANSIT_MINUTES,
             })
 
         if skip_candidate:
             continue
 
-        # -------------------------------------------------------------------------
-        # Ranking metric: MEDIAN transit time to candidate across all employees.
-        # statistics.median() handles both odd and even list lengths correctly
-        # (for even counts it returns the mean of the two middle values).
-        # -------------------------------------------------------------------------
-        transit_times    = [m["transit_to_candidate_min"] for m in staff_metrics]
-        median_transit   = statistics.median(transit_times)
+        transit_times  = [m["transit_to_candidate_min"] for m in staff_metrics]
+        median_transit = statistics.median(transit_times)
 
-        # Informational count: employees who strongly prefer this PEA over the PE.
-        # "Exclusively prefers" = transit to PE minus transit to PEA ≥ threshold.
         exclusively_prefer_count = sum(
             1 for m in staff_metrics
             if m["time_saved_min"] >= PEA_EXCLUSIVE_DIFF_MINUTES
         )
 
-        # -------------------------------------------------------------------------
-        # Proximity flag: straight-line distance from PEA to original PE.
-        # Haversine is exact enough for a 10 km threshold with no API cost.
-        # -------------------------------------------------------------------------
         distance_km       = _haversine_distance(
             candidate["lat"], candidate["lng"],
             meeting_point["lat"], meeting_point["lng"],
@@ -906,6 +868,18 @@ def evaluate_pea_candidates(
             )
         )
 
+        # cluster_members is a lightweight summary of who this candidate serves
+        # and how quickly each member reaches it.  The frontend uses it to label
+        # each marker so the manager can see at a glance which geographic group
+        # benefits from choosing this specific PEA.
+        cluster_members = [
+            {
+                "employee_name":            m["employee_name"],
+                "transit_to_candidate_min": m["transit_to_candidate_min"],
+            }
+            for m in staff_metrics
+        ]
+
         valid_candidates.append({
             "name":                     candidate["name"],
             "address":                  candidate["address"],
@@ -915,16 +889,153 @@ def evaluate_pea_candidates(
             "exclusively_prefer_count": exclusively_prefer_count,
             "pea_near_original":        pea_near_original,
             "remuneration_note":        remuneration_note,
+            "cluster_members":          cluster_members,
             "staff_metrics":            staff_metrics,
         })
 
-    # -------------------------------------------------------------------------
-    # Rank valid candidates by median transit time (ascending) and return top 3.
-    # Ascending order means the first candidate is the easiest to reach for
-    # most employees — a natural default for the map highlight.
-    # -------------------------------------------------------------------------
+    if not valid_candidates:
+        return None
+
+    # Best candidate for this cluster = lowest median transit time.
     valid_candidates.sort(key=lambda c: c["median_transit_minutes"])
-    top_candidates = valid_candidates[:3]
+    return valid_candidates[0]
+
+
+def evaluate_pea_candidates(
+    candidates: list[dict],
+    remaining_pool: list[dict],
+    meeting_point: dict,
+) -> dict:
+    """
+    Evaluates PEA (Punto de Encuentro Alternativo) candidates using geographic
+    clustering of the remaining staff pool.
+
+    Why cluster before evaluating?
+        A PEA optimised on a global median across all employees may land on a
+        compromise point that is sub-optimal for everyone — especially when some
+        employees live in the north and others in the south of Buenos Aires.
+        Evaluating each geographic group independently means each returned
+        candidate genuinely minimises transit time for the employees it serves,
+        rather than averaging two distant groups into a location neither would
+        have chosen on their own.
+
+    Why simple radius clustering instead of k-means?
+        k-means requires specifying k upfront.  Radius clustering discovers k
+        naturally from the data: a new cluster is created only when an employee
+        is farther than CLUSTER_RADIUS_KM from all existing seeds.  The clusters
+        carry real geographic meaning and their count adapts to every event roster.
+        See _cluster_by_proximity() for the full rationale.
+
+    Three-phase approach:
+        Phase 1 — cluster:
+            _cluster_by_proximity() groups employees who live within
+            CLUSTER_RADIUS_KM of each other (greedy first-fit).
+            Employees without coordinates are excluded entirely — they cannot
+            participate in a Distance Matrix call.
+
+        Phase 2 — evaluate per cluster:
+            _best_candidate_for_cluster() evaluates ALL PEA candidates against
+            each cluster and returns the single best one (lowest median transit
+            time for that group).
+
+        Phase 3 — assemble:
+            Collect one winner per cluster, deduplicate by address (two clusters
+            may independently select the same transit hub), sort by median transit
+            time ascending, and cap the total at 3.
+
+    Why cap at 3?
+        UI constraint.  More than 3 map markers for the same type of point is
+        visually overwhelming and paradoxically makes the decision harder by
+        increasing cognitive load.  Three options naturally span "clearly best",
+        "alternative", and "edge case" without cluttering the map.
+
+    Parameters:
+        candidates     (list[dict]): Transit hub candidates from find_pea_candidates().
+                                     Each must have "lat", "lng", "name", "address".
+        remaining_pool (list[dict]): Staff who still need a vehicle.
+                                     Each must have a "coordinates" key from geocode_staff().
+        meeting_point  (dict):       The original PE from nearest_meeting_point().
+                                     Must have "lat", "lng", and "name" keys.
+
+    Returns:
+        dict: {
+            "candidates": [
+                {
+                    "name":                     str,
+                    "address":                  str,
+                    "lat":                      float,
+                    "lng":                      float,
+                    "median_transit_minutes":   float,
+                    "exclusively_prefer_count": int,
+                    "pea_near_original":        bool,
+                    "remuneration_note":        str | None,
+                    "cluster_members": [
+                        {
+                            "employee_name":            str,
+                            "transit_to_candidate_min": float,
+                        },
+                        ...
+                    ],
+                    "staff_metrics": [
+                        {
+                            "employee_name":            str,
+                            "transit_to_candidate_min": float,
+                            "transit_to_pe_min":        float,
+                            "time_saved_min":           float,
+                            "exceeds_max_transit":      bool,
+                        },
+                        ...
+                    ]
+                },
+                ...  # up to 3 candidates, one per geographic cluster
+            ],
+            "has_candidates": bool
+        }
+    """
+    _empty = {"candidates": [], "has_candidates": False}
+
+    if not candidates or not remaining_pool:
+        return _empty
+
+    # Employees without coordinates cannot participate in Distance Matrix calls.
+    # They are excluded from clustering entirely — their travel time cannot be
+    # evaluated so they must not influence which PEA is chosen for others.
+    geocoded_members = [
+        m for m in remaining_pool if m.get("coordinates") is not None
+    ]
+    if not geocoded_members:
+        return _empty
+
+    # ── Phase 1: cluster employees by geographic proximity ────────────────────
+    clusters = _cluster_by_proximity(geocoded_members)
+
+    # ── Phase 2: find the best PEA candidate for each cluster ─────────────────
+    mp_destination = {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}
+    cluster_winners: list[dict] = []
+
+    for cluster in clusters:
+        winner = _best_candidate_for_cluster(
+            candidates, cluster, mp_destination, meeting_point
+        )
+        if winner is not None:
+            cluster_winners.append(winner)
+
+    # ── Phase 3: assemble the final candidate list ────────────────────────────
+    # Sort all winners by median transit time so the best overall candidate
+    # appears first regardless of which cluster produced it.
+    # Deduplicate by address: two clusters might independently select the same
+    # transit hub.  After sorting, the first occurrence has the lower median,
+    # so we keep it and discard subsequent duplicates.
+    seen_addresses: set[str] = set()
+    deduped: list[dict] = []
+
+    for c in sorted(cluster_winners, key=lambda x: x["median_transit_minutes"]):
+        if c["address"] not in seen_addresses:
+            seen_addresses.add(c["address"])
+            deduped.append(c)
+
+    # Cap at 3 — UI constraint, see docstring.
+    top_candidates = deduped[:3]
 
     return {
         "candidates":     top_candidates,

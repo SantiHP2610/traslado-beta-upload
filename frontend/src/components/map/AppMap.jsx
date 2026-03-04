@@ -11,34 +11,113 @@
  *   the Maps JS API owns the DOM inside <Map> and appending arbitrary
  *   React nodes there would conflict with its internal rendering.
  *
- * ── Why bounds are computed here, not in StaffMarkers ────────────────────────
- * AppMap is the viewport owner.  StaffMarkers renders pins; it should not
- * also control where the camera points.  Keeping bounds computation here
- * means we can later extend it to include route endpoints, meeting points,
- * pickup candidates, etc., all in one place without coupling those concerns
- * to the marker component.
+ * ── Components inside <Map> ───────────────────────────────────────────────────
+ * MapBoundsController  — renderless; calls map.fitBounds() when bounds change.
+ * StaffMarkers         — one AdvancedMarker per geocoded employee.
+ * RoutePolylines       — blue base route + red direct route (step 2+).
+ * MeetingPointMarkers  — green PE + orange PEA candidate markers (step 2+).
+ * All four use useMap() internally, so they must be descendants of <Map>.
+ *
+ * ── Floating panels outside <Map> ────────────────────────────────────────────
+ * FrescosPanel  — van question and result summary (step 1+).
+ * PeaPanel      — meeting-point selection guide and confirmation (step 2).
+ * Both must be outside <Map> because the Maps JS API controls that DOM;
+ * adding arbitrary React nodes there can cause rendering conflicts.
+ *
+ * ── Why bounds are computed here, not in child components ────────────────────
+ * AppMap is the viewport owner.  Any component that renders geographic content
+ * (markers, polylines) should not also control where the camera points — that
+ * would be reaching outside its own concern.  AppMap aggregates all visible
+ * content and computes a single bounding box that fits everything, then passes
+ * it to MapBoundsController which calls fitBounds() once.
  *
  * ── Why APIProvider is NOT here ───────────────────────────────────────────────
  * See App.jsx.  Short version: APIProvider must outlive any map
  * unmount/remount cycle, so it lives at the app root.
+ *
+ * ── Why useStepTwo is called here ─────────────────────────────────────────────
+ * useStepTwo triggers automatically on the step 1→2 transition.  AppMap is
+ * the component that renders map content for every step, so it is the natural
+ * place to call step-level hooks.  Keeping it here also means the hook fires
+ * regardless of which panel or sub-component the user is looking at.
  */
 
-import { useMemo } from 'react'
-import { Map } from '@vis.gl/react-google-maps'
-import { useAppState } from '../../state/appState'
-import MapBoundsController from './MapBoundsController'
-import StaffMarkers from './StaffMarkers'
-import FrescosPanel from '../panels/FrescosPanel'
+import { useMemo }                       from 'react'
+import { Map }                           from '@vis.gl/react-google-maps'
+import polyline                          from '@mapbox/polyline'
+import { useAppState }                   from '../../state/appState'
+import { useStepTwo }                    from '../../hooks/useStepTwo'
+import MapBoundsController               from './MapBoundsController'
+import StaffMarkers                      from './StaffMarkers'
+import RoutePolylines                    from './RoutePolylines'
+import MeetingPointMarkers               from './MeetingPointMarkers'
+import EventMarker                       from './EventMarker'
+import FrescosPanel                      from '../panels/FrescosPanel'
+import PeaPanel                          from '../panels/PeaPanel'
 
 const BA_CENTER    = { lat: -34.6037, lng: -58.3816 }
 const DEFAULT_ZOOM = 11
 
-function computeBounds(staff) {
-  if (!staff) return null
-  const coords = staff.map((e) => e.coordinates).filter(Boolean)
-  if (coords.length === 0) return null
-  const lats = coords.map((c) => c.lat)
-  const lngs = coords.map((c) => c.lng)
+// ---------------------------------------------------------------------------
+// Bounds computation
+//
+// Aggregates all visible geographic content so MapBoundsController can fit
+// the viewport to show everything at once.
+//
+// Sources:
+//   1. Staff home addresses (always present once geocoding completes).
+//   2. Route endpoints — first and last decoded points from each encoded
+//      polyline.  Decoding the full polyline here is acceptable because
+//      useMemo only re-runs when driverRoutes changes (rare), and each
+//      encoded string is at most a few hundred points.
+//   3. Event venue coordinates — resolved by EventMarker and stored in
+//      state.eventCoords.  Including the venue ensures the map always
+//      shows where the event is happening, not just where staff live.
+//
+// Why only polyline endpoints, not all decoded points?
+//   The intermediate points fall between the endpoints; a bounding box from
+//   just the endpoints contains all intermediate points modulo road curvature.
+//   In practice, fitting to endpoints plus markers gives a viewport that
+//   includes the full route with small margin.
+// ---------------------------------------------------------------------------
+
+function getRouteEndpoints(encodedPolyline) {
+  if (!encodedPolyline) return []
+  const decoded = polyline.decode(encodedPolyline)
+  if (decoded.length === 0) return []
+  const [[lat0, lng0]] = decoded
+  const [latN, lngN]   = decoded[decoded.length - 1]
+  return [
+    { lat: lat0, lng: lng0 },
+    { lat: latN, lng: lngN },
+  ]
+}
+
+function computeBounds(staffWithCoords, driverRoutes, eventCoords) {
+  const points = []
+
+  // Staff home addresses
+  if (staffWithCoords) {
+    for (const emp of staffWithCoords) {
+      if (emp.coordinates) points.push(emp.coordinates)
+    }
+  }
+
+  // Route polyline endpoints
+  if (driverRoutes) {
+    points.push(...getRouteEndpoints(driverRoutes.base_route?.encoded_polyline))
+    points.push(...getRouteEndpoints(driverRoutes.direct_route?.encoded_polyline))
+  }
+
+  // Event venue — keep it in frame so the user always sees the destination
+  if (eventCoords) {
+    points.push(eventCoords)
+  }
+
+  if (points.length === 0) return null
+
+  const lats = points.map((c) => c.lat)
+  const lngs = points.map((c) => c.lng)
   return {
     north: Math.max(...lats),
     south: Math.min(...lats),
@@ -47,13 +126,21 @@ function computeBounds(staff) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export default function AppMap() {
   const { state } = useAppState()
-  const mapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || undefined
+  const mapId     = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || undefined
+
+  // Trigger automatic backend calls when step 2 starts.
+  // This hook watches currentStep and fires once on the 1→2 transition.
+  useStepTwo()
 
   const bounds = useMemo(
-    () => computeBounds(state.staffWithCoords),
-    [state.staffWithCoords],
+    () => computeBounds(state.staffWithCoords, state.driverRoutes, state.eventCoords),
+    [state.staffWithCoords, state.driverRoutes, state.eventCoords],
   )
 
   return (
@@ -69,25 +156,43 @@ export default function AppMap() {
         disableDefaultUI={false}
         style={{ width: '100%', height: '100%' }}
       >
+        {/* Renderless controller — calls fitBounds whenever bounds changes */}
         <MapBoundsController bounds={bounds} />
 
+        {/* Staff home address pins — rendered from boot */}
         {state.staffWithCoords && (
           <StaffMarkers staff={state.staffWithCoords} />
         )}
+
+        {/* Driver route polylines — rendered from step 2 once routes are loaded */}
+        {state.driverRoutes && <RoutePolylines />}
+
+        {/* PE and PEA candidate markers — rendered when a meeting point exists */}
+        {state.meetingPoint && state.currentStep === 2 && (
+          <MeetingPointMarkers />
+        )}
+
+        {/*
+          Event venue marker — shown once the map is ready (staffWithCoords set).
+          EventMarker handles its own coordinate resolution: it checks state,
+          then the route polyline, then falls back to the Geocoding API.
+          The condition mirrors the spec: "only renders when staffWithCoords
+          is not null (map is ready)".
+        */}
+        {state.staffWithCoords && <EventMarker />}
       </Map>
 
       {/*
-        FrescosPanel is placed OUTSIDE <Map> but inside the relative container.
-        It must be outside <Map> because:
-          1. The Maps JS API controls the DOM inside <Map>; adding arbitrary
-             React content there can cause conflicts.
-          2. Panels need to receive pointer events independently of the map —
-             a click on the panel should not also fire a map click event.
-        It is always rendered (not gated on currentStep) because it shows
-        the question on step 1 and the summary on step 2+.
-        Only render once excelData is loaded so the event details are available.
+        Floating panels are OUTSIDE <Map> so they don't conflict with the
+        Maps JS API's DOM ownership.  They are inside the relative container
+        so position:absolute works relative to the viewport-filling div.
       */}
+
+      {/* Step 1: van question + result summary */}
       {state.excelData && <FrescosPanel />}
+
+      {/* Step 2: meeting-point selection guide + confirmation */}
+      {state.currentStep === 2 && <PeaPanel />}
     </div>
   )
 }

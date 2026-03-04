@@ -84,6 +84,12 @@ PEA_RADIUS_KM = 10                 # straight-line km from each PEA candidate to
                                     # ≤ this → candidate flagged "optimal" (no remuneration review);
                                     # > this → candidate flagged "consult_remuneration";
                                     # computed per candidate — all candidates are returned regardless
+CLUSTER_RADIUS_KM = 8              # radius (km) used by evaluate_pea_candidates() to group employees
+                                    # into geographic clusters before PEA evaluation.  Employees whose
+                                    # home is within this radius of a cluster's seed point are placed
+                                    # in the same cluster so each PEA candidate is evaluated against a
+                                    # geographically coherent group, not a global compromise across
+                                    # employees who live in opposite parts of Buenos Aires.
 
 # --- Pickup point parameters (Step 7) ---
 #

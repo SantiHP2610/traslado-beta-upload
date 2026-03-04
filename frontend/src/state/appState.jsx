@@ -57,6 +57,11 @@ const initialState = {
   staffWithCoords: null,
   meetingPoint: null,
 
+  // Event venue coordinates — derived either from an existing route polyline
+  // or from the Google Geocoding API.  Kept in global state so AppMap can
+  // include the venue in the auto-fit bounds without prop-drilling.
+  eventCoords: null,
+
   // Step 5 — Driver routes and PEA evaluation
   driverRoutes: null,
   peaEvaluation: null,
@@ -88,6 +93,7 @@ export const ACTIONS = {
   SET_MEETING_POINT:         'SET_MEETING_POINT',
   SET_DRIVER_ROUTES:         'SET_DRIVER_ROUTES',
   SET_PEA_EVALUATION:        'SET_PEA_EVALUATION',
+  SET_EVENT_COORDS:          'SET_EVENT_COORDS',
   SET_CHOSEN_MEETING_POINT:  'SET_CHOSEN_MEETING_POINT',
   SET_ASSIGNMENTS:           'SET_ASSIGNMENTS',
   SET_FINAL_OUTPUT:          'SET_FINAL_OUTPUT',
@@ -127,6 +133,9 @@ function appReducer(state, action) {
 
     case ACTIONS.SET_MEETING_POINT:
       return { ...state, meetingPoint: action.payload }
+
+    case ACTIONS.SET_EVENT_COORDS:
+      return { ...state, eventCoords: action.payload }
 
     case ACTIONS.SET_DRIVER_ROUTES:
       return { ...state, driverRoutes: action.payload }

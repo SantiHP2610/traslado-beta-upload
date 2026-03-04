@@ -180,20 +180,29 @@ Candidate search implemented: `find_pea_candidates(direct_route_polyline)` — P
 - Feeds into evaluate_pea_candidates() which ranks and returns up to 3 candidates
 
 Evaluation implemented: `evaluate_pea_candidates(candidates, remaining_pool, meeting_point)` — in modules/logistics.py.
-- For each candidate: one Distance Matrix call (N staff × 2 destinations: candidate + PE, transit mode)
-- ALL candidates are evaluated — there are no disqualifying gates
-- Per-employee `exceeds_max_transit` flag set when transit time > PEA_MAX_TRANSIT_MINUTES (25 min);
-  this is informational only — the candidate is still returned
-- `exclusively_prefer_count` counts staff whose (transit_to_PE − transit_to_PEA) ≥ PEA_EXCLUSIVE_DIFF_MINUTES (20 min);
-  informational field — not a filter
-- `PEA_MIN_EXCLUSIVE_PREFERENCE` (2) is a reference value exposed to the UI;
-  it does not suppress any candidate
-- Candidates ranked by median transit time ascending; top 3 returned
-- Proximity check via Haversine per candidate: straight-line km from PEA to original PE
-  ≤ PEA_RADIUS_KM (10 km) → flagged "optimal"; > 10 km → "consult_remuneration"
-- Returns `{"has_candidates": bool, "candidates": [...up to 3 ranked dicts...]}`
-- Each candidate dict includes: name, address, lat, lng, median_transit_minutes,
-  exclusively_prefer_count, pea_near_original, remuneration_note, staff_metrics list
+Uses geographic clustering (CLUSTER_RADIUS_KM = 8 km) before transit evaluation. Three phases:
+
+**Phase 1 — cluster** (`_cluster_by_proximity`):
+- Greedy first-fit radius algorithm; CLUSTER_RADIUS_KM from seed (first member of each cluster)
+- Employees without coordinates are excluded entirely
+- Discovers k naturally — no need to pre-specify the number of clusters
+- Why not k-means: k is unknown per event; radius clusters have real geographic meaning
+
+**Phase 2 — evaluate per cluster** (`_best_candidate_for_cluster`):
+- For each cluster: one Distance Matrix call per candidate (cluster_size rows × 2 destinations: candidate + PE, transit mode)
+- All-or-nothing validity rule: if any cluster member has non-OK status, skip that candidate
+- Per-employee metrics: transit_to_candidate_min, transit_to_pe_min, time_saved_min, exceeds_max_transit
+- Selects the best candidate for that cluster (lowest median transit time)
+- Returns `cluster_members`: lightweight list of {employee_name, transit_to_candidate_min} — which employees this PEA serves
+
+**Phase 3 — assemble**:
+- Collect one winner per cluster; deduplicate by address (two clusters may pick the same hub)
+- Sort by median transit time ascending; cap at 3 total (UI constraint — more is visually overwhelming)
+- Proximity check per candidate: Haversine km from PEA to original PE
+  ≤ PEA_RADIUS_KM (10 km) → flagged "optimal"; > 10 km → remuneration_note set
+- Returns `{"has_candidates": bool, "candidates": [...up to 3 dicts...]}`
+- Each candidate dict: name, address, lat, lng, median_transit_minutes, exclusively_prefer_count,
+  pea_near_original, remuneration_note, **cluster_members**, staff_metrics
 - Full pipeline exposed at `GET /evaluate-pea`
 
 User sees map and decides: keep original meeting point or switch to PEA.
@@ -345,11 +354,13 @@ Scaffold, global state, map, staff markers, and Step 1 panel are all working.
 - `FrescosPanel` floating Card: van question → four sequential backend calls → result summary
 - `AppShell` loading/error gate with phase-specific Spanish messages
 - Global state via `useReducer` + split contexts (prevents unnecessary re-renders)
+- `useStepTwo` hook: auto-runs on step 1→2; calls nearestMeetingPoint → calculateDriverRoute → evaluatePea
+- `RoutePolylines` component: blue base route + red direct route drawn imperatively via useMap()
+- `MeetingPointMarkers` component: green PE + orange PEA markers with detailed InfoWindows + selection buttons
+- `PeaPanel` floating panel: loading states, instruction text, route summary, confirmation + advance button
 
-**Not yet implemented (frontend steps 2–8):**
-- PEA evaluation map overlay and candidate selection
+**Not yet implemented (frontend steps 3–8):**
 - Pickup point map markers and confirmation flow
-- Driver route polyline rendering
 - Passenger assignment panel and confirmation modal (draggable)
 - Final output draggable info blocks
 - Manual assignment via marker context menu (PE Uber / PE personal / Find pickup)
@@ -519,3 +530,35 @@ to guarantee the next view renders with complete data on its first paint.
    Vite only transforms JSX syntax in files with a `.jsx` (or `.tsx`) extension.
    Context providers use JSX (`<Context.Provider>`), so the state file must be `.jsx`.
    Vite's extensionless import resolution picks it up automatically — no import path changes needed.
+
+9. **Meeting point selection lives on map markers, not in the panel.**
+   The purpose of step 2 is for the user to see routes, staff addresses, and candidate points
+   together and make a spatially-informed decision. Putting selection buttons in the panel would
+   let the user choose without looking at the map, losing the spatial context entirely.
+   `PeaPanel` is informational only; the "Elegir" button is in the InfoWindow of each marker.
+
+10. **Uber vehicles always meet at the original PE — this cannot be changed.**
+    This is an operational rule, not a UI preference. Uber drivers are external and are given
+    a single pickup address (the PE). Changing that address dynamically would require re-booking
+    the Uber. The PE is the only valid meeting point for Uber regardless of what the personal
+    car driver chooses. `useStepTwo` enforces this by setting `chosenMeetingPoint = PE` and
+    skipping to step 3 automatically when `has_personal_vehicle` is false.
+
+11. **Polylines drawn imperatively via `useMap()`, not declaratively.**
+    `@vis.gl/react-google-maps` v1.7.x does not ship a `<Polyline>` React component.
+    The idiomatic approach is to get the map instance via `useMap()` and manage
+    `google.maps.Polyline` objects directly inside a `useEffect`. Refs hold the live
+    polyline instances for cleanup; the effect re-runs only when `driverRoutes` changes.
+
+12. **Route bounds include only polyline endpoints, not all decoded points.**
+    Decoding the full polyline just to compute bounds would process hundreds of points
+    for a result nearly identical to using the start and end points. All intermediate
+    points on a road fall between the endpoints; the bounding box from endpoints alone
+    is sufficient to fit the viewport to the route. `@mapbox/polyline` is used for
+    decoding (the maintained successor to the deprecated `polyline` package).
+
+13. **`useStepTwo` watches `currentStep` via `useEffect`, not event handlers.**
+    Step 2 is entered by `FrescosPanel` dispatching `SET_CURRENT_STEP 2`. Watching that
+    state transition in a `useEffect` is the cleanest trigger: the hook fires exactly once
+    on the 1→2 transition without needing to know anything about how step 1 is implemented.
+    The `cancelled` flag prevents dispatches after the component unmounts mid-flight.
