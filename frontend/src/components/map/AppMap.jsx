@@ -1,28 +1,26 @@
 /**
  * AppMap.jsx
- * Full-screen Google Map canvas.  Computes the bounding box from geocoded
- * staff, passes it to MapBoundsController, and renders StaffMarkers.
+ * Full-screen Google Map canvas with all floating UI panels.
  *
- * ── Responsibility split ──────────────────────────────────────────────────────
- * AppMap is the layout owner for everything map-related:
- *   - It decides the initial viewport (center, zoom).
- *   - It computes the bounding box that MapBoundsController acts on.
- *   - It decides which marker/overlay components are active.
+ * Layout model:
+ *   The outer div is position:relative and fills the viewport.
+ *   <Map> fills it entirely (position:absolute via its own styles).
+ *   Floating panels use position:absolute inside this same div so they
+ *   layer over the map without affecting document flow or scroll.
+ *   This is why panels must be siblings of <Map>, not children of it —
+ *   the Maps JS API owns the DOM inside <Map> and appending arbitrary
+ *   React nodes there would conflict with its internal rendering.
  *
- * StaffMarkers renders the markers and their info cards but does NOT touch
- * the viewport — that would cross a concern boundary.  AppMap reads
- * staffWithCoords from global state and derives bounds here so the
- * calculation lives in one place and can be extended later to also include
- * route endpoints, meeting points, etc., without touching StaffMarkers.
+ * ── Why bounds are computed here, not in StaffMarkers ────────────────────────
+ * AppMap is the viewport owner.  StaffMarkers renders pins; it should not
+ * also control where the camera points.  Keeping bounds computation here
+ * means we can later extend it to include route endpoints, meeting points,
+ * pickup candidates, etc., all in one place without coupling those concerns
+ * to the marker component.
  *
  * ── Why APIProvider is NOT here ───────────────────────────────────────────────
- * See App.jsx for the full explanation.  Short version: APIProvider must
- * outlive any map unmount/remount cycle, so it lives at the app root.
- *
- * ── Why mapId matters ─────────────────────────────────────────────────────────
- * A Map ID links the map instance to a custom style in Google Cloud Console
- * and is required to use AdvancedMarker.  Without it, AdvancedMarker falls
- * back silently to a basic pin but loses custom content and styling.
+ * See App.jsx.  Short version: APIProvider must outlive any map
+ * unmount/remount cycle, so it lives at the app root.
  */
 
 import { useMemo } from 'react'
@@ -30,35 +28,17 @@ import { Map } from '@vis.gl/react-google-maps'
 import { useAppState } from '../../state/appState'
 import MapBoundsController from './MapBoundsController'
 import StaffMarkers from './StaffMarkers'
+import FrescosPanel from '../panels/FrescosPanel'
 
-const BA_CENTER   = { lat: -34.6037, lng: -58.3816 }
+const BA_CENTER    = { lat: -34.6037, lng: -58.3816 }
 const DEFAULT_ZOOM = 11
 
-/**
- * Derive a LatLngBoundsLiteral from a geocoded staff list.
- * Returns null when the list is empty or all coordinates are null.
- *
- * Why here and not in StaffMarkers?
- *   Bounds are a viewport concern, not a marker rendering concern.
- *   AppMap owns the viewport; StaffMarkers owns the pins.  Keeping the
- *   calculation here means we can later add route polyline endpoints,
- *   meeting point coordinates, etc., all in the same place.
- *
- * @param {object[]|null} staff
- * @returns {{north: number, south: number, east: number, west: number}|null}
- */
 function computeBounds(staff) {
   if (!staff) return null
-
-  const coords = staff
-    .map((e) => e.coordinates)
-    .filter(Boolean)  // drop null (geocoding failures)
-
+  const coords = staff.map((e) => e.coordinates).filter(Boolean)
   if (coords.length === 0) return null
-
   const lats = coords.map((c) => c.lat)
   const lngs = coords.map((c) => c.lng)
-
   return {
     north: Math.max(...lats),
     south: Math.min(...lats),
@@ -71,15 +51,16 @@ export default function AppMap() {
   const { state } = useAppState()
   const mapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || undefined
 
-  // useMemo avoids recomputing the bounds on every render — bounds only
-  // change when the staff list itself changes (i.e. once, after geocoding).
   const bounds = useMemo(
     () => computeBounds(state.staffWithCoords),
     [state.staffWithCoords],
   )
 
   return (
-    <div style={{ width: '100vw', height: '100vh', overflow: 'hidden' }}>
+    // position:relative establishes the containing block for all absolutely
+    // positioned children (the map canvas + the floating panels).
+    <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' }}>
+
       <Map
         defaultCenter={BA_CENTER}
         defaultZoom={DEFAULT_ZOOM}
@@ -88,19 +69,25 @@ export default function AppMap() {
         disableDefaultUI={false}
         style={{ width: '100%', height: '100%' }}
       >
-        {/* MapBoundsController is renderless — it calls map.fitBounds()
-            imperatively when bounds changes.  Must be inside <Map> to
-            access the map context via useMap(). */}
         <MapBoundsController bounds={bounds} />
 
-        {/* StaffMarkers only renders once geocoding has completed.
-            Rendering before staffWithCoords is ready would produce zero
-            markers anyway, but the explicit guard avoids unnecessary
-            iterations over an empty array on every render cycle. */}
         {state.staffWithCoords && (
           <StaffMarkers staff={state.staffWithCoords} />
         )}
       </Map>
+
+      {/*
+        FrescosPanel is placed OUTSIDE <Map> but inside the relative container.
+        It must be outside <Map> because:
+          1. The Maps JS API controls the DOM inside <Map>; adding arbitrary
+             React content there can cause conflicts.
+          2. Panels need to receive pointer events independently of the map —
+             a click on the panel should not also fire a map click event.
+        It is always rendered (not gated on currentStep) because it shows
+        the question on step 1 and the summary on step 2+.
+        Only render once excelData is loaded so the event details are available.
+      */}
+      {state.excelData && <FrescosPanel />}
     </div>
   )
 }

@@ -17,7 +17,7 @@ Read this file before making any changes.
 - **Backend:** Python, FastAPI, uvicorn
 - **Data:** openpyxl (Excel reading), httpx (HTTP calls)
 - **APIs:** Google Geocoding, Distance Matrix, Routes, Places (New), Maps JavaScript
-- **Frontend:** React + Vite, @vis.gl/react-google-maps, shadcn/ui (not started yet)
+- **Frontend:** React + Vite, @vis.gl/react-google-maps, shadcn/ui, Tailwind CSS v4
 - **Secrets:** All API keys and paths live in `.env`, never in code
 
 ---
@@ -36,7 +36,32 @@ app-traslado-personal/
 ├── sample_data/
 │   └── evento_prueba.xlsx
 ├── requirements.txt
-└── .env
+├── .env
+└── frontend/                ← React + Vite app
+    ├── index.html
+    ├── vite.config.js       ← @tailwindcss/vite plugin + @ alias
+    ├── .env                 ← VITE_API_BASE_URL, VITE_GOOGLE_MAPS_API_KEY, VITE_GOOGLE_MAPS_MAP_ID
+    ├── src/
+    │   ├── main.jsx         ← ReactDOM.createRoot, QueryClientProvider
+    │   ├── App.jsx          ← AppStateProvider → APIProvider → AppShell
+    │   ├── AppShell.jsx     ← loading/error gate; renders AppMap on success
+    │   ├── index.css        ← @import "tailwindcss"; shadcn/ui CSS variables
+    │   ├── api/
+    │   │   ├── client.js    ← axios instance (baseURL from env, dev error interceptor)
+    │   │   └── endpoints.js ← one named async function per backend endpoint
+    │   ├── state/
+    │   │   └── appState.jsx ← useReducer + split contexts (state + dispatch)
+    │   ├── hooks/
+    │   │   └── useBootstrap.js ← readExcel + geocodeStaff on mount
+    │   └── components/
+    │       ├── map/
+    │       │   ├── AppMap.jsx            ← full-screen Map canvas + floating panels
+    │       │   ├── MapBoundsController.jsx ← renderless; calls map.fitBounds()
+    │       │   └── StaffMarkers.jsx      ← AdvancedMarker + Pin + InfoWindow per employee
+    │       ├── panels/
+    │       │   └── FrescosPanel.jsx      ← floating Card: van question + result summary
+    │       └── ui/                       ← shadcn/ui generated components (Card, Button…)
+    └── package.json
 ```
 
 ---
@@ -311,9 +336,23 @@ prestaciones rows using `_row_contains()`.  Returns `departure_time` + full
 assembly; reshapes the three pre-computed results into `frescos_block` and
 `transport_block` for the two draggable map modals.
 
-### TODO: Frontend not started
-React + Vite + @vis.gl/react-google-maps + shadcn/ui.
-Build only after backend is fully tested.
+### Frontend — current status
+Scaffold, global state, map, staff markers, and Step 1 panel are all working.
+
+**Implemented:**
+- Full-screen Google Map (vis.gl `<Map>`) with staff markers (AdvancedMarker + Pin + InfoWindow)
+- `useBootstrap` hook auto-runs on mount: readExcel → geocodeStaff → markers appear
+- `FrescosPanel` floating Card: van question → four sequential backend calls → result summary
+- `AppShell` loading/error gate with phase-specific Spanish messages
+- Global state via `useReducer` + split contexts (prevents unnecessary re-renders)
+
+**Not yet implemented (frontend steps 2–8):**
+- PEA evaluation map overlay and candidate selection
+- Pickup point map markers and confirmation flow
+- Driver route polyline rendering
+- Passenger assignment panel and confirmation modal (draggable)
+- Final output draggable info blocks
+- Manual assignment via marker context menu (PE Uber / PE personal / Find pickup)
 
 ---
 
@@ -377,3 +416,106 @@ TODO: implement employees.json to store employee data and cached coordinates.
 When an employee appears in an event, check employees.json first before
 calling the Geocoding API. First time seen → geocode and save to file.
 Implement after employee list is finalised with the manager.
+
+---
+
+## Frontend architecture
+
+### Stack
+- React 19 + Vite (JSX files must use `.jsx` extension — Vite won't transform JSX in `.js`)
+- Tailwind CSS v4 via `@tailwindcss/vite` plugin — no `postcss.config.js`, no `tailwind.config.js`
+- shadcn/ui v3 (Tailwind v4 compatible, initialized with `--defaults` flag)
+- `@vis.gl/react-google-maps` v1.7.1
+- axios for HTTP (shared instance in `api/client.js`)
+- `@tanstack/react-query` (QueryClient with no retry on 4xx)
+
+### Provider hierarchy (App.jsx)
+```
+AppStateProvider          ← global useReducer state
+  └── APIProvider         ← Google Maps JS API (must outlive any map unmount/remount)
+        └── AppShell      ← loading/error gate; calls useBootstrap()
+              └── AppMap  ← full-screen map + floating panels
+```
+`APIProvider` is in `App.jsx`, NOT in `AppMap.jsx`, because it must survive map remount cycles.
+`AppShell` is a separate file (not inlined in `App.jsx`) because it calls `useAppState()`,
+which requires being below `AppStateProvider` in the tree.
+
+### Layout model (AppMap.jsx)
+The outer div is `position: relative; width: 100vw; height: 100vh`.
+`<Map>` fills it entirely via `width: 100%; height: 100%`.
+Floating panels use `position: absolute` inside this same div — they are **siblings** of
+`<Map>`, not children, because the Maps JS API owns the DOM inside `<Map>`.
+
+### CORS
+FastAPI `CORSMiddleware` must allow both `http://localhost:5173` AND `http://127.0.0.1:5173`.
+The browser treats these as different origins. Vite's `VITE_API_BASE_URL` is set to
+`http://127.0.0.1:8000` to match the allowed origin.
+
+---
+
+## Frontend state flow
+
+State lives in `src/state/appState.jsx` as a `useReducer` with split contexts
+(`AppStateContext` + `AppDispatchContext`) to avoid re-rendering dispatch-only consumers.
+
+| State slice | Populated by | Step |
+|---|---|---|
+| `excelData` | `useBootstrap` → `readExcel()` | Boot |
+| `staffWithCoords` | `useBootstrap` → `geocodeStaff()` | Boot |
+| `loadingStep` | `useBootstrap`, `FrescosPanel` | All loading phases |
+| `error` | `useBootstrap`, `FrescosPanel` | Any failed call |
+| `currentStep` | `FrescosPanel` (dispatched last, after all 4 calls succeed) | Step 1 → 2 |
+| `frescosResult` | `FrescosPanel` → `determineFrescos()` | Step 1 |
+| `secondMinifleteResult` | `FrescosPanel` → `determineSecondMiniflete()` | Step 1 (batch) |
+| `remainingPool` | `FrescosPanel` → `getRemainingPool()` | Step 1 (batch) |
+| `personalVehicle` | `FrescosPanel` → `detectPersonalVehicle()` | Step 1 (batch) |
+| `meetingPoint`, `driverRoutes`, `peaEvaluation` | — (Step 6, not yet built) | Step 6 |
+| `pickupResult` | — (Step 7, not yet built) | Step 7 |
+| `assignments`, `assignmentSummary` | — (Step 8, not yet built) | Step 8 |
+
+`SET_CURRENT_STEP` is always dispatched **after** all dependent slices are populated
+to guarantee the next view renders with complete data on its first paint.
+
+---
+
+## Key architectural decisions (finalized)
+
+1. **`APIProvider` at app root, not in `AppMap`.**
+   Moving it into `AppMap` would destroy and recreate the Maps JS API context on every map
+   remount. Keeping it in `App.jsx` makes it outlive the map lifecycle.
+
+2. **Floating panels as siblings of `<Map>`, never children.**
+   The Maps JS API controls the DOM inside `<Map>`; appending arbitrary React nodes there
+   conflicts with its internal rendering. Siblings in the same `position: relative` container
+   achieve the same visual layering without interference.
+
+3. **`AdvancedMarker` instead of deprecated `Marker`.**
+   `google.maps.Marker` is deprecated as of February 2024. `AdvancedMarkerElement` is the
+   replacement, supports Map ID / custom styling, and is keyboard/screen-reader accessible.
+   Requires `mapId` to be set on the `<Map>` component.
+
+4. **`selectedEmployee` in local state, not global state.**
+   "Which info card is open" is pure transient UI state scoped to `StaffMarkers`.
+   No other part of the app needs it. Global state is reserved for business state.
+
+5. **Bounds computed in `AppMap`, not in `StaffMarkers`.**
+   `AppMap` is the viewport owner. `StaffMarkers` renders pins; it should not also control
+   the camera. All viewport decisions (bounds, center, zoom) belong in `AppMap` so they can
+   later incorporate routes, meeting points, pickup candidates, etc. in one place.
+
+6. **Four backend calls in one `FrescosPanel` handler.**
+   All four results (frescos, second miniflete, remaining pool, personal vehicle) depend on
+   a single user decision (has_own_van). Splitting them into separate user actions would
+   create an unnecessary multi-step wizard. A single try/catch covers the whole sequence
+   and leaves state consistent on failure.
+
+7. **`deriveProfesiones()` bridge function.**
+   `determineFrescos` returns `assigned_names` (employee full names for display).
+   `getRemainingPool` needs `assigned_roles` (Profesion strings for exact pool filtering).
+   The frontend looks up each name in `excelData.staff` to retrieve the Profesion — avoids
+   hardcoding role strings that could drift from the actual Excel data.
+
+8. **`appState.jsx` uses `.jsx` extension.**
+   Vite only transforms JSX syntax in files with a `.jsx` (or `.tsx`) extension.
+   Context providers use JSX (`<Context.Provider>`), so the state file must be `.jsx`.
+   Vite's extensionless import resolution picks it up automatically — no import path changes needed.
