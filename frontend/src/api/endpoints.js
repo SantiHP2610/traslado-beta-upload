@@ -253,12 +253,15 @@ export async function confirmAssignments(body) {
 /**
  * Final safety check.  Computes both departure times (CP and PE/PEA) and
  * returns the two draggable map blocks (frescos_block + transport_block).
+ *
+ * The backend reads event_duration_hours and picada_guests directly from the
+ * Excel file — the frontend does not need to supply them.
+ *
  * @param {{
- *   assignments: object,
- *   assigned_roles: string[],
- *   chosen_meeting_point: object,
- *   event_duration_hours: number,
- *   picada_guests: number
+ *   assignments:          object,
+ *   assigned_roles:       string[],
+ *   chosen_meeting_point: { name: string, lat: number, lng: number },
+ *   has_own_van:          boolean
  * }} body
  * @returns {{ frescos_block: object, transport_block: object }}
  */

@@ -39,6 +39,7 @@
 import { useState }                           from 'react'
 import { useAppState, ACTIONS }               from '../../state/appState'
 import { validateAssignments }                from '../../api/endpoints'
+// finalOutput is called from ConfirmationModal, not here — imported there.
 import { Card, CardContent, CardHeader,
          CardTitle }                          from '@/components/ui/card'
 import { Button }                             from '@/components/ui/button'
@@ -173,13 +174,16 @@ export default function AssignmentPanel() {
         assigned_roles: assignedRoles,
       })
 
-      // result is the partial summary (no departure times yet).
-      // Advance to step 4 — the summary will be shown in the next panel.
+      // Advance to step 4 — AssignmentPanel (step 3 only) unmounts.
+      // The ConfirmationModal renders based on showModal, not currentStep,
+      // so it will appear over the step-4 view immediately.
       dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 4 })
 
-      // Store the validated summary for the confirmation modal (step 4).
-      // We reuse SET_FINAL_OUTPUT to carry the summary forward.
-      dispatch({ type: ACTIONS.SET_FINAL_OUTPUT, payload: result })
+      // Open the confirmation modal.  The modal reads all its display data from
+      // existing state slices (assignments, frescosResult, chosenMeetingPoint,
+      // etc.) — the validate response is only a server-side sanity check and
+      // does not need to be stored.
+      dispatch({ type: ACTIONS.SET_SHOW_MODAL, payload: true })
 
     } catch (err) {
       // 422 means validation failed: unassigned or unknown employees.

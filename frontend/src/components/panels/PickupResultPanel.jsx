@@ -103,8 +103,12 @@ export default function PickupResultPanel() {
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
         ...(state.assignments ?? {}),
-        pickup_employee: employee ?? null,
-        pickup_place:    place,
+        pickup_employee:        employee ?? null,
+        pickup_place:           place,
+        // Store transit time so FinalOutputBlocks can compute the pickup
+        // departure time: departure_from_pe − transit_time_to_pickup_minutes.
+        // The candidate object holds this value; the individual place dict does not.
+        pickup_transit_minutes: candidate?.transit_time_to_pickup_minutes ?? null,
       },
     })
 

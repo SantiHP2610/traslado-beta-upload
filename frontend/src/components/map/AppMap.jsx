@@ -56,6 +56,8 @@ import FrescosPanel                      from '../panels/FrescosPanel'
 import PeaPanel                          from '../panels/PeaPanel'
 import AssignmentPanel                   from '../panels/AssignmentPanel'
 import PickupResultPanel                 from '../panels/PickupResultPanel'
+import ConfirmationModal                 from '../panels/ConfirmationModal'
+import FinalOutputBlocks                 from '../panels/FinalOutputBlocks'
 
 const BA_CENTER    = { lat: -34.6037, lng: -58.3816 }
 const DEFAULT_ZOOM = 11
@@ -249,6 +251,12 @@ export default function AppMap() {
 
       {/* Step 3: pickup search results (shown on demand, any step) */}
       {state.activePickupResult && <PickupResultPanel />}
+
+      {/* Step 4: confirmation modal — draggable, stays after confirm */}
+      {state.showModal && <ConfirmationModal />}
+
+      {/* Step 4: final output blocks — two draggable cards after confirmation */}
+      {state.showOutput && <FinalOutputBlocks />}
     </div>
   )
 }

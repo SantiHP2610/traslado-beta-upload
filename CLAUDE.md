@@ -352,7 +352,7 @@ assembly; reshapes the three pre-computed results into `frescos_block` and
 `transport_block` for the two draggable map modals.
 
 ### Frontend — current status
-Steps 1, 2, and 3 are implemented and building cleanly.
+Steps 1–4 are implemented and building cleanly (`npm run build` passes with no errors).
 
 **Implemented:**
 - Full-screen Google Map (vis.gl `<Map>`) with staff markers (AdvancedMarker + Pin)
@@ -373,13 +373,22 @@ Steps 1, 2, and 3 are implemented and building cleanly.
   - Auto-fills remaining unassigned to Uber on validate; calls POST /validate-assignments; advances to step 4
 - `PickupResultPanel`: floating panel (on-demand) showing place_options from POST /find-pickup
   - Confirming a pickup sets pickup_employee (yellow marker) + pickup_place (yellow pin on map)
+  - Stores `pickup_transit_minutes` on `state.assignments` for departure time display
 - Driver auto-assigned in AppMap useEffect when step 3 starts (assignments initialized from personalVehicle)
 - Pickup place star marker: yellow AdvancedMarker at pickup_place.lat/lng rendered inside <Map>
+- `useDraggable` hook: window-level mousemove/mouseup listeners, refs for bookkeeping, useState only for position
+- `ConfirmationModal`: draggable modal (step 4), z-50 with z-40 backdrop (pointer-events:none)
+  - Reads from state slices: assignments, frescosResult, chosenMeetingPoint, personalVehicle, excelData
+  - "Editar" → SET_SHOW_MODAL false + SET_CURRENT_STEP 3 (no API calls, full state preserved)
+  - "Confirmar" → calls POST /final-output → dispatches SET_FINAL_OUTPUT + SET_SHOW_OUTPUT; modal stays
+  - Sections: Frescos, Punto de encuentro (PEA remuneration note if applicable), Vehículo propio, Uber
+- `FinalOutputBlocks`: two independently draggable blocks (step 4, after confirmation)
+  - Block 1 (Frescos): CP departure time + collapsible breakdown; Clipboard copy button
+  - Block 2 (Traslado): PE/PEA departure time + collapsible breakdown; personal vehicle; pickup time; Uber groups
+  - `pickup_transit_minutes` from `state.assignments` used to compute pickup departure time locally
 
-**Not yet implemented (frontend steps 4–8):**
-- Assignment confirmation modal (draggable, step 4)
-- Final output draggable info blocks (frescos_block + transport_block)
-- Departure time display
+**Not yet implemented (frontend):**
+- End-to-end departure time verification once Routes API arrivalTime is live in production
 
 ---
 
@@ -507,7 +516,9 @@ State lives in `src/state/appState.jsx` as a `useReducer` with split contexts
 | `eventCoords` | `EventMarker` → polyline last point or Geocoding API | Step 1+ |
 | `assignments` | `AppMap` useEffect (driver init) + `StaffMarkers` context menu | Step 3 |
 | `activePickupResult` | `StaffMarkers` → `findPickup()` | Step 3 on-demand |
-| `finalOutput` | `AssignmentPanel` → `validateAssignments()` (partial); step 4+ | Step 4 |
+| `showModal` | `AssignmentPanel` → after `validateAssignments()` succeeds | Step 4 |
+| `showOutput` | `ConfirmationModal` → after `finalOutput()` succeeds | Step 4 |
+| `finalOutput` | `ConfirmationModal` → `finalOutput()` | Step 4 |
 
 `SET_CURRENT_STEP` is always dispatched **after** all dependent slices are populated
 to guarantee the next view renders with complete data on its first paint.
@@ -640,3 +651,36 @@ to guarantee the next view renders with complete data on its first paint.
     `"YYYY-MM-DD HH:MM:SS"` — `datetime.datetime.fromisoformat()` handles both this and the
     plain `"YYYY-MM-DD"` form.  `extra_hours=False` is used for `/calculate-driver-route` and
     `/evaluate-pea` because `event_duration_hours` is not yet known at those stages.
+
+21. **`ConfirmationModal` reads all display data from existing state, not from the validate response.**
+    `POST /validate-assignments` is a server-side sanity check — its return value is discarded.
+    All data shown in the modal (names, Profesion, vehicle, meeting point) already lives in state
+    slices (`assignments`, `frescosResult`, `personalVehicle`, `chosenMeetingPoint`, `excelData`).
+    Storing a duplicate in a `validateResult` slice would only diverge from the source of truth.
+
+22. **Modal stays visible after "Confirmar"; output blocks appear alongside it.**
+    Once the plan is confirmed, the manager needs to cross-check assignments while reading
+    departure times.  Dismissing the modal would force them to remember the entire plan.
+    `SET_SHOW_MODAL` is never dispatched to `false` from `ConfirmationModal` — the user can
+    only close it via "Editar" (which returns to step 3).  "Confirmar" sets `showOutput: true`
+    and the two output blocks appear next to the still-visible modal.
+
+23. **"Editar" preserves all state — no API calls are repeated.**
+    `handleEdit()` dispatches only `SET_SHOW_MODAL false` and `SET_CURRENT_STEP 3`.
+    All accumulated state (`assignments`, `chosenMeetingPoint`, `frescosResult`, routes, PEA
+    evaluation) is untouched.  The expensive geocoding and routing calls from steps 1–3 are
+    not re-run; the user simply returns to the populated step-3 view with full context intact.
+
+24. **`pickup_transit_minutes` stored on `state.assignments`, computed locally in `FinalOutputBlocks`.**
+    The backend's `transport_block.personal_vehicle.pickup_place` is always `null` (a known TODO).
+    `PickupResultPanel` stores `candidate.transit_time_to_pickup_minutes` on `state.assignments`
+    when the user confirms a pickup.  `FinalOutputBlocks` reads `state.assignments.pickup_transit_minutes`
+    and computes the pickup departure time as `departure_from_pe − transit_minutes` without an
+    extra API call.  This keeps the display consistent with the user's confirmed choice.
+
+25. **`FinalOutputRequest` has only 4 fields; `/final-output` reads the rest from Excel.**
+    The backend's `FinalOutputRequest` model accepts only `assignments`, `assigned_roles`,
+    `chosen_meeting_point`, and `has_own_van`.  `event_duration_hours` and `picada_guests`
+    are read internally from the Excel file — the frontend does not derive or pass them.
+    This is why `/final-output` is the correct single-call path from the confirmation modal,
+    not `/confirm-assignments` (which requires those values as explicit body fields).

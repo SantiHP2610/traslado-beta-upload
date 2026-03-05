@@ -76,13 +76,15 @@ const initialState = {
   // Shape: { employeeName: string, result: object } or null.
   activePickupResult: null,
 
-  // Step 7 — Final output blocks
+  // Step 4 — Final output blocks (set by POST /final-output on confirm)
   finalOutput: null,
 
   // UI state
   currentStep: 1,      // which step the user is currently on (1-indexed int)
   loadingStep: null,   // string key of the in-flight step, or null when idle
   error: null,         // last error message surfaced to the user, or null
+  showModal:  false,   // true when the step-4 ConfirmationModal is visible
+  showOutput: false,   // true when the two FinalOutputBlocks are visible
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +106,8 @@ export const ACTIONS = {
   SET_ASSIGNMENTS:            'SET_ASSIGNMENTS',
   SET_ACTIVE_PICKUP_RESULT:   'SET_ACTIVE_PICKUP_RESULT',
   SET_FINAL_OUTPUT:          'SET_FINAL_OUTPUT',
+  SET_SHOW_MODAL:            'SET_SHOW_MODAL',
+  SET_SHOW_OUTPUT:           'SET_SHOW_OUTPUT',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
   SET_ERROR:                 'SET_ERROR',
@@ -161,6 +165,12 @@ function appReducer(state, action) {
 
     case ACTIONS.SET_FINAL_OUTPUT:
       return { ...state, finalOutput: action.payload }
+
+    case ACTIONS.SET_SHOW_MODAL:
+      return { ...state, showModal: action.payload }
+
+    case ACTIONS.SET_SHOW_OUTPUT:
+      return { ...state, showOutput: action.payload }
 
     case ACTIONS.SET_CURRENT_STEP:
       return { ...state, currentStep: action.payload }
