@@ -1,137 +1,409 @@
 /**
  * StaffMarkers.jsx
- * Renders one AdvancedMarker per geocoded employee, plus an InfoWindow
- * when the user clicks a marker.
+ * Renders one AdvancedMarker per geocoded employee.
  *
- * ── Why AdvancedMarker instead of the deprecated Marker ──────────────────────
- * google.maps.Marker is deprecated as of February 2024 and will eventually
- * be removed from the Maps JavaScript API.  AdvancedMarkerElement is its
- * replacement and offers several improvements:
- *   - Required for Map ID / custom styling (mapId must be set on the map).
- *   - Supports arbitrary HTML/React content as the pin body, enabling rich
- *     custom markers later (role icons, color-coded by assignment, etc.).
- *   - Better accessibility: natively keyboard-focusable and screen-reader
- *     friendly without extra configuration.
- * The vis.gl <AdvancedMarker> component wraps AdvancedMarkerElement and
- * integrates cleanly with React's render cycle.
+ * ── Marker behavior by step ──────────────────────────────────────────────────
+ * Step 1-2: clicking a marker opens an InfoWindow with employee info
+ *           (name, profession, address).  No actions — at this stage the
+ *           user is still deciding the meeting point, not assigning seats.
+ * Step 3+:  clicking a marker opens a context menu with assignment actions.
+ *           The driver's marker shows no actions (auto-assigned on step start).
  *
- * ── Why selectedEmployee is local state, not global ──────────────────────────
- * "Which marker is currently showing its info card" is pure UI state: it
- * affects only this component's rendering and has no meaning to any other
- * part of the app (the map bounds calculation, the frescos step, the PEA
- * evaluation, etc. don't care which info card is open).  Putting it in
- * global appState would pollute the business-state store with a transient
- * display concern.  Local useState is the right scope for state that is
- * created and destroyed within a single component's lifetime.
+ * ── Marker color coding ──────────────────────────────────────────────────────
+ * Blue   (#4285F4) → unassigned (default, steps 1-2, unassigned in step 3)
+ * Green  (#34A853) → driver or personal car passenger
+ * Grey   (#9E9E9E) → Uber passenger
+ * Yellow (#FFC107) → pickup employee (picked up on the route before the PE)
  *
- * ── Why bounds are computed in AppMap, not here ──────────────────────────────
- * AppMap is the layout owner: it decides how the map canvas is configured
- * (center, zoom, bounds).  If StaffMarkers computed bounds and called
- * fitBounds internally, it would be reaching outside its own concern
- * (rendering markers) to control a sibling/parent concern (viewport).
- * The clean separation is:
- *   AppMap    → computes bounds from staffWithCoords → passes to MapBoundsController
- *   StaffMarkers → renders markers → reports user interactions upward if needed
+ * These four states map directly to the four color decisions in CLAUDE.md's
+ * "Route and assignment color coding" section.
+ *
+ * ── Why assignment logic lives in this component ─────────────────────────────
+ * Actions are spatially anchored to a specific marker: "assign to car" only
+ * makes sense for the employee whose pin you just tapped.  Rendering the
+ * action menu as an InfoWindow on that pin is the natural spatial affordance —
+ * it mirrors how Google Maps shows place actions when you tap a pin.  Moving
+ * the logic to a sidebar or separate overlay would break the spatial connection
+ * between the employee's home address and the action being taken.
+ *
+ * ── Why selectedKey is local state ───────────────────────────────────────────
+ * "Which InfoWindow is open" is pure transient UI state — it has no meaning
+ * outside this component and does not affect any backend call or downstream
+ * step.  Local useState is the right scope.
+ *
+ * ── Why useAppState is called here instead of receiving assignments as props ──
+ * StaffMarkers reads and mutates four state slices (assignments, personalVehicle,
+ * driverRoutes, chosenMeetingPoint).  Threading all four as props from AppMap
+ * would create excessive coupling between AppMap and its child.  Calling
+ * useAppState() here is cleaner: this component is the rightful owner of the
+ * assignment interaction concern.
  */
 
-import { useState } from 'react'
-import { AdvancedMarker, InfoWindow, Pin } from '@vis.gl/react-google-maps'
-import { Card, CardContent } from '@/components/ui/card'
+import { useState }                            from 'react'
+import { AdvancedMarker, InfoWindow, Pin }     from '@vis.gl/react-google-maps'
+import { useAppState, ACTIONS }               from '../../state/appState'
+import { findPickup }                         from '../../api/endpoints'
+import { Card, CardContent }                  from '@/components/ui/card'
+import { Button }                             from '@/components/ui/button'
+
+// Maximum passengers in the personal car (excluding driver).
+// Mirrors MAX_PASSENGERS_PER_CAR in config.py — kept in sync manually.
+const MAX_CAR_PASSENGERS = 4
+
+// ---------------------------------------------------------------------------
+// Helpers — employee identification
+// ---------------------------------------------------------------------------
+
+function fullName(emp) {
+  return `${emp.Nombre} ${emp.Apellido}`
+}
+
+function sameEmployee(a, b) {
+  return a && b && fullName(a) === fullName(b)
+}
+
+// ---------------------------------------------------------------------------
+// Marker color by assignment state
+//
+// Returns a { background, borderColor, glyphColor } object for Pin.
+// Called once per employee per render — kept as a pure function (no hooks)
+// so it can run inside the map() loop without violating the Rules of Hooks.
+// ---------------------------------------------------------------------------
+
+function getMarkerColors(employee, assignments) {
+  if (!assignments) {
+    // Step 1-2: all markers are the standard blue (no assignments yet)
+    return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
+  }
+
+  // Driver — always green regardless of other assignments
+  if (sameEmployee(assignments.driver, employee)) {
+    return { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
+  }
+
+  // Pickup employee — yellow to highlight the on-route stop
+  if (sameEmployee(assignments.pickup_employee, employee)) {
+    return { background: '#FFC107', borderColor: '#e6a800', glyphColor: '#1a1a1a' }
+  }
+
+  // Car passenger — green (same vehicle as the driver)
+  if (assignments.car_passengers?.some((p) => sameEmployee(p, employee))) {
+    return { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
+  }
+
+  // Uber passenger — grey (separate booking, same destination)
+  if (assignments.uber_passengers?.some((p) => sameEmployee(p, employee))) {
+    return { background: '#9E9E9E', borderColor: '#757575', glyphColor: '#ffffff' }
+  }
+
+  // Unassigned — default blue
+  return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
+}
+
+// ---------------------------------------------------------------------------
+// Step 1-2 InfoWindow: employee information only
+// ---------------------------------------------------------------------------
+
+function EmployeeInfoContent({ employee }) {
+  return (
+    <Card className="min-w-[180px] shadow-none border-0">
+      <CardContent className="p-3 space-y-0.5">
+        <p className="font-semibold text-sm leading-tight">
+          {employee.Nombre} {employee.Apellido}
+        </p>
+        <p className="text-xs text-muted-foreground">{employee.Profesion}</p>
+        <p className="text-xs text-muted-foreground">
+          {employee.Direccion}, {employee.Ciudad}
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Step 3+ context menu: assignment actions
+// ---------------------------------------------------------------------------
+
+function AssignmentMenuContent({
+  employee,
+  assignments,
+  personalVehicle,
+  driverRoutes,
+  chosenMeetingPoint,
+  meetingPoint,
+  dispatch,
+  onClose,
+}) {
+  const [loadingPickup, setLoadingPickup] = useState(false)
+
+  const name     = fullName(employee)
+  const isDriver = sameEmployee(assignments?.driver, employee)
+
+  const inCar = assignments?.car_passengers?.some((p) => sameEmployee(p, employee))
+  const inUber = assignments?.uber_passengers?.some((p) => sameEmployee(p, employee))
+  const isPickup = sameEmployee(assignments?.pickup_employee, employee)
+  const isAssigned = inCar || inUber
+
+  const carCount = assignments?.car_passengers?.length ?? 0
+  const carFull  = carCount >= MAX_CAR_PASSENGERS
+  const hasVehicle = personalVehicle?.has_personal_vehicle
+
+  // Patch a single field (or multiple) into the current assignments object.
+  function patch(fields) {
+    dispatch({
+      type:    ACTIONS.SET_ASSIGNMENTS,
+      payload: { ...assignments, ...fields },
+    })
+  }
+
+  function handleAssignCar() {
+    patch({
+      car_passengers:  [...(assignments?.car_passengers ?? []), employee],
+      // Remove from Uber if they were there
+      uber_passengers: assignments?.uber_passengers?.filter(
+        (p) => !sameEmployee(p, employee),
+      ) ?? [],
+    })
+    onClose()
+  }
+
+  function handleAssignUber() {
+    patch({
+      uber_passengers: [...(assignments?.uber_passengers ?? []), employee],
+      // Remove from car if they were there
+      car_passengers: assignments?.car_passengers?.filter(
+        (p) => !sameEmployee(p, employee),
+      ) ?? [],
+      // If this employee was the pickup, clear that too
+      ...(isPickup ? { pickup_employee: null, pickup_place: null } : {}),
+    })
+    onClose()
+  }
+
+  function handleRemove() {
+    patch({
+      car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
+      uber_passengers: assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
+      ...(isPickup ? { pickup_employee: null, pickup_place: null } : {}),
+    })
+    onClose()
+  }
+
+  async function handleFindPickup() {
+    if (!driverRoutes || !chosenMeetingPoint) return
+
+    // The route polyline depends on which meeting point the user chose:
+    //   PE  → base_route  (driver home → PE → event)
+    //   PEA → direct_route (driver home → event, passes near the PEA)
+    // A PEA has a different name from the original PE returned by /nearest-meeting-point.
+    const isPea = meetingPoint && chosenMeetingPoint.name !== meetingPoint.name
+    const routePolyline = isPea
+      ? driverRoutes.direct_route?.encoded_polyline
+      : driverRoutes.base_route?.encoded_polyline
+
+    if (!routePolyline) return
+
+    setLoadingPickup(true)
+    try {
+      const result = await findPickup({
+        employee_name:  name,
+        route_polyline: routePolyline,
+        meeting_point: {
+          name: chosenMeetingPoint.name,
+          lat:  chosenMeetingPoint.lat,
+          lng:  chosenMeetingPoint.lng,
+        },
+      })
+      dispatch({
+        type:    ACTIONS.SET_ACTIVE_PICKUP_RESULT,
+        payload: { employeeName: name, result },
+      })
+    } catch (err) {
+      dispatch({
+        type:    ACTIONS.SET_ERROR,
+        payload: err?.response?.data?.detail ?? err?.message ?? 'Error al buscar pickup.',
+      })
+    } finally {
+      setLoadingPickup(false)
+      onClose()
+    }
+  }
+
+  return (
+    <Card className="min-w-[200px] shadow-none border-0">
+      <CardContent className="p-3 space-y-2">
+
+        {/* Employee header */}
+        <div>
+          <p className="font-semibold text-sm leading-tight">{name}</p>
+          <p className="text-xs text-muted-foreground">{employee.Profesion}</p>
+        </div>
+
+        {/* Driver — informational only, no actions */}
+        {isDriver && (
+          <p className="text-xs text-green-600 font-medium">
+            Chofer — asignado automáticamente
+          </p>
+        )}
+
+        {/* Assignment actions — hidden for driver */}
+        {!isDriver && (
+          <div className="space-y-1.5">
+
+            {/* Assign to personal car */}
+            {hasVehicle && !carFull && !inCar && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full text-xs"
+                onClick={handleAssignCar}
+              >
+                Asignar al vehículo propio
+              </Button>
+            )}
+
+            {/* Full car message */}
+            {hasVehicle && carFull && !inCar && (
+              <p className="text-xs text-muted-foreground text-center">
+                Vehículo completo ({MAX_CAR_PASSENGERS}/{MAX_CAR_PASSENGERS})
+              </p>
+            )}
+
+            {/* Find pickup on route */}
+            {hasVehicle && driverRoutes && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full text-xs"
+                onClick={handleFindPickup}
+                disabled={loadingPickup}
+              >
+                {loadingPickup ? (
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+                ) : (
+                  'Buscar pickup en ruta'
+                )}
+              </Button>
+            )}
+
+            {/* Assign to Uber */}
+            {!inUber && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full text-xs"
+                onClick={handleAssignUber}
+              >
+                Asignar a Uber
+              </Button>
+            )}
+
+            {/* Remove assignment */}
+            {isAssigned && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="w-full text-xs text-destructive hover:text-destructive"
+                onClick={handleRemove}
+              >
+                Quitar asignación
+              </Button>
+            )}
+
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
 
 /**
- * @param {object} props
- * @param {object[]} props.staff  Full geocoded staff list from state.staffWithCoords.
- *                                Each employee must have a "coordinates" key
- *                                ({ lat, lng }) or null if geocoding failed.
+ * @param {object}   props
+ * @param {object[]} props.staff  Geocoded staff list from state.staffWithCoords.
+ *                                Each employee must have a "coordinates" key.
  */
 export default function StaffMarkers({ staff }) {
-  // selectedEmployee holds the full employee dict of the currently open info
-  // card, or null when no card is open.  This is intentionally local —
-  // see the comment block at the top of the file.
-  const [selectedEmployee, setSelectedEmployee] = useState(null)
+  const { state, dispatch } = useAppState()
+
+  // selectedKey is the full name string of the currently open InfoWindow/menu,
+  // or null when nothing is open.  A string key avoids storing the full
+  // employee object in local state (it can always be looked up from staff).
+  const [selectedKey, setSelectedKey] = useState(null)
+
+  const isStep3Plus = state.currentStep >= 3
+  const {
+    assignments,
+    personalVehicle,
+    driverRoutes,
+    chosenMeetingPoint,
+    meetingPoint,
+  } = state
+
+  // Resolve the selected employee object only when we need to render the popup.
+  const selectedEmployee = selectedKey
+    ? staff.find((emp) => fullName(emp) === selectedKey)
+    : null
 
   return (
     <>
       {staff.map((employee) => {
         const coords = employee.coordinates
-        // Skip employees whose address could not be geocoded — rendering a
-        // marker at (0, 0) or crashing on null access would be worse than
-        // silently omitting the marker and letting the error appear in the
-        // employee data review step later.
+        // Silently skip employees whose address could not be geocoded.
         if (!coords) return null
 
-        const fullName  = `${employee.Nombre} ${employee.Apellido}`
-        const isSelected = selectedEmployee?.Nombre === employee.Nombre &&
-                           selectedEmployee?.Apellido === employee.Apellido
+        const key      = fullName(employee)
+        const isOpen   = selectedKey === key
+        const colors   = getMarkerColors(employee, isStep3Plus ? assignments : null)
 
         return (
-          // key must be stable across renders.  Nombre+Apellido is the
-          // canonical employee identifier used throughout the app.
           <AdvancedMarker
-            key={fullName}
+            key={key}
             position={{ lat: coords.lat, lng: coords.lng }}
-            title={`${fullName} — ${employee.Profesion}`}
-            onClick={() =>
-              // Toggle: clicking the already-selected marker closes the card.
-              setSelectedEmployee(isSelected ? null : employee)
-            }
+            title={`${key} — ${employee.Profesion}`}
+            onClick={() => setSelectedKey(isOpen ? null : key)}
           >
-            {/*
-              Pin renders the standard teardrop shape with customisable colors.
-              Blue (#4285F4) matches Google's own "default" blue and is used
-              for all unassigned staff markers.  Later steps will re-color
-              markers based on vehicle assignment (blue = PE car, red = PEA
-              car, grey = Uber) by passing a different background prop.
-            */}
             <Pin
-              background="#4285F4"
-              borderColor="#2a6dd9"
-              glyphColor="#ffffff"
+              background={colors.background}
+              borderColor={colors.borderColor}
+              glyphColor={colors.glyphColor}
             />
           </AdvancedMarker>
         )
       })}
 
       {/*
-        InfoWindow is rendered once, outside the marker loop, anchored to
-        the selected marker.  Rendering it inside the loop would create N
-        InfoWindow instances that all fight over visibility.  The anchor prop
-        accepts a google.maps.marker.AdvancedMarkerElement, but vis.gl also
-        supports passing position directly via the `position` prop, which is
-        simpler here since we already have the coordinates.
+        Single InfoWindow rendered outside the marker loop, anchored by
+        position.  This avoids N concurrent InfoWindow instances fighting
+        over visibility.
       */}
-      {selectedEmployee && selectedEmployee.coordinates && (
+      {selectedEmployee?.coordinates && (
         <InfoWindow
           position={{
             lat: selectedEmployee.coordinates.lat,
             lng: selectedEmployee.coordinates.lng,
           }}
-          // pixelOffset shifts the card upward so it doesn't overlap the
-          // marker pin.  [0, -40] = 0px horizontal, 40px above anchor.
           pixelOffset={[0, -40]}
-          onCloseClick={() => setSelectedEmployee(null)}
+          onCloseClick={() => setSelectedKey(null)}
           shouldFocus={false}
         >
-          {/*
-            The InfoWindow renders its children inside a Google Maps overlay.
-            We use a shadcn/ui Card so the info card matches the app's design
-            system rather than Google's default white-box styling.
-            The Card sits inside the InfoWindow's DOM portal — Tailwind classes
-            work here because Vite processes them globally.
-          */}
-          <Card className="min-w-[180px] shadow-none border-0">
-            <CardContent className="p-3 space-y-0.5">
-              <p className="font-semibold text-sm leading-tight">
-                {selectedEmployee.Nombre} {selectedEmployee.Apellido}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {selectedEmployee.Profesion}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {selectedEmployee.Direccion}, {selectedEmployee.Ciudad}
-              </p>
-            </CardContent>
-          </Card>
+          {isStep3Plus ? (
+            <AssignmentMenuContent
+              employee={selectedEmployee}
+              assignments={assignments}
+              personalVehicle={personalVehicle}
+              driverRoutes={driverRoutes}
+              chosenMeetingPoint={chosenMeetingPoint}
+              meetingPoint={meetingPoint}
+              dispatch={dispatch}
+              onClose={() => setSelectedKey(null)}
+            />
+          ) : (
+            <EmployeeInfoContent employee={selectedEmployee} />
+          )}
         </InfoWindow>
       )}
     </>

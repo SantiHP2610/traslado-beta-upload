@@ -55,12 +55,18 @@ app-traslado-personal/
     │   │   └── useBootstrap.js ← readExcel + geocodeStaff on mount
     │   └── components/
     │       ├── map/
-    │       │   ├── AppMap.jsx            ← full-screen Map canvas + floating panels
+    │       │   ├── AppMap.jsx              ← full-screen Map canvas + floating panels
     │       │   ├── MapBoundsController.jsx ← renderless; calls map.fitBounds()
-    │       │   └── StaffMarkers.jsx      ← AdvancedMarker + Pin + InfoWindow per employee
+    │       │   ├── StaffMarkers.jsx        ← AdvancedMarker + Pin per employee; InfoWindow (steps 1-2) or context menu (step 3+)
+    │       │   ├── RoutePolylines.jsx      ← blue base route + red direct route (imperative, step 2+)
+    │       │   ├── MeetingPointMarkers.jsx ← green PE + orange PEA markers with InfoWindows (step 2)
+    │       │   └── EventMarker.jsx         ← black pin at event venue; auto-resolves coords (step 1+)
     │       ├── panels/
-    │       │   └── FrescosPanel.jsx      ← floating Card: van question + result summary
-    │       └── ui/                       ← shadcn/ui generated components (Card, Button…)
+    │       │   ├── FrescosPanel.jsx        ← floating Card: van question + result summary (step 1+)
+    │       │   ├── PeaPanel.jsx            ← floating Card: meeting point guide + confirmation (step 2)
+    │       │   ├── AssignmentPanel.jsx     ← floating Card: car/uber assignment progress + validate (step 3)
+    │       │   └── PickupResultPanel.jsx   ← floating Card: find-pickup results + confirm (on-demand)
+    │       └── ui/                         ← shadcn/ui generated components (Card, Button…)
     └── package.json
 ```
 
@@ -346,10 +352,10 @@ assembly; reshapes the three pre-computed results into `frescos_block` and
 `transport_block` for the two draggable map modals.
 
 ### Frontend — current status
-Scaffold, global state, map, staff markers, and Step 1 panel are all working.
+Steps 1, 2, and 3 are implemented and building cleanly.
 
 **Implemented:**
-- Full-screen Google Map (vis.gl `<Map>`) with staff markers (AdvancedMarker + Pin + InfoWindow)
+- Full-screen Google Map (vis.gl `<Map>`) with staff markers (AdvancedMarker + Pin)
 - `useBootstrap` hook auto-runs on mount: readExcel → geocodeStaff → markers appear
 - `FrescosPanel` floating Card: van question → four sequential backend calls → result summary
 - `AppShell` loading/error gate with phase-specific Spanish messages
@@ -358,12 +364,22 @@ Scaffold, global state, map, staff markers, and Step 1 panel are all working.
 - `RoutePolylines` component: blue base route + red direct route drawn imperatively via useMap()
 - `MeetingPointMarkers` component: green PE + orange PEA markers with detailed InfoWindows + selection buttons
 - `PeaPanel` floating panel: loading states, instruction text, route summary, confirmation + advance button
+- `EventMarker` component: black pin at event venue; 3-priority coord resolution (state → polyline → Geocoding API)
+- `StaffMarkers` rewritten: step 1-2 shows InfoWindow, step 3+ shows context menu with assignment actions
+  - Marker color: blue=unassigned, green=driver/car, grey=uber, yellow=pickup employee
+  - Context menu: "Asignar al vehículo propio", "Buscar pickup en ruta", "Asignar a Uber", "Quitar asignación"
+  - Driver marker: always green, no assignment actions
+- `AssignmentPanel`: floating panel (step 3) showing car/uber assignments, progress counter, validate button
+  - Auto-fills remaining unassigned to Uber on validate; calls POST /validate-assignments; advances to step 4
+- `PickupResultPanel`: floating panel (on-demand) showing place_options from POST /find-pickup
+  - Confirming a pickup sets pickup_employee (yellow marker) + pickup_place (yellow pin on map)
+- Driver auto-assigned in AppMap useEffect when step 3 starts (assignments initialized from personalVehicle)
+- Pickup place star marker: yellow AdvancedMarker at pickup_place.lat/lng rendered inside <Map>
 
-**Not yet implemented (frontend steps 3–8):**
-- Pickup point map markers and confirmation flow
-- Passenger assignment panel and confirmation modal (draggable)
-- Final output draggable info blocks
-- Manual assignment via marker context menu (PE Uber / PE personal / Find pickup)
+**Not yet implemented (frontend steps 4–8):**
+- Assignment confirmation modal (draggable, step 4)
+- Final output draggable info blocks (frescos_block + transport_block)
+- Departure time display
 
 ---
 
@@ -385,14 +401,18 @@ of their route so the user can visually associate employees with their scenario.
 - Frescos vehicle: separate color TBD by CEO/manager
 
 ### Manual assignment via map
-Staff assignments are NOT automatic — the backend provides proximity-based
-suggestions but the user makes the final call via a contextual menu on each
-marker:
-  - "Assign to PE (Uber)"
-  - "Assign to PE (personal vehicle)"
-  - "Find pickup on route"
+Staff assignments are NOT automatic — the user makes the final call via a context
+menu that appears when clicking a marker in step 3.  Context menu actions:
+  - "Asignar al vehículo propio" — shown when car not full and employee unassigned
+  - "Buscar pickup en ruta" — shown when personal vehicle exists; triggers POST /find-pickup,
+    opens PickupResultPanel with venue options
+  - "Asignar a Uber" — shown when employee not already in Uber
+  - "Quitar asignación" — shown when employee is currently assigned
 
-The user can override any suggestion before confirming.
+Driver marker (auto-assigned green): shows name + "Chofer — asignado automáticamente",
+no action buttons. The driver cannot be moved to Uber or removed.
+
+In steps 1-2, clicking a marker shows an InfoWindow with employee info only (no actions).
 
 ### Config parameters visual highlight
 Parameters defined in config.py that affect map display (radii, detour distances)
@@ -480,9 +500,14 @@ State lives in `src/state/appState.jsx` as a `useReducer` with split contexts
 | `secondMinifleteResult` | `FrescosPanel` → `determineSecondMiniflete()` | Step 1 (batch) |
 | `remainingPool` | `FrescosPanel` → `getRemainingPool()` | Step 1 (batch) |
 | `personalVehicle` | `FrescosPanel` → `detectPersonalVehicle()` | Step 1 (batch) |
-| `meetingPoint`, `driverRoutes`, `peaEvaluation` | — (Step 6, not yet built) | Step 6 |
-| `pickupResult` | — (Step 7, not yet built) | Step 7 |
-| `assignments`, `assignmentSummary` | — (Step 8, not yet built) | Step 8 |
+| `meetingPoint` | `useStepTwo` → `nearestMeetingPoint()` | Step 2 auto |
+| `driverRoutes` | `useStepTwo` → `calculateDriverRoute()` | Step 2 auto |
+| `peaEvaluation` | `useStepTwo` → `evaluatePea()` | Step 2 auto |
+| `chosenMeetingPoint` | `MeetingPointMarkers` → InfoWindow "Elegir" click | Step 2 |
+| `eventCoords` | `EventMarker` → polyline last point or Geocoding API | Step 1+ |
+| `assignments` | `AppMap` useEffect (driver init) + `StaffMarkers` context menu | Step 3 |
+| `activePickupResult` | `StaffMarkers` → `findPickup()` | Step 3 on-demand |
+| `finalOutput` | `AssignmentPanel` → `validateAssignments()` (partial); step 4+ | Step 4 |
 
 `SET_CURRENT_STEP` is always dispatched **after** all dependent slices are populated
 to guarantee the next view renders with complete data on its first paint.
@@ -562,3 +587,36 @@ to guarantee the next view renders with complete data on its first paint.
     state transition in a `useEffect` is the cleanest trigger: the hook fires exactly once
     on the 1→2 transition without needing to know anything about how step 1 is implemented.
     The `cancelled` flag prevents dispatches after the component unmounts mid-flight.
+
+14. **Driver auto-assigned in `AppMap`, not in `PeaPanel` or `StaffMarkers`.**
+    The driver assignment is a structural side-effect of entering step 3 — it belongs in
+    `AppMap` (the component that owns the step lifecycle and triggers all step transitions)
+    rather than in `PeaPanel` (which only dispatches SET_CURRENT_STEP and doesn't know about
+    driver state) or `StaffMarkers` (which renders markers and should not own lifecycle logic).
+    The guard `if (assignments !== null) return` prevents re-initialization on re-renders.
+
+15. **Assignment state stores employee objects locally; converts to name strings for the API.**
+    During step 3, `assignments.car_passengers`, `uber_passengers`, `pickup_employee`, and `driver`
+    hold full employee objects (for display: name, color, Profesion).  Only when calling
+    `validateAssignments` does `AssignmentPanel` convert them to `"Nombre Apellido"` strings
+    (as required by `AssignmentsInput` on the backend). This avoids duplicating employee data
+    or re-looking up by name for every render.
+
+16. **Context menu as InfoWindow, not a separate DOM overlay.**
+    Assignment actions in step 3 are spatially anchored to specific markers.  Rendering the
+    action menu as an InfoWindow on the clicked pin is the natural Google Maps affordance.
+    A separate DOM overlay would require tracking screen coordinates and handling map pan/zoom
+    to keep it aligned — complexity that InfoWindow handles automatically.
+
+17. **`activePickupResult` in global state, not local to `StaffMarkers`.**
+    The find-pickup call is triggered from the context menu inside `StaffMarkers` but the result
+    is displayed in `PickupResultPanel` (a sibling outside `<Map>`).  Lifting the result to global
+    state avoids prop-drilling through `AppMap` or using a non-React communication mechanism.
+    `PickupResultPanel` reads `state.activePickupResult` directly and clears it when dismissed.
+
+18. **Auto-fill remaining unassigned to Uber on validate, not at assignment time.**
+    Uber is the default transport: every unassigned employee in the remaining pool goes to Uber.
+    Auto-filling at validate time (not incrementally as each employee is left unassigned) means
+    the user can continue reassigning until they click validate, with the unassigned list always
+    visible.  The validate button label changes to "Asignar X restantes a Uber y validar" when
+    there are unassigned employees so the user knows exactly what will happen before clicking.

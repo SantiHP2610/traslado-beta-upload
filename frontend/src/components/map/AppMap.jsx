@@ -42,10 +42,10 @@
  * regardless of which panel or sub-component the user is looking at.
  */
 
-import { useMemo }                       from 'react'
-import { Map }                           from '@vis.gl/react-google-maps'
+import { useMemo, useEffect }            from 'react'
+import { Map, AdvancedMarker, Pin }      from '@vis.gl/react-google-maps'
 import polyline                          from '@mapbox/polyline'
-import { useAppState }                   from '../../state/appState'
+import { useAppState, ACTIONS }          from '../../state/appState'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
 import MapBoundsController               from './MapBoundsController'
 import StaffMarkers                      from './StaffMarkers'
@@ -54,6 +54,8 @@ import MeetingPointMarkers               from './MeetingPointMarkers'
 import EventMarker                       from './EventMarker'
 import FrescosPanel                      from '../panels/FrescosPanel'
 import PeaPanel                          from '../panels/PeaPanel'
+import AssignmentPanel                   from '../panels/AssignmentPanel'
+import PickupResultPanel                 from '../panels/PickupResultPanel'
 
 const BA_CENTER    = { lat: -34.6037, lng: -58.3816 }
 const DEFAULT_ZOOM = 11
@@ -131,12 +133,38 @@ function computeBounds(staffWithCoords, driverRoutes, eventCoords) {
 // ---------------------------------------------------------------------------
 
 export default function AppMap() {
-  const { state } = useAppState()
-  const mapId     = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || undefined
+  const { state, dispatch } = useAppState()
+  const mapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || undefined
 
   // Trigger automatic backend calls when step 2 starts.
   // This hook watches currentStep and fires once on the 1→2 transition.
   useStepTwo()
+
+  // ── Step 3: auto-assign driver ───────────────────────────────────────────
+  // When the user confirms the meeting point and advances to step 3,
+  // immediately initialise the assignments object with the driver.
+  // The driver is the personal vehicle owner; they are green on the map from
+  // the moment step 3 starts and cannot be reassigned by the user.
+  // Guard on assignments === null so this only fires once (not on re-renders).
+  useEffect(() => {
+    if (state.currentStep !== 3) return
+    if (state.assignments !== null) return
+
+    const driver = state.personalVehicle?.has_personal_vehicle
+      ? state.personalVehicle.driver
+      : null
+
+    dispatch({
+      type:    ACTIONS.SET_ASSIGNMENTS,
+      payload: {
+        driver,
+        car_passengers:  [],
+        uber_passengers: [],
+        pickup_employee: null,
+        pickup_place:    null,
+      },
+    })
+  }, [state.currentStep, state.assignments, state.personalVehicle, dispatch])
 
   const bounds = useMemo(
     () => computeBounds(state.staffWithCoords, state.driverRoutes, state.eventCoords),
@@ -180,6 +208,28 @@ export default function AppMap() {
           is not null (map is ready)".
         */}
         {state.staffWithCoords && <EventMarker />}
+
+        {/*
+          Pickup place marker — gold star shown at the confirmed pickup venue.
+          Only rendered in step 3+ when the user has confirmed a pickup.
+          Gold/yellow (#FFC107) matches the pickup employee's marker color so
+          the venue and the employee are visually paired.
+        */}
+        {state.currentStep >= 3 && state.assignments?.pickup_place && (
+          <AdvancedMarker
+            position={{
+              lat: state.assignments.pickup_place.lat,
+              lng: state.assignments.pickup_place.lng,
+            }}
+            title={`Pickup: ${state.assignments.pickup_place.place_name}`}
+          >
+            <Pin
+              background="#FFC107"
+              borderColor="#e6a800"
+              glyphColor="#1a1a1a"
+            />
+          </AdvancedMarker>
+        )}
       </Map>
 
       {/*
@@ -193,6 +243,12 @@ export default function AppMap() {
 
       {/* Step 2: meeting-point selection guide + confirmation */}
       {state.currentStep === 2 && <PeaPanel />}
+
+      {/* Step 3: manual passenger assignment */}
+      {state.currentStep === 3 && <AssignmentPanel />}
+
+      {/* Step 3: pickup search results (shown on demand, any step) */}
+      {state.activePickupResult && <PickupResultPanel />}
     </div>
   )
 }

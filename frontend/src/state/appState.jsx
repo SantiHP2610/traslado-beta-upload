@@ -70,6 +70,12 @@ const initialState = {
   chosenMeetingPoint: null,
   assignments: null,
 
+  // Step 3 UI — result of an on-demand /find-pickup call.
+  // Kept in global state so both StaffMarkers (trigger) and
+  // PickupResultPanel (display) can access it without prop drilling.
+  // Shape: { employeeName: string, result: object } or null.
+  activePickupResult: null,
+
   // Step 7 — Final output blocks
   finalOutput: null,
 
@@ -94,8 +100,9 @@ export const ACTIONS = {
   SET_DRIVER_ROUTES:         'SET_DRIVER_ROUTES',
   SET_PEA_EVALUATION:        'SET_PEA_EVALUATION',
   SET_EVENT_COORDS:          'SET_EVENT_COORDS',
-  SET_CHOSEN_MEETING_POINT:  'SET_CHOSEN_MEETING_POINT',
-  SET_ASSIGNMENTS:           'SET_ASSIGNMENTS',
+  SET_CHOSEN_MEETING_POINT:   'SET_CHOSEN_MEETING_POINT',
+  SET_ASSIGNMENTS:            'SET_ASSIGNMENTS',
+  SET_ACTIVE_PICKUP_RESULT:   'SET_ACTIVE_PICKUP_RESULT',
   SET_FINAL_OUTPUT:          'SET_FINAL_OUTPUT',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
@@ -148,6 +155,9 @@ function appReducer(state, action) {
 
     case ACTIONS.SET_ASSIGNMENTS:
       return { ...state, assignments: action.payload }
+
+    case ACTIONS.SET_ACTIVE_PICKUP_RESULT:
+      return { ...state, activePickupResult: action.payload }
 
     case ACTIONS.SET_FINAL_OUTPUT:
       return { ...state, finalOutput: action.payload }
