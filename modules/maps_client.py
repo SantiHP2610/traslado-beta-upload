@@ -63,6 +63,10 @@ _DISTANCE_MATRIX_URL = "https://maps.googleapis.com/maps/api/distancematrix/json
 # The Routes API uses a different base domain and accepts POST with a JSON body,
 # unlike the older APIs above which use GET with query parameters.
 _ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+# Routes API v2 route matrix — supports arrivalTime for driving mode.
+# Used instead of the Distance Matrix API for driving calls that need
+# historical-traffic accuracy.  See compute_route_matrix().
+_ROUTE_MATRIX_URL = "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix"
 # The Places API (New) nearby search also uses POST with a JSON body.
 # "New" refers to the updated Places API launched in 2023 — it has a different
 # endpoint structure and field-mask pattern from the legacy Places API.
@@ -231,6 +235,149 @@ def calculate_distances(
 
     # Return the full JSON body; callers decide which fields they need
     return response.json()
+
+
+def compute_route_matrix(
+    origins: list[dict],
+    destinations: list[dict],
+    arrival_time: str | None = None,
+    mode: str = "DRIVE",
+) -> dict:
+    """
+    Calls the Routes API v2 computeRouteMatrix endpoint to compute travel times
+    and distances between every origin/destination pair.
+
+    Unlike the Distance Matrix API (GET + query params), this endpoint uses
+    POST + JSON and returns a flat list of RouteMatrixElement objects.
+    The response is normalised here into the same rows/elements shape that
+    calculate_distances() returns so all callers work without modification.
+
+    Why this endpoint instead of calculate_distances() for driving calls?
+        computeRouteMatrix supports arrivalTime — the Routes API works backwards
+        from a known deadline and applies historical traffic for that hour and
+        day of week.  The legacy Distance Matrix API only accepts departureTime
+        for driving, which requires guessing the departure time to get accurate
+        traffic predictions: a circular dependency.
+
+    Why calculate_distances() is still used for transit and nearest-meeting-point?
+        Transit routing does not support routingPreference or arrivalTime in the
+        computeRouteMatrix endpoint.  nearest_meeting_point() is a relative
+        comparison between three fixed points; traffic ratios between them are
+        stable and arrivalTime would add latency without changing the result.
+
+    Parameters:
+        origins      (list[dict]): Coordinate dicts {"lat": float, "lng": float}.
+        destinations (list[dict]): Coordinate dicts {"lat": float, "lng": float}.
+        arrival_time (str | None): ISO 8601 UTC string for when vehicles must
+                                   arrive at the destination, e.g.
+                                   "2025-06-15T16:00:00Z".  If None, current
+                                   traffic conditions are used.
+        mode         (str):        Travel mode — "DRIVE" (default).
+
+    Returns:
+        dict: Normalised Distance Matrix shape:
+              {
+                "rows": [
+                  {
+                    "elements": [
+                      {
+                        "status":   "OK" | "NOT_FOUND",
+                        "duration": {"value": <seconds int>},
+                        "distance": {"value": <meters int>},
+                      },
+                      ...
+                    ]
+                  },
+                  ...
+                ]
+              }
+    """
+    n_origins = len(origins)
+    n_dests   = len(destinations)
+
+    # The computeRouteMatrix API wraps each coordinate in a "waypoint" envelope
+    # rather than accepting the pipe-separated "lat,lng" strings of the older API.
+    def _waypoint(coords: dict) -> dict:
+        return {
+            "waypoint": {
+                "location": {
+                    "latLng": {
+                        "latitude":  coords["lat"],
+                        "longitude": coords["lng"],
+                    }
+                }
+            }
+        }
+
+    body: dict = {
+        "origins":           [_waypoint(o) for o in origins],
+        "destinations":      [_waypoint(d) for d in destinations],
+        "travelMode":        mode,
+        # TRAFFIC_AWARE applies historical + real-time traffic data.
+        # Only valid for DRIVE; omit for TRANSIT (handled by calculate_distances).
+        "routingPreference": "TRAFFIC_AWARE",
+    }
+
+    if arrival_time:
+        # arrivalTime tells the API the latest time vehicles must be at the
+        # destination.  It then picks the departure window that meets this
+        # deadline using historical traffic for that time of day and weekday.
+        body["arrivalTime"] = arrival_time
+
+    headers = {
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        # Request only the fields we use — unused fields waste bandwidth.
+        "X-Goog-FieldMask": (
+            "originIndex,destinationIndex,"
+            "duration,distanceMeters,"
+            "status,condition"
+        ),
+    }
+
+    response = httpx.post(_ROUTE_MATRIX_URL, json=body, headers=headers)
+    response.raise_for_status()
+
+    # The API returns a flat JSON array of RouteMatrixElement objects.
+    # Unlike the Distance Matrix's nested rows/elements structure, elements
+    # can arrive in any order and are identified by originIndex/destinationIndex.
+    elements_flat = response.json()
+
+    # Initialise an N×M grid of NOT_FOUND entries.
+    # Elements not overwritten by a real API result stay as NOT_FOUND.
+    def _not_found() -> dict:
+        return {
+            "status":   "NOT_FOUND",
+            "duration": {"value": 0},
+            "distance": {"value": 0},
+        }
+
+    rows = [
+        {"elements": [_not_found() for _ in range(n_dests)]}
+        for _ in range(n_origins)
+    ]
+
+    for elem in elements_flat:
+        oi = elem.get("originIndex", 0)
+        di = elem.get("destinationIndex", 0)
+
+        # The Routes API uses Google's RPC Status proto:
+        # {"code": 0} (or an absent "status" field) means success.
+        # Any non-zero code means the route could not be computed.
+        # "condition" ROUTE_EXISTS / ROUTE_NOT_FOUND distinguishes a valid route
+        # from a status-OK element where no path exists.
+        status_obj = elem.get("status") or {}
+        condition  = elem.get("condition", "")
+
+        if status_obj.get("code", 0) == 0 and condition == "ROUTE_EXISTS":
+            rows[oi]["elements"][di] = {
+                "status":   "OK",
+                # Duration is returned as e.g. "1234s" — strip the unit suffix.
+                "duration": {"value": int(elem["duration"].rstrip("s"))},
+                "distance": {"value": elem.get("distanceMeters", 0)},
+            }
+        # else: leave as NOT_FOUND (already initialised above)
+
+    return {"rows": rows}
 
 
 def nearest_meeting_point(event_coordinates: dict) -> dict:
@@ -430,6 +577,7 @@ def calculate_driver_route(
     driver_coords:  dict,
     meeting_point:  dict,
     event_coords:   dict,
+    arrival_time:   str | None = None,
 ) -> dict:
     """
     Calculates two driving routes for the personal car driver using the
@@ -453,10 +601,15 @@ def calculate_driver_route(
     route per request (unlike the Distance Matrix which handles a full matrix).
 
     Parameters:
-        driver_coords (dict): {"lat": float, "lng": float} — driver's home address.
-        meeting_point (dict): {"lat": float, "lng": float, ...} — the selected PE.
-                              The nearest_meeting_point() return dict is accepted directly.
-        event_coords  (dict): {"lat": float, "lng": float} — event venue.
+        driver_coords (dict):      {"lat": float, "lng": float} — driver's home address.
+        meeting_point (dict):      {"lat": float, "lng": float, ...} — the selected PE.
+                                   The nearest_meeting_point() return dict is accepted directly.
+        event_coords  (dict):      {"lat": float, "lng": float} — event venue.
+        arrival_time  (str | None): ISO 8601 UTC string for when the vehicle must
+                                   arrive at the event venue (e.g. "2025-06-15T16:00:00Z").
+                                   When provided, the Routes API applies historical traffic
+                                   for that time window — more accurate than current traffic.
+                                   If None, current conditions are used.
 
     Returns:
         dict: {
@@ -486,6 +639,8 @@ def calculate_driver_route(
         "travelMode":        "DRIVE",
         "routingPreference": "TRAFFIC_AWARE",
     }
+    if arrival_time:
+        body_a["arrivalTime"] = arrival_time
 
     # -------------------------------------------------------------------------
     # Route B: driver home → event venue, no intermediates.
@@ -498,6 +653,8 @@ def calculate_driver_route(
         "travelMode":        "DRIVE",
         "routingPreference": "TRAFFIC_AWARE",
     }
+    if arrival_time:
+        body_b["arrivalTime"] = arrival_time
 
     response_a = _call_routes_api(body_a)
     response_b = _call_routes_api(body_b)

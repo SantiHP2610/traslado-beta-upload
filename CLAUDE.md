@@ -620,3 +620,23 @@ to guarantee the next view renders with complete data on its first paint.
     the user can continue reassigning until they click validate, with the unassigned list always
     visible.  The validate button label changes to "Asignar X restantes a Uber y validar" when
     there are unassigned employees so the user knows exactly what will happen before clicking.
+
+19. **`compute_route_matrix()` replaces `calculate_distances()` for all driving calls.**
+    The Routes API v2 `computeRouteMatrix` endpoint supports `arrivalTime` — the API works
+    backwards from a known deadline and applies historical traffic for that hour and day of week.
+    The legacy Distance Matrix API only accepts `departureTime` for driving, which requires guessing
+    the departure time to get accurate traffic: a circular dependency.  `compute_route_matrix()`
+    normalises the flat element list response into the same `rows/elements` shape as
+    `calculate_distances()` so callers need no changes other than swapping function names.
+    `calculate_distances()` is kept for transit calls (transit routing does not support
+    `routingPreference` or `arrivalTime` in the new endpoint) and for
+    `nearest_meeting_point()` (a relative comparison where traffic ratios are stable).
+
+20. **`_compute_arrival_time()` converts event date+time to a UTC ISO 8601 deadline.**
+    Buenos Aires is UTC-3 year-round (no DST since 2008); `ZoneInfo("America/Argentina/Buenos_Aires")`
+    localises explicitly regardless of the server's system timezone.  The `tzdata` package is
+    required on Windows (no system timezone database); added to `requirements.txt`.
+    `fecha_str` from the Excel reader is produced by `str(datetime.datetime(...))` which yields
+    `"YYYY-MM-DD HH:MM:SS"` — `datetime.datetime.fromisoformat()` handles both this and the
+    plain `"YYYY-MM-DD"` form.  `extra_hours=False` is used for `/calculate-driver-route` and
+    `/evaluate-pea` because `event_duration_hours` is not yet known at those stages.

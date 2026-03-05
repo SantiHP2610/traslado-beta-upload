@@ -9,7 +9,9 @@
 # =============================================================================
 
 import os
+import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,16 +20,68 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates, compute_route_matrix
 from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
-from config import CP_LAT, CP_LNG
+from config import (
+    CP_LAT, CP_LNG,
+    DEPARTURE_PREP_HOURS, LONG_EVENT_EXTRA_HOURS,
+    LONG_EVENT_DURATION_THRESHOLD, PICADA_GUEST_THRESHOLD,
+)
 
 # Load the variables defined in .env into the process environment.
 # This must run before any code that calls os.getenv().
 load_dotenv()
+
+# Buenos Aires is UTC-3 year-round (Argentina abolished daylight saving in 2008).
+# Using ZoneInfo rather than a fixed UTC offset makes the intent explicit and
+# handles edge cases correctly if Python ever gets DST data for AR.
+_BA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+
+
+def _compute_arrival_time(event_time_str: str, fecha_str: str, extra_hours: bool) -> str:
+    """
+    Returns an ISO 8601 UTC string for when vehicles must arrive at the event
+    venue: event start time minus the full departure-preparation window.
+
+    Passing arrivalTime (not departureTime) to the Routes API lets it apply
+    historical traffic for the exact hour vehicles would be arriving — more
+    accurate than predicting departure traffic when only the deadline is known.
+
+    Parameters:
+        event_time_str (str):  Event start time in "HH:MM" format, as stored by
+                               the Excel reader.
+        fecha_str      (str):  Event date returned by _clean_str() on the Excel
+                               "Fecha" cell — "YYYY-MM-DD" or
+                               "YYYY-MM-DD HH:MM:SS" (openpyxl date cells become
+                               datetime.datetime objects; str() produces the latter).
+        extra_hours    (bool): True when the event is long or has a large picada,
+                               adding LONG_EVENT_EXTRA_HOURS to the prep window.
+
+    Returns:
+        str: ISO 8601 UTC string, e.g. "2025-06-15T16:00:00Z".
+    """
+    # fromisoformat() handles both "YYYY-MM-DD" and "YYYY-MM-DD HH:MM:SS".
+    event_date = datetime.datetime.fromisoformat(fecha_str.strip()).date()
+    event_hour, event_minute = map(int, event_time_str.strip().split(":"))
+
+    # Build a Buenos Aires-localised datetime for the event start.
+    event_dt = datetime.datetime(
+        event_date.year, event_date.month, event_date.day,
+        event_hour, event_minute,
+        tzinfo=_BA_TZ,
+    )
+
+    # Subtract the full prep window to get the arrival deadline at the venue.
+    prep_hours = DEPARTURE_PREP_HOURS + (LONG_EVENT_EXTRA_HOURS if extra_hours else 0)
+    arrival_dt = event_dt - datetime.timedelta(hours=prep_hours)
+
+    # Convert to UTC — the Routes API requires UTC for arrivalTime.
+    arrival_utc = arrival_dt.astimezone(datetime.timezone.utc)
+    return arrival_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 # -----------------------------------------------------------------------------
 # FastAPI application instance.
@@ -603,8 +657,16 @@ def endpoint_calculate_driver_route():
 
     # -------------------------------------------------------------------------
     # Step 5: calculate both routes via the Routes API and return the result.
+    # extra_hours is False here: event_duration_hours is not known at this stage
+    # (it comes from user input at confirm time).  Using the base DEPARTURE_PREP_HOURS
+    # window gives traffic-accurate travel times for the common case.
     # -------------------------------------------------------------------------
-    return calculate_driver_route(driver_coords, meeting_point, event_coords)
+    arrival_time = _compute_arrival_time(
+        event.get("hora_inicio", ""),
+        event.get("fecha", ""),
+        extra_hours=False,
+    )
+    return calculate_driver_route(driver_coords, meeting_point, event_coords, arrival_time=arrival_time)
 
 
 @app.get(
@@ -753,8 +815,15 @@ def endpoint_evaluate_pea():
     # naturally pass, not ones that require a detour.
     # Both polylines are returned so the frontend can render each scenario and
     # pass the correct one to POST /find-pickup when the user requests it.
+    # extra_hours is False here for the same reason as /calculate-driver-route:
+    # event_duration_hours is not known at the PEA evaluation stage.
     # -------------------------------------------------------------------------
-    routes          = calculate_driver_route(driver_coords, meeting_point, event_coords)
+    arrival_time = _compute_arrival_time(
+        event.get("hora_inicio", ""),
+        event.get("fecha", ""),
+        extra_hours=False,
+    )
+    routes          = calculate_driver_route(driver_coords, meeting_point, event_coords, arrival_time=arrival_time)
     direct_polyline = routes["direct_route"]["encoded_polyline"]
 
     # -------------------------------------------------------------------------
@@ -1327,16 +1396,25 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
             detail="'hora_inicio' is missing or empty in the Excel event sheet.",
         )
 
-    cp_origin        = [{"lat": CP_LAT, "lng": CP_LNG}]
+    cp_origin         = [{"lat": CP_LAT, "lng": CP_LNG}]
     event_destination = [{"lat": event_coords["lat"], "lng": event_coords["lng"]}]
-    matrix           = calculate_distances(cp_origin, event_destination)
-    element          = matrix["rows"][0]["elements"][0]
+
+    # Use compute_route_matrix() with arrivalTime so the Routes API applies
+    # historical traffic for the exact hour the frescos vehicle must arrive.
+    # extra_hours mirrors the same condition used by calculate_departure_time().
+    extra_hours = (
+        body.event_duration_hours >= LONG_EVENT_DURATION_THRESHOLD
+        or body.picada_guests >= PICADA_GUEST_THRESHOLD
+    )
+    arrival_time = _compute_arrival_time(hora_inicio, event.get("fecha", ""), extra_hours)
+    matrix   = compute_route_matrix(cp_origin, event_destination, arrival_time=arrival_time)
+    element  = matrix["rows"][0]["elements"][0]
 
     if element["status"] != "OK":
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Distance Matrix API could not find a route from the CP to "
+                f"Routes API could not find a route from the CP to "
                 f"'{event_address}'. Status: {element['status']}"
             ),
         )
@@ -1521,26 +1599,37 @@ def endpoint_final_output(body: FinalOutputRequest):
     # Step 7: CP → event driving time → CP departure time.
     # The CP is the fixed production centre; its coordinates come from config.py.
     # -------------------------------------------------------------------------
-    cp_origin = [{"lat": CP_LAT, "lng": CP_LNG}]
-    cp_matrix = calculate_distances(cp_origin, event_destination)
+
+    # Picada detection is moved before the matrix calls so extra_hours can be
+    # computed once and shared by both arrivalTime calculations below.
+    # calculate_departure_time() uses the same picada + duration thresholds.
+    from modules.logistics import _normalize, _row_contains  # private helpers
+    kw_picada        = _normalize("picada")
+    picada_detected  = any(_row_contains(r, kw_picada) for r in prestaciones)
+    picada_guests_cp = comensales if picada_detected else 0
+
+    # extra_hours mirrors the same condition used inside calculate_departure_time().
+    extra_hours = (
+        event_duration_hours >= LONG_EVENT_DURATION_THRESHOLD
+        or picada_guests_cp >= PICADA_GUEST_THRESHOLD
+    )
+
+    # Compute once — the same arrivalTime applies to both the CP and PE routes
+    # because both vehicles must arrive at the event at the same setup deadline.
+    arrival_time = _compute_arrival_time(hora_inicio, event.get("fecha", ""), extra_hours)
+
+    cp_origin  = [{"lat": CP_LAT, "lng": CP_LNG}]
+    cp_matrix  = compute_route_matrix(cp_origin, event_destination, arrival_time=arrival_time)
     cp_element = cp_matrix["rows"][0]["elements"][0]
 
     if cp_element["status"] != "OK":
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Distance Matrix API could not find a route from the CP to "
+                f"Routes API could not find a route from the CP to "
                 f"'{event_address}'. Status: {cp_element['status']}"
             ),
         )
-
-    # Picada guests: detect from prestaciones and use comensales as the count.
-    # calculate_departure_time() expects an integer guest count for the picada
-    # check; we pass comensales when picada is contracted, else 0.
-    from modules.logistics import _normalize, _row_contains  # private helpers
-    kw_picada   = _normalize("picada")
-    picada_detected = any(_row_contains(r, kw_picada) for r in prestaciones)
-    picada_guests_cp = comensales if picada_detected else 0
 
     cp_departure = calculate_departure_time(
         event_time_str=hora_inicio,
@@ -1553,18 +1642,18 @@ def endpoint_final_output(body: FinalOutputRequest):
     # Step 8: PE/PEA → event driving time → PE departure time.
     # The meeting point is the one the user confirmed on the map (PE or PEA).
     # -------------------------------------------------------------------------
-    pe_origin = [{
+    pe_origin  = [{
         "lat": body.chosen_meeting_point.lat,
         "lng": body.chosen_meeting_point.lng,
     }]
-    pe_matrix  = calculate_distances(pe_origin, event_destination)
+    pe_matrix  = compute_route_matrix(pe_origin, event_destination, arrival_time=arrival_time)
     pe_element = pe_matrix["rows"][0]["elements"][0]
 
     if pe_element["status"] != "OK":
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Distance Matrix API could not find a route from the meeting point "
+                f"Routes API could not find a route from the meeting point "
                 f"to '{event_address}'. Status: {pe_element['status']}"
             ),
         )
