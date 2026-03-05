@@ -155,13 +155,12 @@ export default function PeaPanel() {
               {/* Instruction */}
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">
-                  Seleccioná el punto de encuentro para el vehículo propio
-                  {driverName && (
-                    <span className="font-normal text-muted-foreground">
-                      {' '}({driverName}
-                      {vehicleDesc && ` — ${vehicleDesc}`})
-                    </span>
-                  )}
+                  Seleccioná el punto de encuentro para{' '}
+                  {vehicleDesc && driverName
+                    ? `${vehicleDesc} de ${driverName}`
+                    : driverName
+                      ? `el vehículo de ${driverName}`
+                      : 'el vehículo'}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Hacé click sobre un marcador{' '}

@@ -37,14 +37,11 @@
  * parent; they must be descendants of <Map> to render into the map canvas.
  * This component is therefore placed as a child of <Map> in AppMap.jsx.
  *
- * ── Why the marker is black ───────────────────────────────────────────────────
- * Color convention from CLAUDE.md:
- *   Blue  → driver's PE route and staff markers
- *   Red   → direct (PEA corridor) route
- *   Green → original PE marker
- *   Orange → PEA candidate markers
- * Black is the only unassigned high-contrast color, making the event venue
- * visually distinct from all other map overlays.
+ * ── Why the marker is red (#EA4335) ──────────────────────────────────────────
+ * #EA4335 is the standard Google Maps destination pin red — universally
+ * recognised as "this is where you're going."  It is the most prominent
+ * color on the map and immediately draws the eye to the event venue, which
+ * is the operationally most important location on the canvas.
  */
 
 import { useEffect, useState }              from 'react'
@@ -184,8 +181,8 @@ export default function EventMarker() {
   return (
     <>
       {/*
-        Black pin distinguishes the event venue from all other map overlays
-        (staff = blue, PE = green, PEA = orange, routes = blue/red).
+        Red pin (#EA4335) — standard Google Maps destination red.
+        Immediately identifies the event venue as the destination.
         title is the tooltip shown on desktop hover.
       */}
       <AdvancedMarker
@@ -194,8 +191,8 @@ export default function EventMarker() {
         onClick={() => setIsOpen((v) => !v)}
       >
         <Pin
-          background="#1a1a1a"
-          borderColor="#000000"
+          background="#EA4335"
+          borderColor="#c5221f"
           glyphColor="#ffffff"
         />
       </AdvancedMarker>

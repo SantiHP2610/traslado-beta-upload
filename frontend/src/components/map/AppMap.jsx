@@ -197,8 +197,14 @@ export default function AppMap() {
         {/* Driver route polylines — rendered from step 2 once routes are loaded */}
         {state.driverRoutes && <RoutePolylines />}
 
-        {/* PE and PEA candidate markers — rendered when a meeting point exists */}
-        {state.meetingPoint && state.currentStep === 2 && (
+        {/*
+          Meeting point markers — rendered from step 2 onward.
+          In step 2: all PE/PEA markers are shown for selection.
+          In steps 3+: MeetingPointMarkers itself filters to show only the
+          chosen marker (larger pin, white ring) so the manager always sees
+          the confirmed meeting point while making and reviewing assignments.
+        */}
+        {state.meetingPoint && state.currentStep >= 2 && (
           <MeetingPointMarkers />
         )}
 

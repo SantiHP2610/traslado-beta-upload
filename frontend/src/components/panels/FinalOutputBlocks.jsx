@@ -295,7 +295,7 @@ export default function FinalOutputBlocks() {
         <div className="space-y-1">
           <SectionTitle>Vehículo</SectionTitle>
           <p className="text-xs font-medium">
-            {fb.vehicle === 'camioneta propia' ? 'Vehículo QH (camioneta propia)' : 'Miniflete contratado'}
+            {fb.vehicle === 'camioneta propia' ? 'Vehículo QH' : 'Miniflete contratado'}
           </p>
           {(fb.assigned_names ?? []).map((name) => (
             <div key={name} className="flex items-center gap-1.5">

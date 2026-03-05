@@ -12,17 +12,25 @@
  *      orphaned overlays from accumulating on the canvas.
  *
  * ── Route color convention ────────────────────────────────────────────────────
- * BLUE  (#4285F4, opacity 1.0) → base_route:   driver home → PE → event
- *   "PE route": the standard path that passes through the staging point.
- *   Full opacity because this is the default / most important route to show.
+ * Before the user selects a meeting point (step 2, no choice yet):
+ *   BLUE  (#4285F4, opacity 1.0) → base_route:   driver home → PE → event
+ *   RED   (#EA4335, opacity 0.6) → direct_route: driver home → event
+ *   Both routes are shown simultaneously so the user can see the difference.
  *
- * RED   (#EA4335, opacity 0.6) → direct_route: driver home → event
- *   "Direct route": used as the corridor for PEA and pickup-point search.
- *   Reduced opacity signals it is a reference path, not the primary route.
+ * After PE is selected:
+ *   YELLOW (#FBBC04) → base_route only; direct_route removed.
  *
- * This matches the color coding defined in CLAUDE.md:
- *   "PE route (chofer → PE → evento): BLUE"
- *   "PEA route (chofer → PEA → evento): RED"
+ * After a PEA is selected:
+ *   ORANGE (#FF6D00) → direct_route only; base_route removed.
+ *
+ * Why remove the unchosen route?
+ *   Once the user commits to a meeting point, the alternative route creates
+ *   visual noise and implies the decision is still open.  The single
+ *   highlighted route reinforces the committed choice and keeps the map clean.
+ *
+ * The chosen route color becomes the "scenario color" and matches the color
+ * of the chosen meeting-point marker and the assigned-to-car staff markers,
+ * creating a consistent visual theme across all map elements.
  *
  * ── Why this component renders inside <Map> ───────────────────────────────────
  * useMap() only works inside the <Map> component tree — it reads from the
@@ -68,39 +76,71 @@ export default function RoutePolylines() {
 
     // ── Cleanup previous polylines ─────────────────────────────────────────
     // Setting map(null) removes the overlay from the map canvas.
-    // This runs both when routes change and on unmount (cleanup function).
+    // This runs both when routes/choice changes and on unmount.
     polylinesRef.current.forEach((p) => p.setMap(null))
     polylinesRef.current = []
 
-    // ── Base route: BLUE, full opacity ────────────────────────────────────
-    // Driver home → PE → event.  The standard route shown to the user.
-    const baseLine = new google.maps.Polyline({
-      path:          decodePath(state.driverRoutes.base_route.encoded_polyline),
-      strokeColor:   '#4285F4',
-      strokeWeight:  STROKE_WEIGHT,
-      strokeOpacity: 1.0,
-      map,
-    })
+    const { base_route, direct_route } = state.driverRoutes
 
-    // ── Direct route: RED, reduced opacity ────────────────────────────────
-    // Driver home → event (no PE stop).  Used as the PEA/pickup corridor.
-    // Reduced opacity signals it is a reference path, not the primary route.
-    const directLine = new google.maps.Polyline({
-      path:          decodePath(state.driverRoutes.direct_route.encoded_polyline),
-      strokeColor:   '#EA4335',
-      strokeWeight:  STROKE_WEIGHT,
-      strokeOpacity: 0.6,
-      map,
-    })
+    // ── Determine which scenario is active ─────────────────────────────────
+    // isPea: user chose a point with a different name than the original PE.
+    // chosenScenarioColor: the "theme color" that also drives marker colors.
+    const isPea = state.meetingPoint && state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+    const chosen = state.chosenMeetingPoint
 
-    polylinesRef.current = [baseLine, directLine]
+    if (!chosen) {
+      // ── No selection yet: show both routes ──────────────────────────────
+      // Base route: BLUE, full opacity — the standard PE path.
+      const baseLine = new google.maps.Polyline({
+        path:          decodePath(base_route.encoded_polyline),
+        strokeColor:   '#4285F4',
+        strokeWeight:  STROKE_WEIGHT,
+        strokeOpacity: 1.0,
+        map,
+      })
+      // Direct route: RED, reduced opacity — the PEA/pickup corridor.
+      // Lower opacity signals it is a reference path, not the primary route.
+      const directLine = new google.maps.Polyline({
+        path:          decodePath(direct_route.encoded_polyline),
+        strokeColor:   '#EA4335',
+        strokeWeight:  STROKE_WEIGHT,
+        strokeOpacity: 0.6,
+        map,
+      })
+      polylinesRef.current = [baseLine, directLine]
+
+    } else if (!isPea) {
+      // ── PE chosen: yellow base route only ───────────────────────────────
+      // The direct route disappears — the user has committed to the PE path.
+      const baseLine = new google.maps.Polyline({
+        path:          decodePath(base_route.encoded_polyline),
+        strokeColor:   '#FBBC04',
+        strokeWeight:  STROKE_WEIGHT,
+        strokeOpacity: 1.0,
+        map,
+      })
+      polylinesRef.current = [baseLine]
+
+    } else {
+      // ── PEA chosen: orange direct route only ────────────────────────────
+      // The base route disappears — the driver goes home → PEA → event,
+      // which follows the direct corridor (not the base route via PE).
+      const directLine = new google.maps.Polyline({
+        path:          decodePath(direct_route.encoded_polyline),
+        strokeColor:   '#FF6D00',
+        strokeWeight:  STROKE_WEIGHT,
+        strokeOpacity: 1.0,
+        map,
+      })
+      polylinesRef.current = [directLine]
+    }
 
     // Cleanup: called when the component unmounts or before the next effect run
     return () => {
       polylinesRef.current.forEach((p) => p.setMap(null))
       polylinesRef.current = []
     }
-  }, [map, state.driverRoutes])
+  }, [map, state.driverRoutes, state.chosenMeetingPoint, state.meetingPoint])
 
   // Renderless — all output is via the imperative Maps JS API.
   return null

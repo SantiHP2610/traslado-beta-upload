@@ -130,6 +130,13 @@ export default function AssignmentPanel() {
   const pickupPlace     = assignments.pickup_place
   const hasVehicle      = personalVehicle?.has_personal_vehicle
 
+  // Vehicle label: "{description} de {Nombre} {Apellido}" — shown wherever
+  // "Vehículo propio" appeared before.  Derived from personalVehicle so all
+  // components show the same name without a separate state slice.
+  const vehicleLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
+    ? `${personalVehicle.vehicle_description} de ${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
+    : 'Vehículo'
+
   // Employees who count as "assigned" (for progress and unassigned list)
   const assignedNames = new Set([
     ...(driver         ? [fullName(driver)]             : []),
@@ -215,7 +222,7 @@ export default function AssignmentPanel() {
           {hasVehicle && (
             <div className="space-y-1.5">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Vehículo propio
+                {vehicleLabel}
               </p>
 
               {/* Driver */}

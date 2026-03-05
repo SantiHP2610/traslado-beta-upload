@@ -50,6 +50,18 @@ import { Button }                             from '@/components/ui/button'
 // Mirrors MAX_PASSENGERS_PER_CAR in config.py — kept in sync manually.
 const MAX_CAR_PASSENGERS = 4
 
+// ── Scenario color palette for driver + car passengers ────────────────────────
+// When the user selects PE, the car's route turns yellow — markers match.
+// When the user selects a PEA, the car's route turns orange — markers match.
+// This creates a consistent "theme color" across route and assigned staff so
+// the manager can visually connect the vehicle to its route at a glance.
+//
+// chosenScenarioColor is derived from chosenMeetingPoint + meetingPoint in the
+// main component and passed into getMarkerColors.  A single derivation point
+// means the color scheme can be changed in one place and all markers update.
+const SCENARIO_PE  = { background: '#FBBC04', borderColor: '#d6a000', glyphColor: '#1a1a1a' }
+const SCENARIO_PEA = { background: '#FF6D00', borderColor: '#e65100', glyphColor: '#ffffff' }
+
 // ---------------------------------------------------------------------------
 // Helpers — employee identification
 // ---------------------------------------------------------------------------
@@ -70,25 +82,38 @@ function sameEmployee(a, b) {
 // so it can run inside the map() loop without violating the Rules of Hooks.
 // ---------------------------------------------------------------------------
 
-function getMarkerColors(employee, assignments) {
+// chosenScenarioColor: 'pe' | 'pea' | null
+//   null  → no meeting point chosen yet; use default green for car/driver
+//   'pe'  → PE chosen; driver + car passengers get SCENARIO_PE yellow
+//   'pea' → PEA chosen; driver + car passengers get SCENARIO_PEA orange
+function getMarkerColors(employee, assignments, chosenScenarioColor) {
   if (!assignments) {
     // Step 1-2: all markers are the standard blue (no assignments yet)
     return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
   }
 
-  // Driver — always green regardless of other assignments
+  // Determine the color for driver and car passengers.
+  // Before a meeting point is chosen the car still shows green (neutral).
+  // Once chosen the car's color matches the route ("theme color").
+  const carColors = chosenScenarioColor === 'pe'  ? SCENARIO_PE
+                  : chosenScenarioColor === 'pea' ? SCENARIO_PEA
+                  : { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
+
+  // Driver — scenario color when meeting point is chosen, green otherwise
   if (sameEmployee(assignments.driver, employee)) {
-    return { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
+    return carColors
   }
 
-  // Pickup employee — yellow to highlight the on-route stop
+  // Pickup employee — #FFC107 amber-yellow, distinct from scenario yellows.
+  // The pickup employee travels by transit to meet the car on the route —
+  // a different journey than car passengers, hence a different color.
   if (sameEmployee(assignments.pickup_employee, employee)) {
     return { background: '#FFC107', borderColor: '#e6a800', glyphColor: '#1a1a1a' }
   }
 
-  // Car passenger — green (same vehicle as the driver)
+  // Car passenger — same scenario color as the driver (same vehicle)
   if (assignments.car_passengers?.some((p) => sameEmployee(p, employee))) {
-    return { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
+    return carColors
   }
 
   // Uber passenger — grey (separate booking, same destination)
@@ -147,6 +172,12 @@ function AssignmentMenuContent({
   const carCount = assignments?.car_passengers?.length ?? 0
   const carFull  = carCount >= MAX_CAR_PASSENGERS
   const hasVehicle = personalVehicle?.has_personal_vehicle
+
+  // Vehicle label for button text — mirrors the label shown in AssignmentPanel
+  // and ConfirmationModal: "{description} de {Nombre} {Apellido}".
+  const vLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
+    ? `${personalVehicle.vehicle_description} de ${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
+    : 'vehículo'
 
   // Patch a single field (or multiple) into the current assignments object.
   function patch(fields) {
@@ -258,7 +289,7 @@ function AssignmentMenuContent({
                 className="w-full text-xs"
                 onClick={handleAssignCar}
               >
-                Asignar al vehículo propio
+                Asignar al {vLabel}
               </Button>
             )}
 
@@ -343,6 +374,16 @@ export default function StaffMarkers({ staff }) {
     meetingPoint,
   } = state
 
+  // chosenScenarioColor — derived from which meeting point the user selected.
+  // 'pe'  → PE chosen  → yellow (#FBBC04) route and markers
+  // 'pea' → PEA chosen → orange (#FF6D00) route and markers
+  // null  → no choice yet → car markers stay green (neutral default)
+  //
+  // Derived here rather than hardcoded per case so a single place controls the
+  // mapping between "which point was chosen" and "what color scheme applies."
+  const isPea = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
+  const chosenScenarioColor = !chosenMeetingPoint ? null : isPea ? 'pea' : 'pe'
+
   // Resolve the selected employee object only when we need to render the popup.
   const selectedEmployee = selectedKey
     ? staff.find((emp) => fullName(emp) === selectedKey)
@@ -357,7 +398,11 @@ export default function StaffMarkers({ staff }) {
 
         const key      = fullName(employee)
         const isOpen   = selectedKey === key
-        const colors   = getMarkerColors(employee, isStep3Plus ? assignments : null)
+        const colors   = getMarkerColors(
+          employee,
+          isStep3Plus ? assignments : null,
+          isStep3Plus ? chosenScenarioColor : null,
+        )
 
         return (
           <AdvancedMarker

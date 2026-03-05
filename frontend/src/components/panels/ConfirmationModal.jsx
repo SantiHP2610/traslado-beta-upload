@@ -166,6 +166,12 @@ export default function ConfirmationModal() {
   const hasVehicle     = personalVehicle?.has_personal_vehicle
   const vehicleDesc    = personalVehicle?.vehicle_description
 
+  // Vehicle label: "{description} de {Nombre} {Apellido}" — replaces the generic
+  // "Vehículo propio" section title with the actual car make and driver name.
+  const vehicleLabel = vehicleDesc && driver
+    ? `${vehicleDesc} de ${fullName(driver)}`
+    : driver ? `Vehículo de ${fullName(driver)}` : 'Vehículo'
+
   const uberGroups = chunkArray(uberPassengers, MAX_UBER)
 
   // ── Handlers ──────────────────────────────────────────────────────────────
@@ -257,7 +263,7 @@ export default function ConfirmationModal() {
               <SectionTitle>Frescos</SectionTitle>
               <p className="text-xs font-medium">
                 {frescosResult?.vehicle === 'camioneta propia'
-                  ? 'Vehículo QH (camioneta propia)'
+                  ? 'Vehículo QH'
                   : 'Miniflete contratado'}
               </p>
               {(frescosResult?.assigned_names ?? []).map((name) => {
@@ -292,10 +298,10 @@ export default function ConfirmationModal() {
               )}
             </div>
 
-            {/* ── Section 3: Vehículo propio ──────────────────────────────── */}
+            {/* ── Section 3: Personal vehicle ──────────────────────────────── */}
             {hasVehicle && (
               <div className="space-y-1.5">
-                <SectionTitle>Vehículo propio</SectionTitle>
+                <SectionTitle>{vehicleLabel}</SectionTitle>
                 {driver && (
                   <p className="text-xs font-medium">
                     {vehicleDesc

@@ -20,13 +20,19 @@
  * the user to assume PEA is the only option.  Both options are always rendered
  * side by side so the comparison is explicit.
  *
- * ── Chosen marker visual feedback ────────────────────────────────────────────
+ * ── Chosen marker visual feedback and persistence ────────────────────────────
  * When the user clicks "Elegir" on any marker, SET_CHOSEN_MEETING_POINT is
- * dispatched.  This component reads chosenMeetingPoint and switches the chosen
- * marker to a distinct "selected" pin style (darker border, white glyph →
- * checkmark icon) while leaving unchosen markers in their default style.
- * This gives immediate confirmation of the selection without navigating away
- * from the map.
+ * dispatched.  This component reads chosenMeetingPoint and:
+ *   1. Hides all unchosen markers immediately (unchosen PE if PEA chosen, or
+ *      all PEA candidates if PE chosen) — reduces visual noise and signals
+ *      the decision is final.
+ *   2. Shows the chosen marker at 1.4× scale with a white ring border and a
+ *      checkmark glyph — larger and visually distinct so it remains legible
+ *      even when surrounded by staff markers in steps 3 and 4.
+ *   3. Remains rendered in steps 3 and 4 (AppMap renders this component for
+ *      currentStep >= 2, not just step 2).  The chosen meeting point is the
+ *      most operationally critical location on the map — every transport
+ *      vehicle converges on it and it must always be visible.
  *
  * ── Per-employee table in PEA InfoWindow ─────────────────────────────────────
  * staff_metrics returned by the backend gives each employee's transit times to
@@ -225,48 +231,67 @@ export default function MeetingPointMarkers() {
     setOpenKey(null)   // close the InfoWindow after choosing
   }
 
-  const peChosen  = isChosen(meetingPoint)
-  const peColors  = peChosen ? PE_COLORS.selected  : PE_COLORS.default
+  const peChosen   = isChosen(meetingPoint)
+  const peColors   = peChosen ? PE_COLORS.selected  : PE_COLORS.default
   const candidates = pea?.has_candidates ? (pea.candidates ?? []) : []
+
+  // isPostChoice: the user has selected a meeting point (PE or PEA).
+  // Once a choice is made:
+  //   - Only the chosen marker is rendered (unchosen markers are removed).
+  //   - The chosen marker shows at 1.4× scale with a white ring border so it
+  //     remains clearly visible among staff markers in steps 3 and 4.
+  // Before a choice: all markers are rendered at 1.0× (existing behaviour).
+  const isPostChoice = chosen !== null
 
   return (
     <>
       {/* ── Original PE marker ──────────────────────────────────────────── */}
-      <AdvancedMarker
-        position={{ lat: meetingPoint.lat, lng: meetingPoint.lng }}
-        title={meetingPoint.name}
-        onClick={() => setOpenKey(openKey === 'pe' ? null : 'pe')}
-      >
-        <Pin
-          background={peColors.background}
-          borderColor={peColors.border}
-          glyphColor={peColors.glyph}
-          // Show a checkmark glyph when this point is selected.
-          // The empty string keeps the default dot when not selected.
-          glyph={peChosen ? '✓' : ''}
-          scale={peChosen ? 1.2 : 1.0}
-        />
-      </AdvancedMarker>
+      {/* Hidden once a choice is made and PE was NOT the chosen point.      */}
+      {(!isPostChoice || peChosen) && (
+        <>
+          <AdvancedMarker
+            position={{ lat: meetingPoint.lat, lng: meetingPoint.lng }}
+            title={meetingPoint.name}
+            onClick={() => setOpenKey(openKey === 'pe' ? null : 'pe')}
+          >
+            <Pin
+              background={peColors.background}
+              // White ring on the chosen marker makes it unambiguous even when
+              // surrounded by staff markers — the most important location on the
+              // map must always be findable at a glance.
+              borderColor={peChosen ? '#ffffff' : peColors.border}
+              glyphColor={peColors.glyph}
+              glyph={peChosen ? '✓' : ''}
+              scale={peChosen ? 1.4 : 1.0}
+            />
+          </AdvancedMarker>
 
-      {openKey === 'pe' && (
-        <InfoWindow
-          position={{ lat: meetingPoint.lat, lng: meetingPoint.lng }}
-          pixelOffset={[0, -40]}
-          onCloseClick={() => setOpenKey(null)}
-          shouldFocus={false}
-        >
-          <PeInfoContent
-            meetingPoint={meetingPoint}
-            onChoose={() => handleChoose(meetingPoint)}
-          />
-        </InfoWindow>
+          {openKey === 'pe' && (
+            <InfoWindow
+              position={{ lat: meetingPoint.lat, lng: meetingPoint.lng }}
+              pixelOffset={[0, -40]}
+              onCloseClick={() => setOpenKey(null)}
+              shouldFocus={false}
+            >
+              <PeInfoContent
+                meetingPoint={meetingPoint}
+                onChoose={() => handleChoose(meetingPoint)}
+              />
+            </InfoWindow>
+          )}
+        </>
       )}
 
       {/* ── PEA candidate markers ────────────────────────────────────────── */}
+      {/* Each candidate is hidden once a choice is made and it was not       */}
+      {/* the chosen one (including the original PE marker when PEA chosen).  */}
       {candidates.map((candidate, i) => {
-        const markerKey  = `pea-${i}`
-        const peaChosen  = isChosen(candidate)
-        const peaColors  = peaChosen ? PEA_COLORS.selected : PEA_COLORS.default
+        const markerKey = `pea-${i}`
+        const peaChosen = isChosen(candidate)
+        const peaColors = peaChosen ? PEA_COLORS.selected : PEA_COLORS.default
+
+        // Skip unchosen candidates once a selection has been made.
+        if (isPostChoice && !peaChosen) return null
 
         return (
           <span key={candidate.address}>
@@ -277,12 +302,10 @@ export default function MeetingPointMarkers() {
             >
               <Pin
                 background={peaColors.background}
-                borderColor={peaColors.border}
+                borderColor={peaChosen ? '#ffffff' : peaColors.border}
                 glyphColor={peaColors.glyph}
-                // Label "1"/"2"/"3" identifies the rank so the user can cross-
-                // reference with the PeaPanel route summary.
                 glyph={peaChosen ? '✓' : String(i + 1)}
-                scale={peaChosen ? 1.2 : 1.0}
+                scale={peaChosen ? 1.4 : 1.0}
               />
             </AdvancedMarker>
 

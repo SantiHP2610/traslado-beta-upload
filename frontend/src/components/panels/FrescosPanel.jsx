@@ -74,7 +74,7 @@ function VanQuestion({ onAnswer, loading }) {
   return (
     <>
       <p className="text-sm font-medium text-foreground">
-        ¿Hay camioneta propia disponible?
+        ¿Está disponible el Vehículo QH?
       </p>
       <div className="flex gap-2 pt-1">
         <Button
@@ -128,7 +128,7 @@ function FrescosSummary({ frescosResult, secondMiniflete, remainingPool, persona
         </p>
         <p className="font-medium">
           {frescosResult.vehicle === 'camioneta propia'
-            ? 'Camioneta propia'
+            ? 'Vehículo QH'
             : 'Miniflete contratado'}
         </p>
         <p className="text-xs text-muted-foreground">

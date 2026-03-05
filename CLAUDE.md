@@ -381,7 +381,7 @@ Steps 1–4 are implemented and building cleanly (`npm run build` passes with no
   - Reads from state slices: assignments, frescosResult, chosenMeetingPoint, personalVehicle, excelData
   - "Editar" → SET_SHOW_MODAL false + SET_CURRENT_STEP 3 (no API calls, full state preserved)
   - "Confirmar" → calls POST /final-output → dispatches SET_FINAL_OUTPUT + SET_SHOW_OUTPUT; modal stays
-  - Sections: Frescos, Punto de encuentro (PEA remuneration note if applicable), Vehículo propio, Uber
+  - Sections: Frescos, Punto de encuentro (PEA remuneration note if applicable), vehicle label, Uber
 - `FinalOutputBlocks`: two independently draggable blocks (step 4, after confirmation)
   - Block 1 (Frescos): CP departure time + collapsible breakdown; Clipboard copy button
   - Block 2 (Traslado): PE/PEA departure time + collapsible breakdown; personal vehicle; pickup time; Uber groups
@@ -395,24 +395,45 @@ Steps 1–4 are implemented and building cleanly (`npm run build` passes with no
 ## Frontend UX decisions
 
 ### Route and assignment color coding
-Each route scenario has its own color. Suggested assignments inherit the color
-of their route so the user can visually associate employees with their scenario.
 
-- PE route (chofer → PE → evento): BLUE
-  - Staff markers suggested for this route: blue highlight
-  - Pickup candidate for PE route: blue marker
+**Before the user selects a meeting point (step 2, no choice yet):**
+- Base route (home → PE → event): BLUE (#4285F4), full opacity
+- Direct route (home → event):    RED (#EA4335), 60% opacity (reference path)
+- PE marker: green (#34A853)
+- PEA candidate markers: orange (#FF6D00)
+- Staff markers: blue (#4285F4, unassigned)
 
-- PEA route (chofer → PEA → evento): RED
-  - Staff markers suggested for this route: red highlight
-  - Pickup candidate for PEA route: red marker
+**After PE is selected (PE scenario):**
+- Route: YELLOW (#FBBC04) — base_route only; direct route disappears
+- Chosen PE marker: green, 1.4× scale, white ring border, ✓ glyph
+- All PEA candidate markers disappear
+- Driver + car passenger markers: YELLOW (#FBBC04)
+- Uber passenger markers: GREY (#9E9E9E)
+- Unassigned markers: BLUE (#4285F4)
 
-- Uber (any scenario): GREY markers
-- Frescos vehicle: separate color TBD by CEO/manager
+**After a PEA is selected (PEA scenario):**
+- Route: ORANGE (#FF6D00) — direct_route only; base route disappears
+- Chosen PEA marker: orange, 1.4× scale, white ring border, ✓ glyph
+- PE marker and all other PEA candidates disappear
+- Driver + car passenger markers: ORANGE (#FF6D00)
+- Uber passenger markers: GREY (#9E9E9E)
+- Unassigned markers: BLUE (#4285F4)
+
+**Fixed colors (scenario-independent):**
+- Event venue marker: RED (#EA4335) — Google Maps standard destination red
+- Pickup employee marker: #FFC107 amber-yellow (distinct from scenario yellows)
+- Pickup venue marker (map pin): #FFC107
+
+**"Vehículo QH"** replaces "camioneta propia" in all UI display strings.
+The backend value `"camioneta propia"` is unchanged (comparison strings, not display).
+
+**Vehicle label pattern:** "{vehicle_description} de {Nombre} {Apellido}" replaces every
+occurrence of the generic "Vehículo propio" label in section headers and button text.
 
 ### Manual assignment via map
 Staff assignments are NOT automatic — the user makes the final call via a context
 menu that appears when clicking a marker in step 3.  Context menu actions:
-  - "Asignar al vehículo propio" — shown when car not full and employee unassigned
+  - "Asignar al {vehicle_description} de {driver}" — shown when car not full and employee unassigned
   - "Buscar pickup en ruta" — shown when personal vehicle exists; triggers POST /find-pickup,
     opens PickupResultPanel with venue options
   - "Asignar a Uber" — shown when employee not already in Uber
