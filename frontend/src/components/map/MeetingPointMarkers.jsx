@@ -123,10 +123,10 @@ function PeaInfoContent({ candidate, onChoose }) {
         {/* Key metrics */}
         <div className="space-y-0.5 text-xs">
           <p>
-            <span className="font-medium">
-              {Math.round(candidate.median_transit_minutes)} min
+            <span className="font-medium text-green-600">
+              {Math.round(candidate.top4_savings_minutes)} min ahorrados
             </span>
-            {' '}mediana tránsito
+            {' '}(top 4 más cercanos)
           </p>
           <p>
             <span className="font-medium">
@@ -135,6 +135,23 @@ function PeaInfoContent({ candidate, onChoose }) {
             {' '}empleado{candidate.exclusively_prefer_count !== 1 ? 's' : ''} lo prefiere{candidate.exclusively_prefer_count !== 1 ? 'n' : ''}
           </p>
         </div>
+
+        {/* Top-4 employees driving the score */}
+        {candidate.top4_employees && candidate.top4_employees.length > 0 && (
+          <div className="space-y-0.5 text-xs">
+            <p className="font-semibold uppercase tracking-wide text-muted-foreground">
+              Top {candidate.top4_employees.length} empleados
+            </p>
+            {candidate.top4_employees.map((e) => (
+              <div key={e.employee_name} className="flex justify-between gap-2">
+                <span className="truncate max-w-[120px]">{e.employee_name}</span>
+                <span className={e.time_saved_min >= 0 ? 'text-green-600' : 'text-red-500'}>
+                  {e.time_saved_min >= 0 ? '+' : ''}{Math.round(e.time_saved_min)} min
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Remuneration warning */}
         {candidate.remuneration_note && (

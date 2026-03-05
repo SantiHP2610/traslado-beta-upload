@@ -732,7 +732,15 @@ def endpoint_evaluate_pea():
                     "address":                  str,
                     "lat":                      float,
                     "lng":                      float,
-                    "median_transit_minutes":   float,
+                    "top4_savings_minutes":     float,
+                    "top4_employees": [
+                        {
+                            "employee_name":            str,
+                            "transit_to_candidate_min": float,
+                            "time_saved_min":           float
+                        },
+                        ...  # up to MAX_PASSENGERS_PER_CAR (4) entries
+                    ],
                     "exclusively_prefer_count": int,
                     "pea_near_original":        bool,
                     "remuneration_note":        str | null,
@@ -747,7 +755,7 @@ def endpoint_evaluate_pea():
                         ...
                     ]
                 },
-                ...  # up to 3, ranked by median_transit_minutes ascending
+                ...  # up to 3, ranked by top4_savings_minutes descending
             ]
         }
     }

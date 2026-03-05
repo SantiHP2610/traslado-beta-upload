@@ -771,7 +771,7 @@ def _best_candidate_for_cluster(
 ) -> dict | None:
     """
     Evaluates all PEA candidates against one geographic cluster of employees
-    and returns the candidate with the lowest median transit time for that
+    and returns the candidate with the highest top-4 savings sum for that
     group, or None if no candidate has a valid transit route for all members.
 
     One Distance Matrix call per candidate:
@@ -789,8 +789,9 @@ def _best_candidate_for_cluster(
         meeting_point   (dict):       Full meeting-point dict (name + coords).
 
     Returns:
-        dict | None: Best candidate dict with cluster_members and staff_metrics,
-                     or None if every candidate is unreachable for ≥ 1 member.
+        dict | None: Best candidate dict with top4_savings_minutes, top4_employees,
+                     cluster_members, and staff_metrics, or None if every candidate
+                     is unreachable for ≥ 1 member.
     """
     staff_coords = [m["coordinates"] for m in cluster]
     staff_names  = [
@@ -845,8 +846,22 @@ def _best_candidate_for_cluster(
         if skip_candidate:
             continue
 
-        transit_times  = [m["transit_to_candidate_min"] for m in staff_metrics]
-        median_transit = statistics.median(transit_times)
+        # Top-4 employees by shortest transit time to this candidate.
+        # Uses MAX_PASSENGERS_PER_CAR because these are exactly the employees
+        # who would ride in the personal car via this PEA — the scoring
+        # reflects the group the manager is deciding for, not a diluted
+        # average across employees who may never use this route.
+        sorted_by_transit   = sorted(staff_metrics, key=lambda m: m["transit_to_candidate_min"])
+        top4                = sorted_by_transit[:MAX_PASSENGERS_PER_CAR]
+        top4_savings_minutes = sum(m["time_saved_min"] for m in top4)
+        top4_employees      = [
+            {
+                "employee_name":            m["employee_name"],
+                "transit_to_candidate_min": m["transit_to_candidate_min"],
+                "time_saved_min":           m["time_saved_min"],
+            }
+            for m in top4
+        ]
 
         exclusively_prefer_count = sum(
             1 for m in staff_metrics
@@ -885,7 +900,8 @@ def _best_candidate_for_cluster(
             "address":                  candidate["address"],
             "lat":                      candidate["lat"],
             "lng":                      candidate["lng"],
-            "median_transit_minutes":   median_transit,
+            "top4_savings_minutes":     top4_savings_minutes,
+            "top4_employees":           top4_employees,
             "exclusively_prefer_count": exclusively_prefer_count,
             "pea_near_original":        pea_near_original,
             "remuneration_note":        remuneration_note,
@@ -896,8 +912,9 @@ def _best_candidate_for_cluster(
     if not valid_candidates:
         return None
 
-    # Best candidate for this cluster = lowest median transit time.
-    valid_candidates.sort(key=lambda c: c["median_transit_minutes"])
+    # Best candidate for this cluster = highest combined savings for the top-4
+    # closest employees.  Descending sort means valid_candidates[0] is the winner.
+    valid_candidates.sort(key=lambda c: c["top4_savings_minutes"], reverse=True)
     return valid_candidates[0]
 
 
@@ -935,13 +952,13 @@ def evaluate_pea_candidates(
 
         Phase 2 — evaluate per cluster:
             _best_candidate_for_cluster() evaluates ALL PEA candidates against
-            each cluster and returns the single best one (lowest median transit
-            time for that group).
+            each cluster and returns the single best one (highest top-4 savings
+            sum for that group — see _best_candidate_for_cluster for rationale).
 
         Phase 3 — assemble:
             Collect one winner per cluster, deduplicate by address (two clusters
-            may independently select the same transit hub), sort by median transit
-            time ascending, and cap the total at 3.
+            may independently select the same transit hub), sort by top-4 savings
+            descending, and cap the total at 3.
 
     Why cap at 3?
         UI constraint.  More than 3 map markers for the same type of point is
@@ -965,7 +982,17 @@ def evaluate_pea_candidates(
                     "address":                  str,
                     "lat":                      float,
                     "lng":                      float,
-                    "median_transit_minutes":   float,
+                    "top4_savings_minutes":     float,  # sum of time_saved_min for the
+                                                        # 4 closest employees (by transit
+                                                        # time to candidate); higher = better
+                    "top4_employees": [
+                        {
+                            "employee_name":            str,
+                            "transit_to_candidate_min": float,
+                            "time_saved_min":           float,
+                        },
+                        ...  # up to MAX_PASSENGERS_PER_CAR entries
+                    ],
                     "exclusively_prefer_count": int,
                     "pea_near_original":        bool,
                     "remuneration_note":        str | None,
@@ -1021,15 +1048,16 @@ def evaluate_pea_candidates(
             cluster_winners.append(winner)
 
     # ── Phase 3: assemble the final candidate list ────────────────────────────
-    # Sort all winners by median transit time so the best overall candidate
+    # Sort all winners by top4_savings_minutes descending so the candidate
+    # that saves the most combined travel time for the 4 closest employees
     # appears first regardless of which cluster produced it.
     # Deduplicate by address: two clusters might independently select the same
-    # transit hub.  After sorting, the first occurrence has the lower median,
+    # transit hub.  After sorting, the first occurrence has the highest savings,
     # so we keep it and discard subsequent duplicates.
     seen_addresses: set[str] = set()
     deduped: list[dict] = []
 
-    for c in sorted(cluster_winners, key=lambda x: x["median_transit_minutes"]):
+    for c in sorted(cluster_winners, key=lambda x: x["top4_savings_minutes"], reverse=True):
         if c["address"] not in seen_addresses:
             seen_addresses.add(c["address"])
             deduped.append(c)

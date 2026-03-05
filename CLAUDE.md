@@ -198,17 +198,21 @@ Uses geographic clustering (CLUSTER_RADIUS_KM = 8 km) before transit evaluation.
 - For each cluster: one Distance Matrix call per candidate (cluster_size rows × 2 destinations: candidate + PE, transit mode)
 - All-or-nothing validity rule: if any cluster member has non-OK status, skip that candidate
 - Per-employee metrics: transit_to_candidate_min, transit_to_pe_min, time_saved_min, exceeds_max_transit
-- Selects the best candidate for that cluster (lowest median transit time)
+- Scoring: sort staff_metrics by transit_to_candidate_min ascending → take top MAX_PASSENGERS_PER_CAR (4) →
+  sum their time_saved_min → `top4_savings_minutes`; also builds `top4_employees` list (name + transit + savings per person)
+- Rationale: top-4 matches the car capacity; the savings sum is exactly how many combined minutes the car group
+  gains; avoids dilution from outlier employees who would never use that specific PEA
+- Selects the best candidate for that cluster (highest top4_savings_minutes)
 - Returns `cluster_members`: lightweight list of {employee_name, transit_to_candidate_min} — which employees this PEA serves
 
 **Phase 3 — assemble**:
 - Collect one winner per cluster; deduplicate by address (two clusters may pick the same hub)
-- Sort by median transit time ascending; cap at 3 total (UI constraint — more is visually overwhelming)
+- Sort by top4_savings_minutes descending; cap at 3 total (UI constraint — more is visually overwhelming)
 - Proximity check per candidate: Haversine km from PEA to original PE
   ≤ PEA_RADIUS_KM (10 km) → flagged "optimal"; > 10 km → remuneration_note set
 - Returns `{"has_candidates": bool, "candidates": [...up to 3 dicts...]}`
-- Each candidate dict: name, address, lat, lng, median_transit_minutes, exclusively_prefer_count,
-  pea_near_original, remuneration_note, **cluster_members**, staff_metrics
+- Each candidate dict: name, address, lat, lng, **top4_savings_minutes**, **top4_employees**,
+  exclusively_prefer_count, pea_near_original, remuneration_note, **cluster_members**, staff_metrics
 - Full pipeline exposed at `GET /evaluate-pea`
 
 User sees map and decides: keep original meeting point or switch to PEA.
