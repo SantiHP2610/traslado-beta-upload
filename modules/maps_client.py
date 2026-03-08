@@ -19,6 +19,7 @@ import polyline as polyline_lib
 from dotenv import load_dotenv
 
 from config import CP_LAT, CP_LNG  # noqa: F401 — available for route calculations from the CP
+from modules.api_cache import get as cache_get, put as cache_put
 
 # Load the variables defined in .env into the process environment.
 # This call is safe to repeat — if load_dotenv() was already called by
@@ -114,6 +115,11 @@ def geocode(address: str) -> dict | None:
               if the address was found and resolved.
         None: if the API returns no results or an error status.
     """
+    # --- Cache check ---
+    cached = cache_get("geocode", address)
+    if cached is not None:
+        return cached["data"]
+
     # Build the query parameters for the HTTP GET request
     params = {
         "address": address,
@@ -132,6 +138,7 @@ def geocode(address: str) -> dict | None:
     # Common non-OK statuses: "ZERO_RESULTS" (address not found),
     # "INVALID_REQUEST", "REQUEST_DENIED" (bad API key), etc.
     if data["status"] != "OK":
+        cache_put("geocode", None, address)
         return None
 
     # The results list is ordered by relevance; the first entry is the best match
@@ -140,12 +147,14 @@ def geocode(address: str) -> dict | None:
     # The lat/lng values are nested inside geometry → location
     location = first_result["geometry"]["location"]
 
-    return {
+    result = {
         "lat": location["lat"],
         "lng": location["lng"],
         # "formatted_address" is the canonical address string Google resolved to
         "formatted_address": first_result["formatted_address"],
     }
+    cache_put("geocode", result, address)
+    return result
 
 
 def geocode_staff(staff: list[dict]) -> list[dict]:
@@ -215,6 +224,13 @@ def calculate_distances(
                       "duration": {"value": <seconds>, "text": "..."},
                       "status":   "OK" | "ZERO_RESULTS" | ... }
     """
+    # --- Cache check ---
+    # Key includes the pipe-formatted coordinates and mode so identical
+    # origin/destination/mode combos return the same cached result.
+    cached = cache_get("calculate_distances", origins, destinations, mode)
+    if cached is not None:
+        return cached["data"]
+
     # The Distance Matrix API expects coordinates as a pipe-separated string:
     # "lat1,lng1|lat2,lng2|..."
     # This inner helper formats a list of coordinate dicts into that format.
@@ -234,7 +250,9 @@ def calculate_distances(
     response.raise_for_status()
 
     # Return the full JSON body; callers decide which fields they need
-    return response.json()
+    result = response.json()
+    cache_put("calculate_distances", result, origins, destinations, mode)
+    return result
 
 
 def compute_route_matrix(
@@ -292,6 +310,11 @@ def compute_route_matrix(
                 ]
               }
     """
+    # --- Cache check ---
+    cached = cache_get("compute_route_matrix", origins, destinations, arrival_time, mode)
+    if cached is not None:
+        return cached["data"]
+
     n_origins = len(origins)
     n_dests   = len(destinations)
 
@@ -377,7 +400,9 @@ def compute_route_matrix(
             }
         # else: leave as NOT_FOUND (already initialised above)
 
-    return {"rows": rows}
+    result = {"rows": rows}
+    cache_put("compute_route_matrix", result, origins, destinations, arrival_time, mode)
+    return result
 
 
 def nearest_meeting_point(event_coordinates: dict) -> dict:
@@ -520,6 +545,11 @@ def _call_routes_api(body: dict) -> dict:
     Raises:
         httpx.HTTPStatusError: For 4xx/5xx HTTP responses.
     """
+    # --- Cache check ---
+    cached = cache_get("routes_api", body)
+    if cached is not None:
+        return cached["data"]
+
     headers = {
         "X-Goog-Api-Key":  GOOGLE_MAPS_API_KEY,
         # Request only the fields we actually use — smaller payload, faster response.
@@ -533,7 +563,9 @@ def _call_routes_api(body: dict) -> dict:
     }
     response = httpx.post(_ROUTES_URL, json=body, headers=headers)
     response.raise_for_status()
-    return response.json()
+    result = response.json()
+    cache_put("routes_api", result, body)
+    return result
 
 
 def _extract_route(response_json: dict) -> dict:
@@ -727,30 +759,37 @@ def find_pea_candidates(direct_route_polyline: str) -> list[dict]:
     seen_addresses: dict[str, dict] = {}
 
     for lat, lng in sampled_points:
-        body = {
-            "includedTypes": _PEA_PLACE_TYPES,
-            "locationRestriction": {
-                "circle": {
-                    "center": {"latitude": lat, "longitude": lng},
-                    "radius": _PLACES_SEARCH_RADIUS,
-                }
-            },
-        }
-        headers = {
-            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-            # Request only the four fields we need — Places API (New) charges
-            # per field category, so requesting fewer fields reduces cost.
-            "X-Goog-FieldMask": (
-                "places.displayName,"
-                "places.location,"
-                "places.types,"
-                "places.formattedAddress"
-            ),
-        }
+        # --- Cache check per sampled point ---
+        _ck = (lat, lng, _PLACES_SEARCH_RADIUS, tuple(_PEA_PLACE_TYPES))
+        cached = cache_get("pea_places", *_ck)
+        if cached is not None:
+            data = cached["data"]
+        else:
+            body = {
+                "includedTypes": _PEA_PLACE_TYPES,
+                "locationRestriction": {
+                    "circle": {
+                        "center": {"latitude": lat, "longitude": lng},
+                        "radius": _PLACES_SEARCH_RADIUS,
+                    }
+                },
+            }
+            headers = {
+                "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+                # Request only the four fields we need — Places API (New) charges
+                # per field category, so requesting fewer fields reduces cost.
+                "X-Goog-FieldMask": (
+                    "places.displayName,"
+                    "places.location,"
+                    "places.types,"
+                    "places.formattedAddress"
+                ),
+            }
 
-        response = httpx.post(_PLACES_NEARBY_URL, json=body, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+            response = httpx.post(_PLACES_NEARBY_URL, json=body, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            cache_put("pea_places", data, *_ck)
 
         # "places" key may be absent if the API found nothing nearby
         for place in data.get("places", []):

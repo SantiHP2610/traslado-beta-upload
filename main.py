@@ -128,7 +128,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
     ],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -162,9 +162,35 @@ def _load_excel() -> dict:
     return read_excel(str(EXCEL_PATH))
 
 
+# API response cache — eliminates repeated Google Maps calls during development.
+# Toggle via .env: API_CACHE_ENABLED=true (default) or false.
+from modules.api_cache import stats as cache_stats, clear as cache_clear
+
 # -----------------------------------------------------------------------------
 # Endpoints
 # -----------------------------------------------------------------------------
+
+@app.get(
+    "/cache-stats",
+    summary="Show API cache statistics",
+    description="Returns the current state of the file-based API cache.",
+)
+def endpoint_cache_stats():
+    return cache_stats()
+
+
+@app.delete(
+    "/cache-clear",
+    summary="Clear the API response cache",
+    description=(
+        "Deletes all cached API responses.  Next request will make real "
+        "Google Maps API calls and repopulate the cache."
+    ),
+)
+def endpoint_cache_clear():
+    deleted = cache_clear()
+    return {"deleted": deleted, "message": f"Cleared {deleted} cached entries."}
+
 
 @app.get(
     "/read-excel",

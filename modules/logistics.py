@@ -50,6 +50,7 @@ from config import (
 # than delegated to maps_client to keep the full Step 7 logic in one function).
 # Both cross-module imports work because uvicorn adds the project root to sys.path.
 from modules.maps_client import calculate_distances, GOOGLE_MAPS_API_KEY
+from modules.api_cache import get as cache_get, put as cache_put
 
 
 # =============================================================================
@@ -1406,39 +1407,48 @@ def find_pickup_candidate(
     # We look for pickup-suitable venues within PICKUP_MAX_DETOUR_METERS metres
     # of the cross-point.  The radius is tight so that any found venue is
     # reachable from the road without a significant turn-off by the driver.
-    places_body = {
-        "includedTypes": PICKUP_PLACE_TYPES,
-        "locationRestriction": {
-            "circle": {
-                "center": {
-                    "latitude":  cross_point["lat"],
-                    "longitude": cross_point["lng"],
-                },
-                # The API expects a float; cast in case PICKUP_MAX_DETOUR_METERS
-                # is defined as an int in config.py (float() is a no-op on float).
-                "radius": float(PICKUP_MAX_DETOUR_METERS),
-            }
-        },
-    }
-    places_headers = {
-        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-        # Request only the four fields we use — Places API (New) charges per
-        # field category, so omitting unused fields reduces cost.
-        "X-Goog-FieldMask": (
-            "places.displayName,"
-            "places.location,"
-            "places.types,"
-            "places.formattedAddress"
-        ),
-    }
 
-    places_response = httpx.post(
-        "https://places.googleapis.com/v1/places:searchNearby",
-        json=places_body,
-        headers=places_headers,
-    )
-    places_response.raise_for_status()
-    raw_places = places_response.json().get("places", [])
+    # --- Cache check ---
+    _ck = (cross_point["lat"], cross_point["lng"],
+           PICKUP_MAX_DETOUR_METERS, tuple(PICKUP_PLACE_TYPES))
+    cached_places = cache_get("pickup_places", *_ck)
+    if cached_places is not None:
+        raw_places = cached_places["data"]
+    else:
+        places_body = {
+            "includedTypes": PICKUP_PLACE_TYPES,
+            "locationRestriction": {
+                "circle": {
+                    "center": {
+                        "latitude":  cross_point["lat"],
+                        "longitude": cross_point["lng"],
+                    },
+                    # The API expects a float; cast in case PICKUP_MAX_DETOUR_METERS
+                    # is defined as an int in config.py (float() is a no-op on float).
+                    "radius": float(PICKUP_MAX_DETOUR_METERS),
+                }
+            },
+        }
+        places_headers = {
+            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+            # Request only the four fields we use — Places API (New) charges per
+            # field category, so omitting unused fields reduces cost.
+            "X-Goog-FieldMask": (
+                "places.displayName,"
+                "places.location,"
+                "places.types,"
+                "places.formattedAddress"
+            ),
+        }
+
+        places_response = httpx.post(
+            "https://places.googleapis.com/v1/places:searchNearby",
+            json=places_body,
+            headers=places_headers,
+        )
+        places_response.raise_for_status()
+        raw_places = places_response.json().get("places", [])
+        cache_put("pickup_places", raw_places, *_ck)
 
     # ── Step 4: on-route filter ───────────────────────────────────────────
     #
