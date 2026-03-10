@@ -382,6 +382,26 @@ export default function ConfirmationModal() {
               )}
             </div>
 
+            {/* ── Section 5: Pending employee ──────────────────────────────── */}
+            {/* Only shown when the manager chose "Buscar alternativa" for the   */}
+            {/* sole unassigned employee — that person needs transport arranged   */}
+            {/* outside the normal Uber/car flow.                                 */}
+            {assignments?.pending_employee && (
+              <div className="space-y-1 rounded-md bg-amber-50 border border-amber-200 p-2">
+                <SectionTitle>Pendiente</SectionTitle>
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
+                  <span className="text-xs font-medium">
+                    {fullName(assignments.pending_employee)}
+                    {assignments.pending_employee.Profesion
+                      ? ` — ${assignments.pending_employee.Profesion}`
+                      : ''}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-700">Transporte alternativo a coordinar</p>
+              </div>
+            )}
+
             {/* ── Error ───────────────────────────────────────────────────── */}
             {state.error && (
               <p className="text-xs text-destructive">{state.error}</p>

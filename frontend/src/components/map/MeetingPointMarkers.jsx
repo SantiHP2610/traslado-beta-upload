@@ -50,11 +50,14 @@ import { Button }                              from '@/components/ui/button'
 // ---------------------------------------------------------------------------
 // Pin color palette
 // ---------------------------------------------------------------------------
-// Yellow (#FBBC04) matches the route color shown after the user selects this PE,
-// creating a consistent visual theme: marker color anticipates the route color.
+// Yellow (#FBBC04) for both unselected and selected PE states — the marker
+// colour matches the route colour before and after the user commits to this PE.
+// The selected state is distinguished by 1.4× scale, white ring border, and
+// a ✓ glyph; the yellow background stays consistent so the marker is
+// immediately recognisable as "the meeting point" throughout steps 3 and 4.
 const PE_COLORS = {
   default:  { background: '#FBBC04', border: '#d6a000', glyph: '#1a1a1a' },
-  selected: { background: '#1a6e2e', border: '#0d4a1f', glyph: '#ffffff' },
+  selected: { background: '#FBBC04', border: '#d6a000', glyph: '#1a1a1a' },
 }
 const PEA_COLORS = {
   default:  { background: '#FF6D00', border: '#e65100', glyph: '#ffffff' },

@@ -108,6 +108,10 @@ function transportText(tb, assignments) {
   ;(tb.uber_groups ?? []).forEach((g) => {
     lines.push(`Uber ${g.group_number}: ${(g.passengers ?? []).join(', ')}`)
   })
+  if (assignments?.pending_employee) {
+    const pendName = `${assignments.pending_employee.Nombre} ${assignments.pending_employee.Apellido}`
+    lines.push(`Pendiente (transporte alternativo): ${pendName}`)
+  }
   return lines.join('\n')
 }
 
@@ -467,6 +471,23 @@ export default function FinalOutputBlocks() {
                         ))}
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* Pending employee */}
+                {assignments?.pending_employee && (
+                  <div className="rounded-md bg-amber-50 border border-amber-200 p-2 space-y-1">
+                    <SectionTitle>Pendiente</SectionTitle>
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
+                      <span className="text-xs">
+                        {`${assignments.pending_employee.Nombre} ${assignments.pending_employee.Apellido}`}
+                        {assignments.pending_employee.Profesion
+                          ? ` — ${assignments.pending_employee.Profesion}`
+                          : ''}
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-700">Transporte alternativo a coordinar</p>
                   </div>
                 )}
 

@@ -11,9 +11,14 @@
  * 4. Pickup section (if pickup_employee is set): employee name + venue.
  * 5. Progress counter: "X de Y asignados"
  * 6. List of unassigned employees (if any).
- * 7. Validate button: disabled until all employees are assigned.
- *    Clicking validate auto-fills remaining unassigned into Uber, then calls
- *    POST /validate-assignments.  On success, advances to step 4.
+ * 7. Validate area: behaviour depends on how many employees are unassigned.
+ *    - 0 unassigned: single "Validar asignaciones" button (calls backend).
+ *    - 2+ unassigned: single "Asignar X restantes a Uber y validar" button.
+ *    - exactly 1 unassigned: TWO buttons —
+ *        PRIMARY  "Buscar alternativa y dejar pendiente": stores the employee
+ *          as assignments.pending_employee and advances without a backend call.
+ *        SECONDARY "Asignar 1 restante a Uber y validar": auto-fills and
+ *          calls POST /validate-assignments (existing path).
  *
  * ── Why validate auto-fills Uber ─────────────────────────────────────────────
  * The spec (Part E) says Uber is the default fallback: any employee not
@@ -149,6 +154,21 @@ export default function AssignmentPanel() {
   const allAssigned    = assignedCount >= totalToAssign
   const unassigned     = pool.filter((emp) => !assignedNames.has(fullName(emp)))
   const uberGroups     = chunkArray(uberPassengers, MAX_UBER)
+
+  // "Buscar alternativa y dejar pendiente" — exactly-1-unassigned path.
+  // Stores the sole unassigned employee on assignments.pending_employee so
+  // ConfirmationModal and FinalOutputBlocks can display an amber warning.
+  // No backend call: the manager explicitly decided not to assign this person
+  // to Uber, so the "all assigned" invariant is intentionally waived here.
+  function handlePendiente() {
+    const pendingEmp = unassigned[0]
+    dispatch({
+      type:    ACTIONS.SET_ASSIGNMENTS,
+      payload: { ...assignments, pending_employee: pendingEmp },
+    })
+    dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 4 })
+    dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: true })
+  }
 
   async function handleValidate() {
     // ── Part E: auto-fill remaining unassigned into Uber ──────────────────
@@ -318,25 +338,50 @@ export default function AssignmentPanel() {
               {assignedCount} de {totalToAssign} asignados
             </p>
 
-            {/*
-              The button is always enabled — clicking it auto-fills remaining
-              unassigned employees into Uber before calling the backend.
-              The label changes to reflect whether there are still unassigned
-              employees so the user knows what will happen.
-            */}
-            <Button
-              className="w-full"
-              onClick={handleValidate}
-              disabled={validating}
-            >
-              {validating ? (
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
-              ) : unassigned.length > 0 ? (
-                `Asignar ${unassigned.length} restantes a Uber y validar`
-              ) : (
-                'Validar asignaciones'
-              )}
-            </Button>
+            {unassigned.length === 1 ? (
+              /*
+                Exactly 1 unassigned: the manager chooses between two paths.
+                "Buscar alternativa" skips Uber entirely for this person —
+                useful when the employee lives too far from the route or the
+                manager already arranged separate transport.
+                "Asignar a Uber" is the standard fallback (existing behaviour).
+              */
+              <div className="flex flex-col gap-2">
+                <Button
+                  className="w-full bg-black text-white hover:bg-gray-900"
+                  onClick={handlePendiente}
+                  disabled={validating}
+                >
+                  Buscar alternativa y dejar pendiente
+                </Button>
+                <Button
+                  className="w-full border border-gray-300 text-gray-700 hover:bg-gray-50"
+                  variant="outline"
+                  onClick={handleValidate}
+                  disabled={validating}
+                >
+                  {validating ? (
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-700 border-t-transparent" />
+                  ) : (
+                    'Asignar 1 restante a Uber y validar'
+                  )}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                className="w-full"
+                onClick={handleValidate}
+                disabled={validating}
+              >
+                {validating ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
+                ) : unassigned.length > 0 ? (
+                  `Asignar ${unassigned.length} restantes a Uber y validar`
+                ) : (
+                  'Validar asignaciones'
+                )}
+              </Button>
+            )}
           </div>
 
           {/* Inline error */}
