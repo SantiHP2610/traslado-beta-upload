@@ -14,12 +14,11 @@
  * chosenMeetingPoint).  Reusing those avoids storing a redundant duplicate of
  * the same data in a separate "validateResult" slice.
  *
- * ── Why the modal stays after confirmation ────────────────────────────────────
- * Once the user confirms, the manager needs to reference the full assignment
- * plan while the map is still interactive (cross-checking addresses, routes,
- * pickup locations).  Dismissing the modal would force them to remember the
- * entire plan from memory.  Keeping it visible alongside the two output blocks
- * lets them see plan + departure times simultaneously.
+ * ── What happens after confirmation ─────────────────────────────────────────
+ * "Confirmar" calls POST /final-output, then dispatches SET_SHOW_OUTPUT true
+ * and SET_SHOW_MODAL false.  The modal closes and FinalOutputBlocks takes over:
+ * a single large centered panel (85vw × 85vh) with both frescos and transport
+ * sections, clipboard copy buttons, and a "Volver a editar" button.
  *
  * ── Overlay approach ─────────────────────────────────────────────────────────
  * The backdrop div uses pointer-events:none.  This darkens the map visually
@@ -197,8 +196,9 @@ export default function ConfirmationModal() {
       const result = await finalOutput(body)
       // Store the full block response — FinalOutputBlocks reads from this.
       dispatch({ type: ACTIONS.SET_FINAL_OUTPUT, payload: result })
-      // Show the two output blocks alongside the (still-visible) modal.
-      dispatch({ type: ACTIONS.SET_SHOW_OUTPUT,  payload: true })
+      // Show the final output panel and close this modal — the panel takes over.
+      dispatch({ type: ACTIONS.SET_SHOW_OUTPUT,  payload: true  })
+      dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: false })
     } catch (err) {
       const detail = err?.response?.data?.detail
       const msg    = typeof detail === 'object'
