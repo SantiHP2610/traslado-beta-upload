@@ -6,6 +6,7 @@ __pycache__/
 _generar_excel.py
 run.ps1
 .api_cache/
+employees.json
 
 # Frontend
 frontend/.env

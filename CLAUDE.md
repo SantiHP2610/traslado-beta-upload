@@ -186,7 +186,6 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 - ~~**Places API caching**: Cache `find_pea_candidates()` and `find_pickup_candidate()`~~ → DONE: `modules/api_cache.py` caches all Google API calls to `.api_cache/`. Toggle via `API_CACHE_ENABLED` in `.env`.
 -**Final output redesign (step 4 post-confirm)**: Replace the current two small draggable blocks (`FinalOutputBlocks`) with a single large modal/panel that occupies most of the screen. Map stays running and visible behind it (semi-transparent backdrop). Must include a "Volver a editar" button that returns to step 3 with full state preserved (same behavior as current "Editar"). Consolidate both blocks (frescos + transport) into sections within this single panel. The current ConfirmationModal should transition into this final view, not coexist with separate blocks.
 - **Pickup map highlight**: Visual circle overlay around cross-points and candidates for CEO/manager review
-- **Employee database**: `employees.json` with cached coordinates — check before geocoding
 - **departure_from_pe**: Currently null in `build_assignment_summary()` — needs Routes API call in /confirm-assignments
 - **End-to-end departure time verification** with Routes API arrivalTime in production
 

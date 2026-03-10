@@ -19,7 +19,8 @@ import polyline as polyline_lib
 from dotenv import load_dotenv
 
 from config import CP_LAT, CP_LNG  # noqa: F401 — available for route calculations from the CP
-from modules.api_cache import get as cache_get, put as cache_put
+from modules.api_cache    import get as cache_get, put as cache_put
+from modules              import employee_cache
 
 # Load the variables defined in .env into the process environment.
 # This call is safe to repeat — if load_dotenv() was already called by
@@ -169,9 +170,22 @@ def geocode_staff(staff: list[dict]) -> list[dict]:
     "coordinates" key on the employee dict.  The original list is modified
     in-place and also returned, so callers can chain or ignore the return value.
 
+    ── Employee cache ────────────────────────────────────────────────────────
+    Before calling the Geocoding API, each employee is checked against
+    employees.json via employee_cache.lookup().  Three outcomes:
+
+      dict    — cache hit with valid coords → use directly, skip API call.
+      None    — cache hit recording a prior geocoding failure → skip API call,
+                leave coordinates as None so the map skips this marker.
+      MISSING — not yet geocoded → call the API and persist the result.
+
+    This means the Geocoding API is called at most once per unique
+    (name, address) combination across all events.
+
     Parameters:
         staff (list[dict]): List of employee dicts as returned by read_excel().
-                            Expected keys per employee: "Direccion", "CP", "Ciudad".
+                            Expected keys per employee: "Nombre", "Apellido",
+                            "Direccion", "CP", "Ciudad".
 
     Returns:
         list[dict]: Same list with a "coordinates" key added to each employee.
@@ -179,17 +193,32 @@ def geocode_staff(staff: list[dict]) -> list[dict]:
                     or None if geocoding failed for that employee.
     """
     for employee in staff:
+        nombre   = str(employee.get("Nombre",   "")).strip()
+        apellido = str(employee.get("Apellido", "")).strip()
+
         # Build the full address string from the three address columns.
         # strip() guards against accidental leading/trailing whitespace.
         street   = str(employee.get("Direccion", "")).strip()
-        zip_code = str(employee.get("CP", "")).strip()
-        city     = str(employee.get("Ciudad", "")).strip()
+        zip_code = str(employee.get("CP",        "")).strip()
+        city     = str(employee.get("Ciudad",    "")).strip()
 
-        # Combine into a single comma-separated address string for the API
+        # ── Employee cache check ─────────────────────────────────────────────
+        # lookup() returns MISSING when the address has never been geocoded,
+        # None when geocoding previously failed, or a coords dict on success.
+        cached = employee_cache.lookup(nombre, apellido, street, zip_code, city)
+
+        if cached is not employee_cache.MISSING:
+            # Cache hit — valid coords (dict) or recorded failure (None).
+            # Either way, skip the Geocoding API call.
+            employee["coordinates"] = cached
+            print(f"[employee_cache] HIT: {nombre} {apellido}")
+            continue
+
+        # ── Cache miss — call the Geocoding API and persist the result ───────
         full_address = f"{street}, {zip_code}, {city}"
-
-        # Call the Geocoding API and attach the result (or None) to the dict
-        employee["coordinates"] = geocode(full_address)
+        coords = geocode(full_address)
+        employee["coordinates"] = coords
+        employee_cache.save(nombre, apellido, street, zip_code, city, coords)
 
     return staff
 
