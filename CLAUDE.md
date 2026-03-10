@@ -133,14 +133,18 @@ Both vehicles always depart at the same time.
 Returns base_route (home→PE→event) and direct_route (home→event). Both TRAFFIC_AWARE. Each has duration_seconds, distance_meters, encoded_polyline, legs.
 
 ### Step 6 — PEA (alternative meeting point)
-**Employee-centric pipeline** `evaluate_pea_candidates(remaining_pool, meeting_point, route_polyline)`:
+**Employee-centric pipeline** `evaluate_pea_candidates(remaining_pool, meeting_point, route_polyline, driver_name=None)`:
+
+Driver exclusion: before any filtering, the driver (personal vehicle) is removed from the candidate pool — they are already committed to the car, so a PEA near their home is irrelevant for them. Pass `driver_name = "Nombre Apellido"` from `/evaluate-pea`.
 
 Phase 0 — Filter employees near route: `_filter_employees_near_route()` keeps only employees whose home is within `PEA_ROUTE_PROXIMITY_KM = 5km` of the nearest polyline vertex. If none qualify → return immediately, zero API calls.
-Phase 1 — Cluster filtered employees by proximity (greedy, CLUSTER_RADIUS_KM = 8km): `_cluster_by_proximity()`.
+Phase 1 — Cluster filtered employees by proximity (greedy, CLUSTER_RADIUS_KM = 8km): `_cluster_by_proximity()`. Clusters with fewer than `MIN_CLUSTER_SIZE = 2` members are discarded — a PEA only benefiting 1 person is not worth the detour.
 Phase 2 — Per cluster: find the polyline vertex closest to the cluster centroid → one Places API call (`_search_pea_near_point()`, 300m radius, transit hubs) → evaluate with `_best_candidate_for_cluster()`. Total Places calls = number of clusters (1-3), not ~40 across full polyline.
 Phase 3 — One winner per cluster, deduplicate, cap at 3. Proximity check: ≤ PEA_RADIUS_KM (10km) = "optimal", >10km = remuneration_note.
 
 Score per candidate: sum of `time_saved_min` for the 4 closest employees (by transit time), stored as `top4_savings_minutes`. Candidates ranked descending.
+
+PEA candidate fields (per candidate): `name`, `address`, `lat`, `lng`, `top4_savings_minutes`, `top4_employees`, `exclusively_prefer_count`, `pea_near_original`, `remuneration_note`, `cluster_members`, `staff_metrics`, plus three enriched Places fields: `primary_type` (str|None), `editorial_summary` (str|None), `opening_hours` (list[str], weekday descriptions).
 
 `find_pea_candidates()` in maps_client.py is deprecated — kept for cache compatibility.
 

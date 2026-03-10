@@ -29,6 +29,7 @@ from config import (
     LONG_EVENT_DURATION_THRESHOLD,
     LONG_EVENT_EXTRA_HOURS,
     MENU_KEYWORDS,
+    MIN_CLUSTER_SIZE,
     PEA_EXCLUSIVE_DIFF_MINUTES,
     PEA_MAX_TRANSIT_MINUTES,
     PEA_RADIUS_KM,
@@ -959,6 +960,12 @@ def _best_candidate_for_cluster(
             "remuneration_note":        remuneration_note,
             "cluster_members":          cluster_members,
             "staff_metrics":            staff_metrics,
+            # Enriched venue fields from Places API — propagated unchanged from
+            # _search_pea_near_point() so the frontend can display them in the
+            # InfoWindow without an additional API call.
+            "primary_type":             candidate.get("primary_type"),
+            "editorial_summary":        candidate.get("editorial_summary"),
+            "opening_hours":            candidate.get("opening_hours", []),
         })
 
     if not valid_candidates:
@@ -1010,13 +1017,19 @@ def _search_pea_near_point(lat: float, lng: float) -> list[dict]:
         }
         headers = {
             "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-            # Request only the four fields we use — Places API (New) charges per
+            # Request only the fields we use — Places API (New) charges per
             # field category, so omitting unused fields reduces cost.
+            # primaryType, editorialSummary, currentOpeningHours are surfaced
+            # in the InfoWindow so the manager can evaluate venue suitability
+            # (e.g. a transit station open at 7 AM vs a shop that opens at 10).
             "X-Goog-FieldMask": (
                 "places.displayName,"
                 "places.location,"
                 "places.types,"
-                "places.formattedAddress"
+                "places.formattedAddress,"
+                "places.primaryType,"
+                "places.editorialSummary,"
+                "places.currentOpeningHours"
             ),
         }
         response = httpx.post(
@@ -1033,11 +1046,16 @@ def _search_pea_near_point(lat: float, lng: float) -> list[dict]:
         address  = place.get("formattedAddress", "")
         location = place.get("location", {})
         candidates.append({
-            "name":    place.get("displayName", {}).get("text", ""),
-            "address": address,
-            "lat":     location.get("latitude",  0.0),
-            "lng":     location.get("longitude", 0.0),
-            "types":   place.get("types", []),
+            "name":              place.get("displayName", {}).get("text", ""),
+            "address":           address,
+            "lat":               location.get("latitude",  0.0),
+            "lng":               location.get("longitude", 0.0),
+            "types":             place.get("types", []),
+            # Enriched fields — None / [] when not returned by the API or
+            # when served from a pre-update cache entry (graceful degradation).
+            "primary_type":      place.get("primaryType", None),
+            "editorial_summary": place.get("editorialSummary", {}).get("text", None),
+            "opening_hours":     place.get("currentOpeningHours", {}).get("weekdayDescriptions", []),
         })
 
     return candidates
@@ -1047,6 +1065,7 @@ def evaluate_pea_candidates(
     remaining_pool: list[dict],
     meeting_point:  dict,
     route_polyline: str,
+    driver_name:    str | None = None,
 ) -> dict:
     """
     Evaluates PEA (Punto de Encuentro Alternativo) candidates using an
@@ -1107,6 +1126,12 @@ def evaluate_pea_candidates(
                                      direct route (home → event, no stopover).
                                      Used to filter employees and anchor the
                                      per-cluster Places search.
+        driver_name    (str | None): Full name of the personal vehicle driver
+                                     ("Nombre Apellido").  When provided, the
+                                     driver is excluded before any filtering or
+                                     clustering — a PEA along the driver's own
+                                     route only benefits transit users, not the
+                                     driver who is already committed to the car.
 
     Returns:
         dict: {
@@ -1148,6 +1173,19 @@ def evaluate_pea_candidates(
     if not geocoded_members:
         return _empty
 
+    # ── Driver exclusion ──────────────────────────────────────────────────────
+    # The driver is already committed to the personal vehicle — a PEA along
+    # their route saves them nothing (they are driving, not taking transit).
+    # Including the driver would inflate cluster sizes and bias the Places
+    # search toward their home neighbourhood rather than transit users' homes.
+    if driver_name:
+        geocoded_members = [
+            m for m in geocoded_members
+            if f"{m.get('Nombre', '')} {m.get('Apellido', '')}".strip() != driver_name
+        ]
+        if not geocoded_members:
+            return _empty
+
     # ── Phase 0: filter employees near the driver's route ─────────────────────
     # Only employees within PEA_ROUTE_PROXIMITY_KM of the route polyline are
     # eligible.  Employees farther away cannot benefit from any transit hub
@@ -1161,6 +1199,15 @@ def evaluate_pea_candidates(
 
     # ── Phase 1: cluster employees by geographic proximity ────────────────────
     clusters = _cluster_by_proximity(near_route)
+
+    # Discard clusters too small to justify a PEA proposal.
+    # A single-employee cluster means the candidate would only benefit one
+    # person — the detour cost and operational complexity are not worth it.
+    # MIN_CLUSTER_SIZE controls this threshold; raise it if PEA should only
+    # be proposed when larger groups benefit.
+    clusters = [c for c in clusters if len(c) >= MIN_CLUSTER_SIZE]
+    if not clusters:
+        return _empty
 
     # ── Phase 2: search + evaluate per cluster ────────────────────────────────
     # Decode the polyline once and reuse across all cluster searches.

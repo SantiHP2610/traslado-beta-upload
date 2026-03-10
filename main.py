@@ -811,6 +811,7 @@ def endpoint_evaluate_pea():
 
     driver        = vehicle_info["driver"]
     driver_coords = driver["coordinates"]
+    driver_name   = f"{driver.get('Nombre', '')} {driver.get('Apellido', '')}".strip()
 
     if driver_coords is None:
         raise HTTPException(
@@ -880,6 +881,7 @@ def endpoint_evaluate_pea():
         remaining_pool=remaining_pool,
         meeting_point=meeting_point,
         route_polyline=direct_polyline,
+        driver_name=driver_name,
     )
 
     return {

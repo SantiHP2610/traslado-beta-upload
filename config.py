@@ -97,6 +97,10 @@ CLUSTER_RADIUS_KM = 8              # radius (km) used by evaluate_pea_candidates
                                     # in the same cluster so each PEA candidate is evaluated against a
                                     # geographically coherent group, not a global compromise across
                                     # employees who live in opposite parts of Buenos Aires.
+MIN_CLUSTER_SIZE = 2               # minimum number of employees in a geographic cluster for it to
+                                    # be eligible for PEA evaluation.  A cluster of 1 means the PEA
+                                    # would only benefit a single person — not worth the detour.
+                                    # Increase if PEA should only be proposed for larger groups.
 
 # --- Pickup point parameters (Step 7) ---
 #
