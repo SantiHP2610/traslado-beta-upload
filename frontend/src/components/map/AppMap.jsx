@@ -52,6 +52,7 @@ import StaffMarkers                      from './StaffMarkers'
 import RoutePolylines                    from './RoutePolylines'
 import MeetingPointMarkers               from './MeetingPointMarkers'
 import EventMarker                       from './EventMarker'
+import PickupCandidateMarkers            from './PickupCandidateMarkers'
 import FrescosPanel                      from '../panels/FrescosPanel'
 import PeaPanel                          from '../panels/PeaPanel'
 import AssignmentPanel                   from '../panels/AssignmentPanel'
@@ -216,6 +217,14 @@ export default function AppMap() {
           is not null (map is ready)".
         */}
         {state.staffWithCoords && <EventMarker />}
+
+        {/*
+          Pickup candidate markers — shown while the PickupResultPanel is open.
+          Renders one amber pin (0.8×) per place_option so the manager can see
+          all candidate venues on the map alongside the panel list.
+          Cleared automatically when activePickupResult is set to null.
+        */}
+        {state.activePickupResult && <PickupCandidateMarkers />}
 
         {/*
           Pickup place marker — gold star shown at the confirmed pickup venue.

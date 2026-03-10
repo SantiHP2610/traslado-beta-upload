@@ -1575,13 +1575,16 @@ def find_pickup_candidate(
         }
         places_headers = {
             "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-            # Request only the four fields we use — Places API (New) charges per
+            # Request only the fields we use — Places API (New) charges per
             # field category, so omitting unused fields reduces cost.
+            # currentOpeningHours gives the weekly schedule so the manager can
+            # check whether the venue is open at the event time before confirming.
             "X-Goog-FieldMask": (
                 "places.displayName,"
                 "places.location,"
                 "places.types,"
-                "places.formattedAddress"
+                "places.formattedAddress,"
+                "places.currentOpeningHours"
             ),
         }
 
@@ -1638,6 +1641,11 @@ def find_pickup_candidate(
             "lat":           p_lat,
             "lng":           p_lng,
             "place_types":   p.get("types", []),
+            # Weekly schedule as a list of human-readable strings, e.g.
+            # ["Monday: 8:00 AM – 10:00 PM", ...].  Empty list when the API
+            # did not return hours (e.g. venue with no hours on file) or when
+            # the result was served from a pre-update cache entry.
+            "opening_hours": p.get("currentOpeningHours", {}).get("weekdayDescriptions", []),
         }
         for _, p, p_lat, p_lng in on_route_places[:PICKUP_TOP_CANDIDATES]
     ]

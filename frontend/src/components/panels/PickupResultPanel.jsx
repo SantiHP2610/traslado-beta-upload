@@ -29,6 +29,7 @@
  * pattern that lets the user continue interacting with the map while waiting.
  */
 
+import { useState }                      from 'react'
 import { useAppState, ACTIONS }          from '../../state/appState'
 import { Card, CardContent, CardHeader,
          CardTitle }                     from '@/components/ui/card'
@@ -51,6 +52,9 @@ function formatMeters(m) {
 // ---------------------------------------------------------------------------
 
 function PlaceOption({ place, onConfirm }) {
+  const [showHours, setShowHours] = useState(false)
+  const hours = place.opening_hours ?? []
+
   return (
     <div className="rounded-md border border-border p-2.5 space-y-1.5">
       <div>
@@ -64,6 +68,27 @@ function PlaceOption({ place, onConfirm }) {
       <p className="text-xs text-muted-foreground">
         {formatMeters(place.dist_to_cross_m ?? 0)} del cruce
       </p>
+
+      {/* Opening hours — collapsed by default; toggled via a small link-style button */}
+      {hours.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowHours((v) => !v)}
+            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {showHours ? '▲ Ocultar horarios' : '▼ Ver horarios'}
+          </button>
+          {showHours && (
+            <ul className="mt-1 space-y-0.5 pl-0 list-none">
+              {hours.map((line, i) => (
+                <li key={i} className="text-[10px] text-muted-foreground leading-tight">
+                  {line}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <Button
         size="sm"
