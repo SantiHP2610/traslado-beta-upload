@@ -1357,15 +1357,13 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
         7. Geocode the event venue and query the Distance Matrix API for the
            driving time from CP to the event venue.
         8. Call calculate_departure_time() to get departure_from_cp.
-        9. Call build_assignment_summary() with all computed results and return
+        9. Query the Routes API for PE/PEA → event driving time; call
+           calculate_pe_departure_time() to get departure_from_pe.
+       10. Call build_assignment_summary() with all computed results and return
            the complete confirmed summary.
 
     Returns a JSON object matching the build_assignment_summary() shape with
-    departure_from_cp populated.  departure_from_pe is always None at this stage.
-
-    # TODO: compute departure_from_pe here using the Routes API
-    # (meeting_point → event_venue) once the confirm step is fully wired into
-    # the frontend flow and the chosen meeting point is available to route from.
+    both departure_from_cp and departure_from_pe populated.
     """
     data = _load_excel()
 
@@ -1467,7 +1465,43 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
     )
 
     # -------------------------------------------------------------------------
-    # Step 7: assemble and return the complete confirmed summary.
+    # Step 7: PE/PEA → event driving time → PE departure time.
+    # The same arrival_time applies here — both the CP frescos vehicle and the
+    # personal car must arrive at the event at the same setup deadline.
+    # comensales is read from the Excel (not from body.picada_guests) so that
+    # calculate_pe_departure_time() can apply its own picada detection logic.
+    # -------------------------------------------------------------------------
+    try:
+        comensales = int(event.get("comensales", 0))
+    except (ValueError, TypeError):
+        comensales = 0
+
+    pe_origin  = [{
+        "lat": body.chosen_meeting_point.lat,
+        "lng": body.chosen_meeting_point.lng,
+    }]
+    pe_matrix  = compute_route_matrix(pe_origin, event_destination, arrival_time=arrival_time)
+    pe_element = pe_matrix["rows"][0]["elements"][0]
+
+    if pe_element["status"] != "OK":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Routes API could not find a route from the meeting point "
+                f"to '{event_address}'. Status: {pe_element['status']}"
+            ),
+        )
+
+    pe_departure = calculate_pe_departure_time(
+        event_time_str=hora_inicio,
+        travel_seconds=pe_element["duration"]["value"],
+        event_duration_hours=body.event_duration_hours,
+        prestaciones=data["services"],
+        comensales=comensales,
+    )
+
+    # -------------------------------------------------------------------------
+    # Step 8: assemble and return the complete confirmed summary.
     # chosen_meeting_point is now available (the user confirmed it on the map),
     # so the meeting_point field in the summary will be populated.
     # -------------------------------------------------------------------------
@@ -1483,6 +1517,7 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
         frescos_result=frescos_result,
         second_miniflete_result=second_miniflete_result,
         departure_time_result=departure_time_result,
+        pe_departure_time_result=pe_departure,
     )
 
 

@@ -2212,11 +2212,12 @@ def build_final_output(
 
 
 def build_assignment_summary(
-    assignments:             dict,
-    chosen_meeting_point:    dict | None,
-    frescos_result:          dict,
-    second_miniflete_result: dict | None,
-    departure_time_result:   dict | None,
+    assignments:              dict,
+    chosen_meeting_point:     dict | None,
+    frescos_result:           dict,
+    second_miniflete_result:  dict | None,
+    departure_time_result:    dict | None,
+    pe_departure_time_result: dict | None = None,
 ) -> dict:
     """
     Assembles the full summary object displayed in the confirmation modal.
@@ -2228,21 +2229,25 @@ def build_assignment_summary(
     frontend needs to render the confirmation modal and the final output blocks.
 
     Parameters:
-        assignments             (dict):       User-confirmed assignments with keys
-                                              "driver", "car_passengers",
-                                              "uber_groups", "pickup_employee".
-        chosen_meeting_point    (dict | None): The PE or PEA the user selected,
-                                              with "name", "lat", "lng" keys.
-                                              None when called from the validate
-                                              step before the user has confirmed.
-        frescos_result          (dict):       Output of determine_frescos_vehicle(),
-                                              with "vehicle" and "assigned_names".
-        second_miniflete_result (dict | None): Output of determine_second_miniflete()
-                                              when needs_second_miniflete is True,
-                                              or None if not triggered.
-        departure_time_result   (dict | None): Output of calculate_departure_time(),
-                                              or None when called from the validate
-                                              step before departure is computed.
+        assignments              (dict):       User-confirmed assignments with keys
+                                               "driver", "car_passengers",
+                                               "uber_groups", "pickup_employee".
+        chosen_meeting_point     (dict | None): The PE or PEA the user selected,
+                                               with "name", "lat", "lng" keys.
+                                               None when called from the validate
+                                               step before the user has confirmed.
+        frescos_result           (dict):       Output of determine_frescos_vehicle(),
+                                               with "vehicle" and "assigned_names".
+        second_miniflete_result  (dict | None): Output of determine_second_miniflete()
+                                               when needs_second_miniflete is True,
+                                               or None if not triggered.
+        departure_time_result    (dict | None): Output of calculate_departure_time(),
+                                               or None when called from the validate
+                                               step before departure is computed.
+        pe_departure_time_result (dict | None): Output of calculate_pe_departure_time(),
+                                               or None when called from the validate
+                                               step before PE departure is computed.
+                                               Defaults to None.
 
     Returns:
         dict: {
@@ -2264,9 +2269,7 @@ def build_assignment_summary(
             },
             "second_miniflete": dict | None,
             "departure_from_cp": str | None,    # "HH:MM"; None before confirm
-            "departure_from_pe": str | None     # always None — calculated in
-                                                # confirm step via Routes API
-                                                # TODO: wire once confirm is complete
+            "departure_from_pe": str | None     # "HH:MM"; None before confirm
         }
     """
     # -------------------------------------------------------------------------
@@ -2325,9 +2328,12 @@ def build_assignment_summary(
         "second_miniflete": second_miniflete_result,
         "departure_from_cp": departure_from_cp,
         # departure_from_pe is the time the personal car and Uber vehicles depart
-        # from the chosen meeting point toward the event venue.  Computing it
-        # requires a Routes API call (meeting point → event) which is deferred
-        # to the confirm step once the full endpoint chain is wired.
-        # TODO: compute via Routes API in /confirm-assignments and pass in here.
-        "departure_from_pe": None,
+        # from the chosen meeting point toward the event venue.  Populated when
+        # /confirm-assignments computes the Routes API call and passes the result
+        # in; None when called from /validate-assignments which skips routing.
+        "departure_from_pe": (
+            pe_departure_time_result["departure_time"]
+            if pe_departure_time_result
+            else None
+        ),
     }
