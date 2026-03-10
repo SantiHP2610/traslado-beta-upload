@@ -84,6 +84,13 @@ PEA_RADIUS_KM = 10                 # straight-line km from each PEA candidate to
                                     # ≤ this → candidate flagged "optimal" (no remuneration review);
                                     # > this → candidate flagged "consult_remuneration";
                                     # computed per candidate — all candidates are returned regardless
+PEA_ROUTE_PROXIMITY_KM = 5        # max straight-line distance (km) from an employee's home to the
+                                    # nearest polyline vertex of the driver's direct route for that
+                                    # employee to be considered "near the route" and eligible for PEA
+                                    # evaluation.  Employees farther than this are excluded — a PEA
+                                    # along the route would not save them meaningful transit time.
+                                    # If no employee qualifies, evaluate_pea_candidates() returns
+                                    # immediately with zero Places API calls.
 CLUSTER_RADIUS_KM = 8              # radius (km) used by evaluate_pea_candidates() to group employees
                                     # into geographic clusters before PEA evaluation.  Employees whose
                                     # home is within this radius of a cluster's seed point are placed

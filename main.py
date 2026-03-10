@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, find_pea_candidates, compute_route_matrix
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix
 from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
@@ -861,12 +861,7 @@ def endpoint_evaluate_pea():
     direct_polyline = routes["direct_route"]["encoded_polyline"]
 
     # -------------------------------------------------------------------------
-    # Step 6: find PEA candidates along the direct route.
-    # -------------------------------------------------------------------------
-    candidates = find_pea_candidates(direct_polyline)
-
-    # -------------------------------------------------------------------------
-    # Step 7: build the remaining staff pool.
+    # Step 6: build the remaining staff pool.
     # TODO: replace hardcoded assigned_roles with the actual output of
     # /determine-frescos and /determine-second-miniflete once role lookup is
     # implemented.  For now we use the two default frescos roles.
@@ -876,9 +871,16 @@ def endpoint_evaluate_pea():
     remaining_pool   = remaining_result["remaining_pool"]
 
     # -------------------------------------------------------------------------
-    # Step 8: evaluate PEA candidates and return ranked results.
+    # Step 7: evaluate PEA candidates using the employee-centric pipeline.
+    # evaluate_pea_candidates() now owns the Places API search internally:
+    # it filters employees near the route, clusters them, and makes one Places
+    # call per cluster instead of ~40 calls across the full polyline.
     # -------------------------------------------------------------------------
-    pea_result = evaluate_pea_candidates(candidates, remaining_pool, meeting_point)
+    pea_result = evaluate_pea_candidates(
+        remaining_pool=remaining_pool,
+        meeting_point=meeting_point,
+        route_polyline=direct_polyline,
+    )
 
     return {
         "meeting_point":  meeting_point,

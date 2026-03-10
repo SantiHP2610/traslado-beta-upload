@@ -699,6 +699,17 @@ def calculate_driver_route(
 
 def find_pea_candidates(direct_route_polyline: str) -> list[dict]:
     """
+    DEPRECATED — no longer called by the /evaluate-pea endpoint.
+
+    Replaced by the employee-centric pipeline in logistics.py:
+      _filter_employees_near_route() + _search_pea_near_point()
+    which makes one Places API call per employee cluster instead of ~40
+    calls across the full polyline.
+
+    Kept here to preserve the import symbol in case of external callers and
+    to allow existing "pea_places" cache entries to remain usable.
+
+    Original description:
     Searches for public transport hubs along the driver's direct route
     (home → event, no stopover) that could serve as an alternative meeting
     point (PEA — Punto de Encuentro Alternativo).

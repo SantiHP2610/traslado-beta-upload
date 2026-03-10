@@ -50,8 +50,10 @@ import { Button }                              from '@/components/ui/button'
 // ---------------------------------------------------------------------------
 // Pin color palette
 // ---------------------------------------------------------------------------
+// Yellow (#FBBC04) matches the route color shown after the user selects this PE,
+// creating a consistent visual theme: marker color anticipates the route color.
 const PE_COLORS = {
-  default:  { background: '#34A853', border: '#1e8e3e', glyph: '#ffffff' },
+  default:  { background: '#FBBC04', border: '#d6a000', glyph: '#1a1a1a' },
   selected: { background: '#1a6e2e', border: '#0d4a1f', glyph: '#ffffff' },
 }
 const PEA_COLORS = {

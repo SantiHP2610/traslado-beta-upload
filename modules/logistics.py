@@ -32,6 +32,7 @@ from config import (
     PEA_EXCLUSIVE_DIFF_MINUTES,
     PEA_MAX_TRANSIT_MINUTES,
     PEA_RADIUS_KM,
+    PEA_ROUTE_PROXIMITY_KM,
     MAX_PASSENGERS_PER_CAR,
     MAX_PASSENGERS_UBER,
     PICADA_GUEST_THRESHOLD,
@@ -49,7 +50,12 @@ from config import (
 # Places API call it makes directly (the Places API call is inlined here rather
 # than delegated to maps_client to keep the full Step 7 logic in one function).
 # Both cross-module imports work because uvicorn adds the project root to sys.path.
-from modules.maps_client import calculate_distances, GOOGLE_MAPS_API_KEY
+from modules.maps_client import (
+    calculate_distances,
+    GOOGLE_MAPS_API_KEY,
+    _PLACES_SEARCH_RADIUS,   # 300 m search radius shared with find_pea_candidates
+    _PEA_PLACE_TYPES,        # transit hub type list shared with find_pea_candidates
+)
 from modules.api_cache import get as cache_get, put as cache_put
 
 
@@ -696,6 +702,51 @@ def detect_personal_vehicle(staff: list[dict]) -> dict:
     }
 
 
+def _filter_employees_near_route(
+    geocoded_members: list[dict],
+    route_polyline:   str,
+    max_distance_km:  float,
+) -> list[dict]:
+    """
+    Returns only employees whose home address falls within max_distance_km
+    of the nearest vertex on the decoded route polyline.  Pure geometry —
+    no API calls made.
+
+    Why filter by route proximity?
+        A PEA is only meaningful if the employee lives near the driver's
+        route.  An employee 10 km away from the nearest polyline point
+        cannot reach any transit hub on that route conveniently — there is
+        no PEA along it that would save them transit time over going
+        directly to the original PE.  Excluding them before the Places API
+        search and Distance Matrix calls avoids wasted quota and prevents
+        irrelevant employees from diluting the scoring.
+
+    Parameters:
+        geocoded_members (list[dict]): Staff with "coordinates" ({lat, lng}).
+        route_polyline   (str):        Encoded polyline string.
+        max_distance_km  (float):      Inclusion threshold in kilometres.
+
+    Returns:
+        list[dict]: Subset of geocoded_members within max_distance_km of
+                    the route.  May be empty.
+    """
+    decoded = polyline_lib.decode(route_polyline)
+    if not decoded:
+        return []
+
+    near = []
+    for emp in geocoded_members:
+        c = emp["coordinates"]
+        min_dist = min(
+            _haversine_distance(c["lat"], c["lng"], lat, lng)
+            for lat, lng in decoded
+        )
+        if min_dist <= max_distance_km:
+            near.append(emp)
+
+    return near
+
+
 def _cluster_by_proximity(geocoded_members: list[dict]) -> list[list[dict]]:
     """
     Groups employees into geographic clusters using a greedy radius-based algorithm.
@@ -919,47 +970,126 @@ def _best_candidate_for_cluster(
     return valid_candidates[0]
 
 
+def _search_pea_near_point(lat: float, lng: float) -> list[dict]:
+    """
+    Makes a single Places API (New) searchNearby call around (lat, lng)
+    and returns all transit hub candidates found within _PLACES_SEARCH_RADIUS
+    metres.
+
+    Why in logistics.py rather than maps_client.py?
+        find_pickup_candidate() already makes a direct Places API call in
+        this module, using the same httpx + api_cache pattern.  Putting this
+        function here keeps all PEA evaluation logic together and avoids a
+        circular import between maps_client and logistics.
+
+    Uses the "pea_places" cache namespace (same as the deprecated
+    find_pea_candidates()) so prior cache entries from the old pipeline can
+    still be reused on a cache hit when the centre point happens to match.
+
+    Parameters:
+        lat (float): Latitude of the search centre point.
+        lng (float): Longitude of the search centre point.
+
+    Returns:
+        list[dict]: Transit hub candidates with name, address, lat, lng, types.
+                    Empty list if the API returns no results.
+    """
+    _ck = (lat, lng, _PLACES_SEARCH_RADIUS, tuple(_PEA_PLACE_TYPES))
+    cached = cache_get("pea_places", *_ck)
+    if cached is not None:
+        raw_response = cached["data"]
+    else:
+        body = {
+            "includedTypes": _PEA_PLACE_TYPES,
+            "locationRestriction": {
+                "circle": {
+                    "center": {"latitude": lat, "longitude": lng},
+                    "radius": _PLACES_SEARCH_RADIUS,
+                }
+            },
+        }
+        headers = {
+            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+            # Request only the four fields we use — Places API (New) charges per
+            # field category, so omitting unused fields reduces cost.
+            "X-Goog-FieldMask": (
+                "places.displayName,"
+                "places.location,"
+                "places.types,"
+                "places.formattedAddress"
+            ),
+        }
+        response = httpx.post(
+            "https://places.googleapis.com/v1/places:searchNearby",
+            json=body,
+            headers=headers,
+        )
+        response.raise_for_status()
+        raw_response = response.json()
+        cache_put("pea_places", raw_response, *_ck)
+
+    candidates = []
+    for place in raw_response.get("places", []):
+        address  = place.get("formattedAddress", "")
+        location = place.get("location", {})
+        candidates.append({
+            "name":    place.get("displayName", {}).get("text", ""),
+            "address": address,
+            "lat":     location.get("latitude",  0.0),
+            "lng":     location.get("longitude", 0.0),
+            "types":   place.get("types", []),
+        })
+
+    return candidates
+
+
 def evaluate_pea_candidates(
-    candidates: list[dict],
     remaining_pool: list[dict],
-    meeting_point: dict,
+    meeting_point:  dict,
+    route_polyline: str,
 ) -> dict:
     """
-    Evaluates PEA (Punto de Encuentro Alternativo) candidates using geographic
-    clustering of the remaining staff pool.
+    Evaluates PEA (Punto de Encuentro Alternativo) candidates using an
+    employee-centric, route-aware pipeline.
 
-    Why cluster before evaluating?
-        A PEA optimised on a global median across all employees may land on a
-        compromise point that is sub-optimal for everyone — especially when some
-        employees live in the north and others in the south of Buenos Aires.
-        Evaluating each geographic group independently means each returned
-        candidate genuinely minimises transit time for the employees it serves,
-        rather than averaging two distant groups into a location neither would
-        have chosen on their own.
+    Employee-centric — why filter by route proximity first?
+        The old approach sampled the full polyline and made ~40 Places API
+        calls regardless of whether any employee lives near the route.  The
+        new approach inverts the question: "which employees live near the
+        driver's direct route?"  Only those employees can meaningfully benefit
+        from a transit hub along it.  If none qualify, we return immediately
+        with zero API calls and zero quota cost.
 
-    Why simple radius clustering instead of k-means?
-        k-means requires specifying k upfront.  Radius clustering discovers k
-        naturally from the data: a new cluster is created only when an employee
-        is farther than CLUSTER_RADIUS_KM from all existing seeds.  The clusters
-        carry real geographic meaning and their count adapts to every event roster.
-        See _cluster_by_proximity() for the full rationale.
+    Why route proximity matters:
+        A PEA only helps if the employee can reach a transit hub on the
+        driver's route and arrive at the meeting point sooner than they would
+        by going directly to the original PE.  An employee whose home is
+        PEA_ROUTE_PROXIMITY_KM+ km from the nearest polyline vertex has no
+        useful transit hub along that route — no PEA can help them.
 
-    Three-phase approach:
+    Four-phase approach (Phase 0 is new):
+        Phase 0 — filter:
+            _filter_employees_near_route() keeps only employees whose home
+            is within PEA_ROUTE_PROXIMITY_KM of the nearest polyline vertex.
+            Zero matches → early return with no API calls.
+
         Phase 1 — cluster:
-            _cluster_by_proximity() groups employees who live within
-            CLUSTER_RADIUS_KM of each other (greedy first-fit).
-            Employees without coordinates are excluded entirely — they cannot
-            participate in a Distance Matrix call.
+            _cluster_by_proximity() groups the filtered employees who live
+            within CLUSTER_RADIUS_KM of each other (greedy first-fit).
+            Employees without coordinates are excluded.
 
-        Phase 2 — evaluate per cluster:
-            _best_candidate_for_cluster() evaluates ALL PEA candidates against
-            each cluster and returns the single best one (highest top-4 savings
-            sum for that group — see _best_candidate_for_cluster for rationale).
+        Phase 2 — search + evaluate per cluster:
+            For each cluster, the search point is the polyline vertex closest
+            to the cluster's centroid — this anchors the Places search ON the
+            route near where those employees actually live.  One Places API
+            call (_search_pea_near_point()) replaces the old ~40 calls per
+            full polyline.  The returned candidates are passed to
+            _best_candidate_for_cluster() unchanged.
 
         Phase 3 — assemble:
-            Collect one winner per cluster, deduplicate by address (two clusters
-            may independently select the same transit hub), sort by top-4 savings
-            descending, and cap the total at 3.
+            Collect one winner per cluster, deduplicate by address (two
+            clusters may independently select the same transit hub), sort by
+            top4_savings_minutes descending, and cap the total at 3.
 
     Why cap at 3?
         UI constraint.  More than 3 map markers for the same type of point is
@@ -968,12 +1098,15 @@ def evaluate_pea_candidates(
         "alternative", and "edge case" without cluttering the map.
 
     Parameters:
-        candidates     (list[dict]): Transit hub candidates from find_pea_candidates().
-                                     Each must have "lat", "lng", "name", "address".
         remaining_pool (list[dict]): Staff who still need a vehicle.
-                                     Each must have a "coordinates" key from geocode_staff().
+                                     Each must have a "coordinates" key from
+                                     geocode_staff().
         meeting_point  (dict):       The original PE from nearest_meeting_point().
                                      Must have "lat", "lng", and "name" keys.
+        route_polyline (str):        Encoded polyline string of the driver's
+                                     direct route (home → event, no stopover).
+                                     Used to filter employees and anchor the
+                                     per-cluster Places search.
 
     Returns:
         dict: {
@@ -983,9 +1116,7 @@ def evaluate_pea_candidates(
                     "address":                  str,
                     "lat":                      float,
                     "lng":                      float,
-                    "top4_savings_minutes":     float,  # sum of time_saved_min for the
-                                                        # 4 closest employees (by transit
-                                                        # time to candidate); higher = better
+                    "top4_savings_minutes":     float,
                     "top4_employees": [
                         {
                             "employee_name":            str,
@@ -997,51 +1128,64 @@ def evaluate_pea_candidates(
                     "exclusively_prefer_count": int,
                     "pea_near_original":        bool,
                     "remuneration_note":        str | None,
-                    "cluster_members": [
-                        {
-                            "employee_name":            str,
-                            "transit_to_candidate_min": float,
-                        },
-                        ...
-                    ],
-                    "staff_metrics": [
-                        {
-                            "employee_name":            str,
-                            "transit_to_candidate_min": float,
-                            "transit_to_pe_min":        float,
-                            "time_saved_min":           float,
-                            "exceeds_max_transit":      bool,
-                        },
-                        ...
-                    ]
+                    "cluster_members":          [...],
+                    "staff_metrics":            [...]
                 },
-                ...  # up to 3 candidates, one per geographic cluster
+                ...  # up to 3 candidates
             ],
             "has_candidates": bool
         }
     """
     _empty = {"candidates": [], "has_candidates": False}
 
-    if not candidates or not remaining_pool:
+    if not remaining_pool:
         return _empty
 
     # Employees without coordinates cannot participate in Distance Matrix calls.
-    # They are excluded from clustering entirely — their travel time cannot be
-    # evaluated so they must not influence which PEA is chosen for others.
     geocoded_members = [
         m for m in remaining_pool if m.get("coordinates") is not None
     ]
     if not geocoded_members:
         return _empty
 
-    # ── Phase 1: cluster employees by geographic proximity ────────────────────
-    clusters = _cluster_by_proximity(geocoded_members)
+    # ── Phase 0: filter employees near the driver's route ─────────────────────
+    # Only employees within PEA_ROUTE_PROXIMITY_KM of the route polyline are
+    # eligible.  Employees farther away cannot benefit from any transit hub
+    # along the route — including them would waste quota and distort scoring.
+    near_route = _filter_employees_near_route(
+        geocoded_members, route_polyline, PEA_ROUTE_PROXIMITY_KM
+    )
+    if not near_route:
+        # No employee lives near the route — no PEA can help anyone.
+        return _empty
 
-    # ── Phase 2: find the best PEA candidate for each cluster ─────────────────
-    mp_destination = {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}
+    # ── Phase 1: cluster employees by geographic proximity ────────────────────
+    clusters = _cluster_by_proximity(near_route)
+
+    # ── Phase 2: search + evaluate per cluster ────────────────────────────────
+    # Decode the polyline once and reuse across all cluster searches.
+    decoded_route = polyline_lib.decode(route_polyline)
+
+    mp_destination  = {"lat": meeting_point["lat"], "lng": meeting_point["lng"]}
     cluster_winners: list[dict] = []
 
     for cluster in clusters:
+        # Search point = polyline vertex closest to the cluster centroid.
+        # This anchors the Places search ON the route near where the cluster's
+        # employees live — not at a fixed sampled offset on the full polyline.
+        centroid_lat = sum(m["coordinates"]["lat"] for m in cluster) / len(cluster)
+        centroid_lng = sum(m["coordinates"]["lng"] for m in cluster) / len(cluster)
+        closest = min(
+            decoded_route,
+            key=lambda pt: _haversine_distance(centroid_lat, centroid_lng, pt[0], pt[1]),
+        )
+        search_lat, search_lng = closest
+
+        # One Places API call per cluster (vs ~40 for the full polyline).
+        candidates = _search_pea_near_point(search_lat, search_lng)
+        if not candidates:
+            continue
+
         winner = _best_candidate_for_cluster(
             candidates, cluster, mp_destination, meeting_point
         )

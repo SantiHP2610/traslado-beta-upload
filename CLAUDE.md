@@ -133,14 +133,16 @@ Both vehicles always depart at the same time.
 Returns base_route (home→PE→event) and direct_route (home→event). Both TRAFFIC_AWARE. Each has duration_seconds, distance_meters, encoded_polyline, legs.
 
 ### Step 6 — PEA (alternative meeting point)
-**Candidate search** `find_pea_candidates(direct_route_polyline)`: Places API (New).
-Decodes polyline, samples every 5th point, searches 300m for transit hubs (transit/subway/train/bus_station). Deduplicates by address.
+**Employee-centric pipeline** `evaluate_pea_candidates(remaining_pool, meeting_point, route_polyline)`:
 
-**Evaluation** `evaluate_pea_candidates(candidates, remaining_pool, meeting_point)`:
-
-Phase 1 — Cluster employees by proximity (greedy, CLUSTER_RADIUS_KM = 8km).
-Phase 2 — Per cluster: Distance Matrix per candidate (transit to candidate vs PE). Score = sum of time_saved for top 4 closest employees (matches car capacity).
+Phase 0 — Filter employees near route: `_filter_employees_near_route()` keeps only employees whose home is within `PEA_ROUTE_PROXIMITY_KM = 5km` of the nearest polyline vertex. If none qualify → return immediately, zero API calls.
+Phase 1 — Cluster filtered employees by proximity (greedy, CLUSTER_RADIUS_KM = 8km): `_cluster_by_proximity()`.
+Phase 2 — Per cluster: find the polyline vertex closest to the cluster centroid → one Places API call (`_search_pea_near_point()`, 300m radius, transit hubs) → evaluate with `_best_candidate_for_cluster()`. Total Places calls = number of clusters (1-3), not ~40 across full polyline.
 Phase 3 — One winner per cluster, deduplicate, cap at 3. Proximity check: ≤ PEA_RADIUS_KM (10km) = "optimal", >10km = remuneration_note.
+
+Score per candidate: sum of `time_saved_min` for the 4 closest employees (by transit time), stored as `top4_savings_minutes`. Candidates ranked descending.
+
+`find_pea_candidates()` in maps_client.py is deprecated — kept for cache compatibility.
 
 User sees candidates on map, decides PE or PEA.
 
@@ -182,8 +184,7 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 ## TODOs
 
 - ~~**Places API caching**: Cache `find_pea_candidates()` and `find_pickup_candidate()`~~ → DONE: `modules/api_cache.py` caches all Google API calls to `.api_cache/`. Toggle via `API_CACHE_ENABLED` in `.env`.
-- **Frescos-assigned markers non-interactive (step 3)**: Employees already assigned to the frescos vehicle (e.g. Manager Senior, Jefe de Parrilla Senior) must NOT appear as assignable in step 3. Their markers must use a distinct color (not blue/unassigned), show "Asignado al Vehículo QH" on click, and have NO context menu actions (no "Asignar al vehículo", no "Asignar a Uber"). They are already committed — the user cannot reassign them. Affects `StaffMarkers.jsx`: check employee name against `state.frescosResult.assigned_names` (and `state.secondMinifleteResult.assigned_name` if present) before rendering context menu. Use a dedicated color (suggestion: dark purple or similar, distinct from driver green, uber grey, unassigned blue).
-- **Final output redesign (step 4 post-confirm)**: Replace the current two small draggable blocks (`FinalOutputBlocks`) with a single large modal/panel that occupies most of the screen. Map stays running and visible behind it (semi-transparent backdrop). Must include a "Volver a editar" button that returns to step 3 with full state preserved (same behavior as current "Editar"). Consolidate both blocks (frescos + transport) into sections within this single panel. The current ConfirmationModal should transition into this final view, not coexist with separate blocks.
+-**Final output redesign (step 4 post-confirm)**: Replace the current two small draggable blocks (`FinalOutputBlocks`) with a single large modal/panel that occupies most of the screen. Map stays running and visible behind it (semi-transparent backdrop). Must include a "Volver a editar" button that returns to step 3 with full state preserved (same behavior as current "Editar"). Consolidate both blocks (frescos + transport) into sections within this single panel. The current ConfirmationModal should transition into this final view, not coexist with separate blocks.
 - **Pickup map highlight**: Visual circle overlay around cross-points and candidates for CEO/manager review
 - **Employee database**: `employees.json` with cached coordinates — check before geocoding
 - **departure_from_pe**: Currently null in `build_assignment_summary()` — needs Routes API call in /confirm-assignments
@@ -239,11 +240,11 @@ State in `appState.jsx`: `useReducer` + split contexts (state + dispatch, preven
 |---|---|---|---|
 | Base route (home→PE→event) | Blue #4285F4 | Yellow #FBBC04 | Hidden |
 | Direct route (home→event) | Red #EA4335 60% | Hidden | Orange #FF6D00 |
-| PE marker | Green #34A853 | Green, 1.4×, ✓ | Hidden |
+| PE marker | Yellow #FBBC04 | Yellow, 1.4×, ✓ | Hidden |
 | PEA markers | Orange #FF6D00 | Hidden | Orange, 1.4×, ✓ |
 | Driver + car passengers | Blue (unassigned) | Yellow #FBBC04 | Orange #FF6D00 |
 | Uber passengers | Blue (unassigned) | Grey #9E9E9E | Grey #9E9E9E |
-| Frescos-assigned employees | Distinct color (TODO), non-interactive, "Asignado al Vehículo QH" | same | same |
+| Frescos-assigned employees | #B0C4DE faded blue, opacity 0.6, non-interactive, "Asignado al Vehículo QH" | same | same |
 | Event venue | Red #EA4335 (always) | same | same |
 | Pickup employee/venue | #FFC107 amber (always) | same | same |
 

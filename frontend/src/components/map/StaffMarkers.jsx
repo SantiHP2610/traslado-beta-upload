@@ -10,10 +10,11 @@
  *           The driver's marker shows no actions (auto-assigned on step start).
  *
  * ── Marker color coding ──────────────────────────────────────────────────────
- * Blue   (#4285F4) → unassigned (default, steps 1-2, unassigned in step 3)
- * Green  (#34A853) → driver or personal car passenger
- * Grey   (#9E9E9E) → Uber passenger
- * Yellow (#FFC107) → pickup employee (picked up on the route before the PE)
+ * Blue   (#4285F4)        → unassigned (default, steps 1-2, unassigned in step 3)
+ * Green  (#34A853)        → driver or personal car passenger
+ * Grey   (#9E9E9E)        → Uber passenger
+ * Yellow (#FFC107)        → pickup employee (picked up on the route before the PE)
+ * Washed blue (#B0C4DE)   → frescos-assigned (step 3+); 0.6 opacity, no actions
  *
  * These four states map directly to the four color decisions in CLAUDE.md's
  * "Route and assignment color coding" section.
@@ -39,7 +40,7 @@
  * assignment interaction concern.
  */
 
-import { useState }                            from 'react'
+import { useState, useMemo }                   from 'react'
 import { AdvancedMarker, InfoWindow, Pin }     from '@vis.gl/react-google-maps'
 import { useAppState, ACTIONS }               from '../../state/appState'
 import { findPickup }                         from '../../api/endpoints'
@@ -139,6 +140,31 @@ function EmployeeInfoContent({ employee }) {
         <p className="text-xs text-muted-foreground">{employee.Profesion}</p>
         <p className="text-xs text-muted-foreground">
           {employee.Direccion}, {employee.Ciudad}
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Step 3+ InfoWindow for frescos-assigned employees (informational, no actions)
+//
+// These employees are already committed to the Vehículo QH — the manager
+// cannot reassign them.  Showing the regular context menu would create false
+// affordance (buttons that shouldn't be pressed).  A read-only view makes
+// the non-interactive status explicit.
+// ---------------------------------------------------------------------------
+
+function FrescosInfoContent({ employee }) {
+  return (
+    <Card className="min-w-[180px] shadow-none border-0">
+      <CardContent className="p-3 space-y-0.5">
+        <p className="font-semibold text-sm leading-tight">
+          {employee.Nombre} {employee.Apellido}
+        </p>
+        <p className="text-xs text-muted-foreground">{employee.Profesion}</p>
+        <p className="text-xs font-medium text-muted-foreground mt-1">
+          Asignado al Vehículo QH
         </p>
       </CardContent>
     </Card>
@@ -372,7 +398,21 @@ export default function StaffMarkers({ staff }) {
     driverRoutes,
     chosenMeetingPoint,
     meetingPoint,
+    frescosResult,
+    secondMinifleteResult,
   } = state
+
+  // Employees committed to the Vehículo QH — built once per relevant state
+  // change so the per-marker loop can do O(1) membership checks.
+  // Comparison is normalised (lowercase + trim) to tolerate whitespace drift.
+  const frescosAssignedNames = useMemo(() => {
+    const names = new Set()
+    ;(frescosResult?.assigned_names ?? []).forEach((n) => names.add(n.toLowerCase().trim()))
+    if (secondMinifleteResult?.assigned_name) {
+      names.add(secondMinifleteResult.assigned_name.toLowerCase().trim())
+    }
+    return names
+  }, [frescosResult, secondMinifleteResult])
 
   // chosenScenarioColor — derived from which meeting point the user selected.
   // 'pe'  → PE chosen  → yellow (#FBBC04) route and markers
@@ -396,13 +436,18 @@ export default function StaffMarkers({ staff }) {
         // Silently skip employees whose address could not be geocoded.
         if (!coords) return null
 
-        const key      = fullName(employee)
-        const isOpen   = selectedKey === key
-        const colors   = getMarkerColors(
-          employee,
-          isStep3Plus ? assignments : null,
-          isStep3Plus ? chosenScenarioColor : null,
-        )
+        const key              = fullName(employee)
+        const isOpen           = selectedKey === key
+        const isFrescosAssigned = isStep3Plus && frescosAssignedNames.has(key.toLowerCase().trim())
+        const colors           = isFrescosAssigned
+          // Washed-out blue — same hue family as unassigned (#4285F4) but
+          // desaturated, signalling "exists but not interactive".
+          ? { background: '#B0C4DE', borderColor: '#8aabbf', glyphColor: '#ffffff' }
+          : getMarkerColors(
+              employee,
+              isStep3Plus ? assignments : null,
+              isStep3Plus ? chosenScenarioColor : null,
+            )
 
         return (
           <AdvancedMarker
@@ -411,11 +456,24 @@ export default function StaffMarkers({ staff }) {
             title={`${key} — ${employee.Profesion}`}
             onClick={() => setSelectedKey(isOpen ? null : key)}
           >
-            <Pin
-              background={colors.background}
-              borderColor={colors.borderColor}
-              glyphColor={colors.glyphColor}
-            />
+            {isFrescosAssigned ? (
+              // 0.6 opacity wrapper signals the non-interactive "disabled" state
+              // without removing the marker from the map — the manager still
+              // needs to see where these employees live for context.
+              <div style={{ opacity: 0.6 }}>
+                <Pin
+                  background={colors.background}
+                  borderColor={colors.borderColor}
+                  glyphColor={colors.glyphColor}
+                />
+              </div>
+            ) : (
+              <Pin
+                background={colors.background}
+                borderColor={colors.borderColor}
+                glyphColor={colors.glyphColor}
+              />
+            )}
           </AdvancedMarker>
         )
       })}
@@ -435,7 +493,9 @@ export default function StaffMarkers({ staff }) {
           onCloseClick={() => setSelectedKey(null)}
           shouldFocus={false}
         >
-          {isStep3Plus ? (
+          {isStep3Plus && frescosAssignedNames.has(fullName(selectedEmployee).toLowerCase().trim()) ? (
+            <FrescosInfoContent employee={selectedEmployee} />
+          ) : isStep3Plus ? (
             <AssignmentMenuContent
               employee={selectedEmployee}
               assignments={assignments}
