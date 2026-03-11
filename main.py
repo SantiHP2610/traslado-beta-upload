@@ -258,6 +258,31 @@ def endpoint_geocode_staff():
 
 
 @app.get(
+    "/geocode-address",
+    summary="Geocode a single free-text address",
+    description=(
+        "Accepts an address string via the 'address' query parameter and returns "
+        "its lat/lng coordinates from the Google Geocoding API.  Used by the "
+        "frontend when the user edits an employee's address in the marker edit UI. "
+        "Returns 422 if the address cannot be resolved."
+    ),
+)
+def endpoint_geocode_address(address: str):
+    """
+    Thin wrapper around geocode() — no Excel reading, no staff processing.
+    Returns the same shape as the 'coordinates' key on geocoded staff:
+    { "lat": float, "lng": float, "formatted_address": str }
+    """
+    coords = geocode(address)
+    if coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode address: '{address}'",
+        )
+    return coords
+
+
+@app.get(
     "/nearest-meeting-point",
     summary="Find the nearest meeting point to the event venue",
     description=(

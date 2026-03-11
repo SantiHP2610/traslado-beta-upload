@@ -230,6 +230,8 @@ State in `appState.jsx`: `useReducer` + split contexts (state + dispatch, preven
 | eventCoords | EventMarker (polyline or Geocoding) | 1+ |
 | assignments | AppMap useEffect (init) + StaffMarkers context menu | 3 |
 | activePickupResult | StaffMarkers → findPickup() | 3 |
+| coordinateOverrides | StaffMarkers drag / geocode | 1+ |
+| editingMarker | StaffMarkers "Editar dirección" | 1+ |
 | showModal | AssignmentPanel → validateAssignments() | 4 |
 | finalOutput, showOutput | ConfirmationModal → finalOutput() | 4 |
 
@@ -259,6 +261,9 @@ State in `appState.jsx`: `useReducer` + split contexts (state + dispatch, preven
 Context menu on marker click: "Asignar al vehículo", "Buscar pickup en ruta", "Asignar a Uber", "Quitar asignación".
 Driver marker: green, no actions, "Chofer — asignado automáticamente". Steps 1-2: InfoWindow only.
 Auto-fill remaining to Uber happens at validate time (not incrementally).
+
+### Marker position editing (all steps)
+Every InfoWindow has an "Editar dirección" link at the bottom. Clicking it enters edit mode for that marker only: the pin becomes draggable and an address input + "Geocodificar" / "Listo" UI appears in the InfoWindow. Position changes (drag or geocode) are stored in `coordinateOverrides[name]` and overrule `employee.coordinates` for rendering. "Volver a ubicación original" reverts the override. Only one marker is editable at a time (`editingMarker` state); clicking any other marker exits edit mode. All position changes animate with ease-out-cubic over 800ms via `useAnimatedPosition` (requestAnimationFrame). Override indicator: small white dot badge on the pin. Backend: `GET /geocode-address?address=` wraps `geocode()` for on-demand address resolution.
 
 ### Modal & output
 - Confirmation modal: draggable, map interactive behind it. "Editar" → back to step 3, full state preserved, no API re-calls.

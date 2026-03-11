@@ -79,6 +79,16 @@ const initialState = {
   // Step 4 — Final output blocks (set by POST /final-output on confirm)
   finalOutput: null,
 
+  // Coordinate overrides — allows the user to reposition any employee marker
+  // by dragging or re-geocoding their address.  Keys are "Nombre Apellido"
+  // strings; values are { lat, lng, source } where source is "drag" | "address".
+  // An empty object means no markers have been manually repositioned.
+  coordinateOverrides: {},
+
+  // Which employee is currently in marker-edit mode (drag + address input).
+  // Only one marker is editable at a time — null when no edit is active.
+  editingMarker: null,
+
   // UI state
   currentStep: 1,      // which step the user is currently on (1-indexed int)
   loadingStep: null,   // string key of the in-flight step, or null when idle
@@ -108,6 +118,10 @@ export const ACTIONS = {
   SET_FINAL_OUTPUT:          'SET_FINAL_OUTPUT',
   SET_SHOW_MODAL:            'SET_SHOW_MODAL',
   SET_SHOW_OUTPUT:           'SET_SHOW_OUTPUT',
+  SET_COORDINATE_OVERRIDE:        'SET_COORDINATE_OVERRIDE',
+  CLEAR_COORDINATE_OVERRIDE:      'CLEAR_COORDINATE_OVERRIDE',
+  CLEAR_ALL_COORDINATE_OVERRIDES: 'CLEAR_ALL_COORDINATE_OVERRIDES',
+  SET_EDITING_MARKER:             'SET_EDITING_MARKER',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
   SET_ERROR:                 'SET_ERROR',
@@ -174,6 +188,29 @@ function appReducer(state, action) {
 
     case ACTIONS.SET_CURRENT_STEP:
       return { ...state, currentStep: action.payload }
+
+    case ACTIONS.SET_COORDINATE_OVERRIDE: {
+      // Spread the existing overrides and upsert the new entry so that
+      // other employees' overrides are preserved across individual edits.
+      const { name, lat, lng, source } = action.payload
+      return {
+        ...state,
+        coordinateOverrides: { ...state.coordinateOverrides, [name]: { lat, lng, source } },
+      }
+    }
+
+    case ACTIONS.CLEAR_COORDINATE_OVERRIDE: {
+      // Delete only this employee's override — leave all others untouched.
+      const next = { ...state.coordinateOverrides }
+      delete next[action.payload.name]
+      return { ...state, coordinateOverrides: next }
+    }
+
+    case ACTIONS.CLEAR_ALL_COORDINATE_OVERRIDES:
+      return { ...state, coordinateOverrides: {} }
+
+    case ACTIONS.SET_EDITING_MARKER:
+      return { ...state, editingMarker: action.payload }
 
     case ACTIONS.SET_LOADING_STEP:
       return { ...state, loadingStep: action.payload }

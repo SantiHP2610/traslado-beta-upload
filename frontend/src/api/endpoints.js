@@ -54,6 +54,21 @@ export async function geocodeStaff() {
 }
 
 // ---------------------------------------------------------------------------
+// Address geocoding (on-demand, marker edit UI)
+// ---------------------------------------------------------------------------
+
+/**
+ * Geocodes a free-text address string.
+ * Used by the marker edit UI when the user corrects an employee's address.
+ * @param {string} address
+ * @returns {{ lat: number, lng: number, formatted_address: string }}
+ */
+export async function geocodeAddress(address) {
+  const response = await client.get('/geocode-address', { params: { address } })
+  return response.data
+}
+
+// ---------------------------------------------------------------------------
 // Step 3 — Meeting point
 // ---------------------------------------------------------------------------
 

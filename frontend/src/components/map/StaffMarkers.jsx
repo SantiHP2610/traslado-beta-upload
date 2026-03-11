@@ -16,8 +16,19 @@
  * Yellow (#FFC107)        → pickup employee (picked up on the route before the PE)
  * Washed blue (#B0C4DE)   → frescos-assigned (step 3+); 0.6 opacity, no actions
  *
- * These four states map directly to the four color decisions in CLAUDE.md's
- * "Route and assignment color coding" section.
+ * ── Marker edit mode ─────────────────────────────────────────────────────────
+ * Every marker has an "Editar dirección" link in its InfoWindow.  Clicking it
+ * enters edit mode for that employee: the marker becomes draggable and an
+ * address text input appears in the InfoWindow.  The user can drag the pin to a
+ * new position, or type an address and click "Geocodificar".  Clicking "Listo"
+ * or any other marker exits edit mode.  The override is stored in the global
+ * coordinateOverrides slice.  "Volver a ubicación original" reverts the marker.
+ *
+ * ── Position updates ─────────────────────────────────────────────────────────
+ * When a marker's effective position changes (new override set or cleared), it
+ * snaps immediately to the new coordinates.  Animation was removed because
+ * Pin's internal useEffect calls removeChild on every re-render — 60fps RAF
+ * updates triggered a "removeChild on Node" crash in Google Maps' DOM.
  *
  * ── Why assignment logic lives in this component ─────────────────────────────
  * Actions are spatially anchored to a specific marker: "assign to car" only
@@ -31,35 +42,20 @@
  * "Which InfoWindow is open" is pure transient UI state — it has no meaning
  * outside this component and does not affect any backend call or downstream
  * step.  Local useState is the right scope.
- *
- * ── Why useAppState is called here instead of receiving assignments as props ──
- * StaffMarkers reads and mutates four state slices (assignments, personalVehicle,
- * driverRoutes, chosenMeetingPoint).  Threading all four as props from AppMap
- * would create excessive coupling between AppMap and its child.  Calling
- * useAppState() here is cleaner: this component is the rightful owner of the
- * assignment interaction concern.
  */
 
-import { useState, useMemo }                   from 'react'
-import { AdvancedMarker, InfoWindow, Pin }     from '@vis.gl/react-google-maps'
-import { useAppState, ACTIONS }               from '../../state/appState'
-import { findPickup }                         from '../../api/endpoints'
-import { Card, CardContent }                  from '@/components/ui/card'
-import { Button }                             from '@/components/ui/button'
+import { useState, useMemo }                      from 'react'
+import { AdvancedMarker, InfoWindow, Pin }        from '@vis.gl/react-google-maps'
+import { useAppState, ACTIONS }                   from '../../state/appState'
+import { findPickup, geocodeAddress as geocodeAddressApi } from '../../api/endpoints'
+import { Card, CardContent }                      from '@/components/ui/card'
+import { Button }                                 from '@/components/ui/button'
 
 // Maximum passengers in the personal car (excluding driver).
 // Mirrors MAX_PASSENGERS_PER_CAR in config.py — kept in sync manually.
 const MAX_CAR_PASSENGERS = 4
 
 // ── Scenario color palette for driver + car passengers ────────────────────────
-// When the user selects PE, the car's route turns yellow — markers match.
-// When the user selects a PEA, the car's route turns orange — markers match.
-// This creates a consistent "theme color" across route and assigned staff so
-// the manager can visually connect the vehicle to its route at a glance.
-//
-// chosenScenarioColor is derived from chosenMeetingPoint + meetingPoint in the
-// main component and passed into getMarkerColors.  A single derivation point
-// means the color scheme can be changed in one place and all markers update.
 const SCENARIO_PE  = { background: '#FBBC04', borderColor: '#d6a000', glyphColor: '#1a1a1a' }
 const SCENARIO_PEA = { background: '#FF6D00', borderColor: '#e65100', glyphColor: '#ffffff' }
 
@@ -77,53 +73,195 @@ function sameEmployee(a, b) {
 
 // ---------------------------------------------------------------------------
 // Marker color by assignment state
-//
-// Returns a { background, borderColor, glyphColor } object for Pin.
-// Called once per employee per render — kept as a pure function (no hooks)
-// so it can run inside the map() loop without violating the Rules of Hooks.
 // ---------------------------------------------------------------------------
 
-// chosenScenarioColor: 'pe' | 'pea' | null
-//   null  → no meeting point chosen yet; use default green for car/driver
-//   'pe'  → PE chosen; driver + car passengers get SCENARIO_PE yellow
-//   'pea' → PEA chosen; driver + car passengers get SCENARIO_PEA orange
 function getMarkerColors(employee, assignments, chosenScenarioColor) {
   if (!assignments) {
-    // Step 1-2: all markers are the standard blue (no assignments yet)
     return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
   }
 
-  // Determine the color for driver and car passengers.
-  // Before a meeting point is chosen the car still shows green (neutral).
-  // Once chosen the car's color matches the route ("theme color").
   const carColors = chosenScenarioColor === 'pe'  ? SCENARIO_PE
                   : chosenScenarioColor === 'pea' ? SCENARIO_PEA
                   : { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
 
-  // Driver — scenario color when meeting point is chosen, green otherwise
-  if (sameEmployee(assignments.driver, employee)) {
-    return carColors
-  }
+  if (sameEmployee(assignments.driver, employee))          return carColors
+  if (sameEmployee(assignments.pickup_employee, employee)) return { background: '#FFC107', borderColor: '#e6a800', glyphColor: '#1a1a1a' }
+  if (assignments.car_passengers?.some((p) => sameEmployee(p, employee))) return carColors
+  if (assignments.uber_passengers?.some((p) => sameEmployee(p, employee))) return { background: '#9E9E9E', borderColor: '#757575', glyphColor: '#ffffff' }
 
-  // Pickup employee — #FFC107 amber-yellow, distinct from scenario yellows.
-  // The pickup employee travels by transit to meet the car on the route —
-  // a different journey than car passengers, hence a different color.
-  if (sameEmployee(assignments.pickup_employee, employee)) {
-    return { background: '#FFC107', borderColor: '#e6a800', glyphColor: '#1a1a1a' }
-  }
-
-  // Car passenger — same scenario color as the driver (same vehicle)
-  if (assignments.car_passengers?.some((p) => sameEmployee(p, employee))) {
-    return carColors
-  }
-
-  // Uber passenger — grey (separate booking, same destination)
-  if (assignments.uber_passengers?.some((p) => sameEmployee(p, employee))) {
-    return { background: '#9E9E9E', borderColor: '#757575', glyphColor: '#ffffff' }
-  }
-
-  // Unassigned — default blue
   return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
+}
+
+// ---------------------------------------------------------------------------
+// EditModeContent — address input + geocode button shown inside InfoWindow
+//
+// Uses inline styles throughout: InfoWindow renders in Google Maps' own DOM
+// subtree where Tailwind utility classes are not guaranteed to apply.
+// ---------------------------------------------------------------------------
+
+function EditModeContent({ employee, hasOverride, dispatch, onDone }) {
+  const name           = fullName(employee)
+  const initialAddress = [employee.Direccion, employee.CP, employee.Ciudad]
+    .filter(Boolean).join(', ')
+
+  const [address, setAddress] = useState(initialAddress)
+  const [loading, setLoading] = useState(false)
+  const [error,   setError]   = useState(null)
+
+  async function handleGeocode() {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await geocodeAddressApi(address)
+      dispatch({
+        type:    ACTIONS.SET_COORDINATE_OVERRIDE,
+        payload: { name, lat: result.lat, lng: result.lng, source: 'address' },
+      })
+    } catch {
+      setError('No se pudo geocodificar')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ padding: 12, minWidth: 240, fontFamily: 'inherit', fontSize: 12 }}>
+      <p style={{ fontWeight: 600, marginBottom: 2, fontSize: 13 }}>{name}</p>
+      <p style={{ color: '#6b7280', marginBottom: 8 }}>
+        Arrastrá el pin o editá la dirección
+      </p>
+
+      <input
+        type="text"
+        value={address}
+        onChange={(e) => setAddress(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') handleGeocode() }}
+        style={{
+          display: 'block', width: '100%', padding: '4px 8px',
+          border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12,
+          marginBottom: 6, boxSizing: 'border-box',
+        }}
+      />
+
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          onClick={handleGeocode}
+          disabled={loading}
+          style={{
+            flex: 1, padding: '5px 10px', background: '#4285F4', color: '#fff',
+            border: 'none', borderRadius: 6, fontSize: 12,
+            cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1,
+          }}
+        >
+          {loading ? '…' : 'Geocodificar'}
+        </button>
+        <button
+          onClick={onDone}
+          style={{
+            flex: 1, padding: '5px 10px', background: '#f3f4f6',
+            border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+          }}
+        >
+          Listo
+        </button>
+      </div>
+
+      {error && (
+        <p style={{ color: '#dc2626', marginTop: 6, fontSize: 11 }}>{error}</p>
+      )}
+
+      {hasOverride && (
+        <button
+          onClick={() => dispatch({ type: ACTIONS.CLEAR_COORDINATE_OVERRIDE, payload: { name } })}
+          style={{
+            display: 'block', width: '100%', marginTop: 8, padding: '4px 8px',
+            background: 'none', border: '1px solid #d1d5db', borderRadius: 6,
+            color: '#6b7280', cursor: 'pointer', fontSize: 11,
+          }}
+        >
+          Volver a ubicación original
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// StaffMarker — one optionally-draggable marker per employee
+//
+// Extracted from the main map loop so hooks inside can be called safely
+// (hooks cannot be called inside a .map() callback in the parent).
+// ---------------------------------------------------------------------------
+
+function StaffMarker({
+  employee,
+  override,         // { lat, lng, source } | undefined
+  isEditing,        // bool — true when this is the active edit-mode marker
+  isFrescosAssigned,
+  colors,
+  onMarkerClick,    // (name: string) => void
+  dispatch,
+}) {
+  const name      = fullName(employee)
+  const baseCoords = employee.coordinates
+  // Snap directly to the effective position — no animation.
+  // Animation (requestAnimationFrame + setState at 60fps) caused a
+  // "removeChild on Node" crash: Pin's useEffect runs on every props
+  // change, and 60fps re-renders caused it to removeChild on every frame,
+  // conflicting with Google Maps' own DOM management.
+  const position = {
+    lat: override?.lat ?? baseCoords.lat,
+    lng: override?.lng ?? baseCoords.lng,
+  }
+
+  function handleDragEnd(e) {
+    if (!e.latLng) return
+    dispatch({
+      type:    ACTIONS.SET_COORDINATE_OVERRIDE,
+      payload: { name, lat: e.latLng.lat(), lng: e.latLng.lng(), source: 'drag' },
+    })
+  }
+
+  // ── Pin element ──────────────────────────────────────────────────────────
+  // Three variants:
+  //   1. Frescos-assigned: 0.6 opacity wrapper (non-interactive feel)
+  //   2. Overridden:       normal Pin + small white badge dot (signals move)
+  //   3. Default:          normal Pin, no decoration
+  // All three branches share the same root element type (<div>) so React can
+  // reconcile between states without unmounting.  If the default branch used
+  // a bare <Pin/> (no wrapper), switching from override→default would change
+  // the root element type inside AdvancedMarker, forcing React to unmount and
+  // remount the node — which conflicts with AdvancedMarker's own DOM management
+  // and causes the "removeChild on Node" crash.
+  const pinEl = (
+    <div style={{
+      position: 'relative', display: 'inline-block',
+      opacity: isFrescosAssigned ? 0.6 : 1,
+    }}>
+      <Pin background={colors.background} borderColor={colors.borderColor} glyphColor={colors.glyphColor} />
+      {/* Override indicator — white dot with dark border, top-right badge */}
+      {override && (
+        <div style={{
+          position: 'absolute', top: -4, right: -4,
+          width: 10, height: 10, borderRadius: '50%',
+          backgroundColor: '#ffffff', border: '2px solid #444',
+          pointerEvents: 'none',
+        }} />
+      )}
+    </div>
+  )
+
+  return (
+    <AdvancedMarker
+      position={position}
+      title={`${name} — ${employee.Profesion}`}
+      draggable={isEditing}
+      onDragEnd={isEditing ? handleDragEnd : undefined}
+      onClick={() => onMarkerClick(name)}
+    >
+      {pinEl}
+    </AdvancedMarker>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -148,11 +286,6 @@ function EmployeeInfoContent({ employee }) {
 
 // ---------------------------------------------------------------------------
 // Step 3+ InfoWindow for frescos-assigned employees (informational, no actions)
-//
-// These employees are already committed to the Vehículo QH — the manager
-// cannot reassign them.  Showing the regular context menu would create false
-// affordance (buttons that shouldn't be pressed).  A read-only view makes
-// the non-interactive status explicit.
 // ---------------------------------------------------------------------------
 
 function FrescosInfoContent({ employee }) {
@@ -190,36 +323,27 @@ function AssignmentMenuContent({
   const name     = fullName(employee)
   const isDriver = sameEmployee(assignments?.driver, employee)
 
-  const inCar = assignments?.car_passengers?.some((p) => sameEmployee(p, employee))
-  const inUber = assignments?.uber_passengers?.some((p) => sameEmployee(p, employee))
+  const inCar    = assignments?.car_passengers?.some((p) => sameEmployee(p, employee))
+  const inUber   = assignments?.uber_passengers?.some((p) => sameEmployee(p, employee))
   const isPickup = sameEmployee(assignments?.pickup_employee, employee)
   const isAssigned = inCar || inUber
 
-  const carCount = assignments?.car_passengers?.length ?? 0
-  const carFull  = carCount >= MAX_CAR_PASSENGERS
+  const carCount   = assignments?.car_passengers?.length ?? 0
+  const carFull    = carCount >= MAX_CAR_PASSENGERS
   const hasVehicle = personalVehicle?.has_personal_vehicle
 
-  // Vehicle label for button text — mirrors the label shown in AssignmentPanel
-  // and ConfirmationModal: "{description} de {Nombre} {Apellido}".
   const vLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
     ? `${personalVehicle.vehicle_description} de ${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
     : 'vehículo'
 
-  // Patch a single field (or multiple) into the current assignments object.
   function patch(fields) {
-    dispatch({
-      type:    ACTIONS.SET_ASSIGNMENTS,
-      payload: { ...assignments, ...fields },
-    })
+    dispatch({ type: ACTIONS.SET_ASSIGNMENTS, payload: { ...assignments, ...fields } })
   }
 
   function handleAssignCar() {
     patch({
       car_passengers:  [...(assignments?.car_passengers ?? []), employee],
-      // Remove from Uber if they were there
-      uber_passengers: assignments?.uber_passengers?.filter(
-        (p) => !sameEmployee(p, employee),
-      ) ?? [],
+      uber_passengers: assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
     })
     onClose()
   }
@@ -227,11 +351,7 @@ function AssignmentMenuContent({
   function handleAssignUber() {
     patch({
       uber_passengers: [...(assignments?.uber_passengers ?? []), employee],
-      // Remove from car if they were there
-      car_passengers: assignments?.car_passengers?.filter(
-        (p) => !sameEmployee(p, employee),
-      ) ?? [],
-      // If this employee was the pickup, clear that too
+      car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
       ...(isPickup ? { pickup_employee: null, pickup_place: null } : {}),
     })
     onClose()
@@ -248,16 +368,10 @@ function AssignmentMenuContent({
 
   async function handleFindPickup() {
     if (!driverRoutes || !chosenMeetingPoint) return
-
-    // The route polyline depends on which meeting point the user chose:
-    //   PE  → base_route  (driver home → PE → event)
-    //   PEA → direct_route (driver home → event, passes near the PEA)
-    // A PEA has a different name from the original PE returned by /nearest-meeting-point.
     const isPea = meetingPoint && chosenMeetingPoint.name !== meetingPoint.name
     const routePolyline = isPea
       ? driverRoutes.direct_route?.encoded_polyline
       : driverRoutes.base_route?.encoded_polyline
-
     if (!routePolyline) return
 
     setLoadingPickup(true)
@@ -265,21 +379,11 @@ function AssignmentMenuContent({
       const result = await findPickup({
         employee_name:  name,
         route_polyline: routePolyline,
-        meeting_point: {
-          name: chosenMeetingPoint.name,
-          lat:  chosenMeetingPoint.lat,
-          lng:  chosenMeetingPoint.lng,
-        },
+        meeting_point:  { name: chosenMeetingPoint.name, lat: chosenMeetingPoint.lat, lng: chosenMeetingPoint.lng },
       })
-      dispatch({
-        type:    ACTIONS.SET_ACTIVE_PICKUP_RESULT,
-        payload: { employeeName: name, result },
-      })
+      dispatch({ type: ACTIONS.SET_ACTIVE_PICKUP_RESULT, payload: { employeeName: name, result } })
     } catch (err) {
-      dispatch({
-        type:    ACTIONS.SET_ERROR,
-        payload: err?.response?.data?.detail ?? err?.message ?? 'Error al buscar pickup.',
-      })
+      dispatch({ type: ACTIONS.SET_ERROR, payload: err?.response?.data?.detail ?? err?.message ?? 'Error al buscar pickup.' })
     } finally {
       setLoadingPickup(false)
       onClose()
@@ -290,83 +394,46 @@ function AssignmentMenuContent({
     <Card className="min-w-[200px] shadow-none border-0">
       <CardContent className="p-3 space-y-2">
 
-        {/* Employee header */}
         <div>
           <p className="font-semibold text-sm leading-tight">{name}</p>
           <p className="text-xs text-muted-foreground">{employee.Profesion}</p>
         </div>
 
-        {/* Driver — informational only, no actions */}
         {isDriver && (
           <p className="text-xs text-green-600 font-medium">
             Chofer — asignado automáticamente
           </p>
         )}
 
-        {/* Assignment actions — hidden for driver */}
         {!isDriver && (
           <div className="space-y-1.5">
-
-            {/* Assign to personal car */}
             {hasVehicle && !carFull && !inCar && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="w-full text-xs"
-                onClick={handleAssignCar}
-              >
+              <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignCar}>
                 Asignar al {vLabel}
               </Button>
             )}
-
-            {/* Full car message */}
             {hasVehicle && carFull && !inCar && (
               <p className="text-xs text-muted-foreground text-center">
                 Vehículo completo ({MAX_CAR_PASSENGERS}/{MAX_CAR_PASSENGERS})
               </p>
             )}
-
-            {/* Find pickup on route */}
             {hasVehicle && driverRoutes && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="w-full text-xs"
-                onClick={handleFindPickup}
-                disabled={loadingPickup}
-              >
-                {loadingPickup ? (
-                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
-                ) : (
-                  'Buscar pickup en ruta'
-                )}
+              <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleFindPickup} disabled={loadingPickup}>
+                {loadingPickup
+                  ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+                  : 'Buscar pickup en ruta'}
               </Button>
             )}
-
-            {/* Assign to Uber */}
             {!inUber && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="w-full text-xs"
-                onClick={handleAssignUber}
-              >
+              <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignUber}>
                 Asignar a Uber
               </Button>
             )}
-
-            {/* Remove assignment */}
             {isAssigned && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="w-full text-xs text-destructive hover:text-destructive"
-                onClick={handleRemove}
-              >
+              <Button size="sm" variant="ghost" className="w-full text-xs text-destructive hover:text-destructive" onClick={handleRemove}>
                 Quitar asignación
               </Button>
             )}
-
           </div>
         )}
       </CardContent>
@@ -386,9 +453,7 @@ function AssignmentMenuContent({
 export default function StaffMarkers({ staff }) {
   const { state, dispatch } = useAppState()
 
-  // selectedKey is the full name string of the currently open InfoWindow/menu,
-  // or null when nothing is open.  A string key avoids storing the full
-  // employee object in local state (it can always be looked up from staff).
+  // selectedKey: full name string of the employee whose InfoWindow is open, or null.
   const [selectedKey, setSelectedKey] = useState(null)
 
   const isStep3Plus = state.currentStep >= 3
@@ -400,11 +465,10 @@ export default function StaffMarkers({ staff }) {
     meetingPoint,
     frescosResult,
     secondMinifleteResult,
+    coordinateOverrides,
+    editingMarker,
   } = state
 
-  // Employees committed to the Vehículo QH — built once per relevant state
-  // change so the per-marker loop can do O(1) membership checks.
-  // Comparison is normalised (lowercase + trim) to tolerate whitespace drift.
   const frescosAssignedNames = useMemo(() => {
     const names = new Set()
     ;(frescosResult?.assigned_names ?? []).forEach((n) => names.add(n.toLowerCase().trim()))
@@ -414,34 +478,54 @@ export default function StaffMarkers({ staff }) {
     return names
   }, [frescosResult, secondMinifleteResult])
 
-  // chosenScenarioColor — derived from which meeting point the user selected.
-  // 'pe'  → PE chosen  → yellow (#FBBC04) route and markers
-  // 'pea' → PEA chosen → orange (#FF6D00) route and markers
-  // null  → no choice yet → car markers stay green (neutral default)
-  //
-  // Derived here rather than hardcoded per case so a single place controls the
-  // mapping between "which point was chosen" and "what color scheme applies."
   const isPea = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
   const chosenScenarioColor = !chosenMeetingPoint ? null : isPea ? 'pea' : 'pe'
 
-  // Resolve the selected employee object only when we need to render the popup.
-  const selectedEmployee = selectedKey
-    ? staff.find((emp) => fullName(emp) === selectedKey)
-    : null
+  // ── Marker click handler ───────────────────────────────────────────────────
+  // When the user clicks a marker:
+  //   • If a different marker was in edit mode → exit edit mode
+  //   • If this marker was in edit mode → stay open (don't toggle closed)
+  //   • Otherwise → toggle the InfoWindow open/closed
+  function handleMarkerClick(name) {
+    if (editingMarker === name) {
+      // Clicking the currently-editing marker: keep it open (no toggle).
+      return
+    }
+    if (editingMarker) {
+      dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: null })
+    }
+    setSelectedKey((prev) => (prev === name ? null : name))
+  }
+
+  // ── InfoWindow close (X button) ────────────────────────────────────────────
+  function handleInfoClose() {
+    setSelectedKey(null)
+    if (editingMarker) {
+      dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: null })
+    }
+  }
+
+  // ── Context for the selected InfoWindow ───────────────────────────────────
+  const selectedEmployee   = selectedKey ? staff.find((e) => fullName(e) === selectedKey) : null
+  const selectedOverride   = selectedKey ? coordinateOverrides?.[selectedKey] : null
+  // InfoWindow snaps to the final target position (no animation for the anchor).
+  const infoWindowCoords   = selectedOverride
+    ? { lat: selectedOverride.lat, lng: selectedOverride.lng }
+    : selectedEmployee?.coordinates ?? null
+  const selIsFrescosAssigned = selectedKey
+    ? (isStep3Plus && frescosAssignedNames.has(selectedKey.toLowerCase().trim()))
+    : false
 
   return (
     <>
       {staff.map((employee) => {
         const coords = employee.coordinates
-        // Silently skip employees whose address could not be geocoded.
         if (!coords) return null
 
-        const key              = fullName(employee)
-        const isOpen           = selectedKey === key
+        const key             = fullName(employee)
         const isFrescosAssigned = isStep3Plus && frescosAssignedNames.has(key.toLowerCase().trim())
-        const colors           = isFrescosAssigned
-          // Washed-out blue — same hue family as unassigned (#4285F4) but
-          // desaturated, signalling "exists but not interactive".
+        const override        = coordinateOverrides?.[key]
+        const colors          = isFrescosAssigned
           ? { background: '#B0C4DE', borderColor: '#8aabbf', glyphColor: '#ffffff' }
           : getMarkerColors(
               employee,
@@ -450,64 +534,96 @@ export default function StaffMarkers({ staff }) {
             )
 
         return (
-          <AdvancedMarker
+          <StaffMarker
             key={key}
-            position={{ lat: coords.lat, lng: coords.lng }}
-            title={`${key} — ${employee.Profesion}`}
-            onClick={() => setSelectedKey(isOpen ? null : key)}
-          >
-            {isFrescosAssigned ? (
-              // 0.6 opacity wrapper signals the non-interactive "disabled" state
-              // without removing the marker from the map — the manager still
-              // needs to see where these employees live for context.
-              <div style={{ opacity: 0.6 }}>
-                <Pin
-                  background={colors.background}
-                  borderColor={colors.borderColor}
-                  glyphColor={colors.glyphColor}
-                />
-              </div>
-            ) : (
-              <Pin
-                background={colors.background}
-                borderColor={colors.borderColor}
-                glyphColor={colors.glyphColor}
-              />
-            )}
-          </AdvancedMarker>
+            employee={employee}
+            override={override}
+            isEditing={editingMarker === key}
+            isFrescosAssigned={isFrescosAssigned}
+            colors={colors}
+            onMarkerClick={handleMarkerClick}
+            dispatch={dispatch}
+          />
         )
       })}
 
       {/*
         Single InfoWindow rendered outside the marker loop, anchored by
         position.  This avoids N concurrent InfoWindow instances fighting
-        over visibility.
+        over visibility.  The content switches between normal info/menu and
+        the edit-mode UI based on editingMarker.
       */}
-      {selectedEmployee?.coordinates && (
+      {selectedEmployee && infoWindowCoords && (
         <InfoWindow
-          position={{
-            lat: selectedEmployee.coordinates.lat,
-            lng: selectedEmployee.coordinates.lng,
-          }}
+          position={{ lat: infoWindowCoords.lat, lng: infoWindowCoords.lng }}
           pixelOffset={[0, -40]}
-          onCloseClick={() => setSelectedKey(null)}
+          onCloseClick={handleInfoClose}
           shouldFocus={false}
         >
-          {isStep3Plus && frescosAssignedNames.has(fullName(selectedEmployee).toLowerCase().trim()) ? (
-            <FrescosInfoContent employee={selectedEmployee} />
-          ) : isStep3Plus ? (
-            <AssignmentMenuContent
+          {editingMarker === selectedKey ? (
+            // ── Edit mode: address input + geocode + listo ─────────────────
+            <EditModeContent
               employee={selectedEmployee}
-              assignments={assignments}
-              personalVehicle={personalVehicle}
-              driverRoutes={driverRoutes}
-              chosenMeetingPoint={chosenMeetingPoint}
-              meetingPoint={meetingPoint}
+              hasOverride={!!selectedOverride}
               dispatch={dispatch}
-              onClose={() => setSelectedKey(null)}
+              onDone={() => dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: null })}
             />
           ) : (
-            <EmployeeInfoContent employee={selectedEmployee} />
+            // ── Normal mode: info/menu + edit controls strip below ─────────
+            <>
+              {selIsFrescosAssigned ? (
+                <FrescosInfoContent employee={selectedEmployee} />
+              ) : isStep3Plus ? (
+                <AssignmentMenuContent
+                  employee={selectedEmployee}
+                  assignments={assignments}
+                  personalVehicle={personalVehicle}
+                  driverRoutes={driverRoutes}
+                  chosenMeetingPoint={chosenMeetingPoint}
+                  meetingPoint={meetingPoint}
+                  dispatch={dispatch}
+                  onClose={handleInfoClose}
+                />
+              ) : (
+                <EmployeeInfoContent employee={selectedEmployee} />
+              )}
+
+              {/*
+                Edit controls strip — rendered below any InfoWindow variant.
+                Uses inline styles: the InfoWindow DOM is owned by Google Maps
+                so Tailwind utility classes may not apply reliably here.
+                "Editar dirección" enters edit mode for this marker.
+                "Volver a original" reverts the override (snaps back immediately).
+              */}
+              <div style={{
+                padding: '6px 12px 10px',
+                borderTop: '1px solid #e5e7eb',
+                display: 'flex',
+                gap: 12,
+                alignItems: 'center',
+              }}>
+                <button
+                  onClick={() => dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: selectedKey })}
+                  style={{
+                    fontSize: 11, color: '#9ca3af', textDecoration: 'underline',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  }}
+                >
+                  Editar dirección
+                </button>
+                {selectedOverride && (
+                  <button
+                    onClick={() => dispatch({ type: ACTIONS.CLEAR_COORDINATE_OVERRIDE, payload: { name: selectedKey } })}
+                    style={{
+                      fontSize: 11, color: '#9ca3af', textDecoration: 'underline',
+                      background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                    }}
+                  >
+                    Volver a original
+                  </button>
+                )}
+              </div>
+            </>
           )}
         </InfoWindow>
       )}
