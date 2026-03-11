@@ -284,3 +284,37 @@ export async function finalOutput(body) {
   const response = await client.post('/final-output', body)
   return response.data
 }
+
+// ---------------------------------------------------------------------------
+// Config panel
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns all config.py constants grouped by category, each with current
+ * value and description.
+ * @returns {object} { [category]: { label, constants: { [name]: { value, description } } } }
+ */
+export async function getConfig() {
+  const response = await client.get('/config')
+  return response.data
+}
+
+/**
+ * Updates one or more config constants at runtime and persists to disk.
+ * @param {{ [name: string]: any }} changes  Flat map of constant name → new value.
+ * @returns {object} Updated config (same shape as getConfig()).
+ */
+export async function updateConfig(changes) {
+  const response = await client.post('/config', changes)
+  return response.data
+}
+
+/**
+ * Restores all config constants to the original values captured at server
+ * startup and rewrites config.py on disk.
+ * @returns {object} Restored config (same shape as getConfig()).
+ */
+export async function resetConfig() {
+  const response = await client.post('/config-reset')
+  return response.data
+}

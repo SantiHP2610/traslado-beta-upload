@@ -181,8 +181,8 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 
 ## Working endpoints
 
-`GET`: /read-excel, /geocode-staff, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats
-`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output
+`GET`: /read-excel, /geocode-staff, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats, /config
+`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
 `DELETE`: /cache-clear
 
 ---
@@ -264,6 +264,14 @@ Auto-fill remaining to Uber happens at validate time (not incrementally).
 
 ### Marker position editing (all steps)
 Every InfoWindow has an "Editar dirección" link at the bottom. Clicking it enters edit mode for that marker only: the pin becomes draggable and an address input + "Geocodificar" / "Listo" UI appears in the InfoWindow. Position changes (drag or geocode) are stored in `coordinateOverrides[name]` and overrule `employee.coordinates` for rendering. "Volver a ubicación original" reverts the override. Only one marker is editable at a time (`editingMarker` state); clicking any other marker exits edit mode. All position changes animate with ease-out-cubic over 800ms via `useAnimatedPosition` (requestAnimationFrame). Override indicator: small white dot badge on the pin. Backend: `GET /geocode-address?address=` wraps `geocode()` for on-demand address resolution.
+
+### Config panel
+A gear icon button (top-right corner, always visible, z-40) opens a full-height settings panel (`ConfigPanel.jsx`, z-50) that slides in from the right. The panel loads all `config.py` constants via `GET /config`, grouped by category with Spanish section headers. Each constant shows its name (monospace), a description, and an editable input (number for int/float, text for strings, JSON textarea for dicts/lists). Changed fields get a blue left border.
+
+- **"Guardar"** — sends only changed values to `POST /config`. The backend validates types, updates all importing modules' namespaces at runtime (no restart needed), and rewrites `config.py` on disk preserving comments and formatting.
+- **"Restaurar ajustes predeterminados"** — shows an inline confirmation, then calls `POST /config-reset` which writes the original `config.py` text (snapshotted at server startup) back to disk and reloads all constants.
+
+Categories: Frescos/Minifletes, Capacidad de vehículos, Tiempos, PEA, Pickup, CP, Fórmula de salida.
 
 ### Modal & output
 - Confirmation modal: draggable, map interactive behind it. "Editar" → back to step 3, full state preserved, no API re-calls.

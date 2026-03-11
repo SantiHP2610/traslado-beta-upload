@@ -9,11 +9,15 @@
 # =============================================================================
 
 import os
+import re
+import sys
+import importlib
 import datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -30,6 +34,20 @@ from config import (
     DEPARTURE_PREP_HOURS, LONG_EVENT_EXTRA_HOURS,
     LONG_EVENT_DURATION_THRESHOLD, PICADA_GUEST_THRESHOLD,
 )
+
+# Module references held for runtime constant propagation (see _sync_runtime).
+# "from config import X" binds X as a local name in each importing module —
+# setattr(config, 'X', v) does NOT update those local names automatically.
+# Holding references to the modules lets us update them in one place.
+import config as _config_module
+import modules.logistics as _logistics_module
+import modules.maps_client as _maps_client_module
+
+# Snapshot of config.py text at server startup.
+# Taken BEFORE any runtime changes so /config-reset can restore original values.
+_CONFIG_PY_PATH = Path(__file__).resolve().parent / "config.py"
+with open(_CONFIG_PY_PATH, "r", encoding="utf-8") as _f:
+    _ORIGINAL_CONFIG_TEXT = _f.read()
 
 # Load the variables defined in .env into the process environment.
 # This must run before any code that calls os.getenv().
@@ -1873,3 +1891,473 @@ def endpoint_final_output(body: FinalOutputRequest):
         pe_departure=pe_departure,
         cp_departure=cp_departure,
     )
+
+
+# =============================================================================
+# Config panel — schema, helpers, and endpoints
+#
+# These three endpoints expose config.py constants to the frontend settings
+# panel, allow runtime + on-disk updates, and support a factory reset.
+# =============================================================================
+
+# Ordered category map: each key maps to a display label and a dict of
+# constant names → descriptions.  Descriptions are extracted from the
+# comments in config.py and kept here as the single source of truth for
+# the UI.  The backend never reads descriptions from the source file —
+# parsing Python comments at runtime would be fragile and slow.
+_CONFIG_SCHEMA: dict[str, dict] = {
+    "frescos": {
+        "label": "Frescos / Minifletes",
+        "constants": {
+            "SECOND_MINIFLETE_CONDITIONS": {
+                "description": (
+                    "Umbrales de comensales por tipo de menú que activan "
+                    "un segundo miniflete de frescos."
+                ),
+            },
+        },
+    },
+    "vehicle_capacity": {
+        "label": "Capacidad de vehículos",
+        "constants": {
+            "MAX_PASSENGERS_PER_CAR": {
+                "description": (
+                    "Máximo de pasajeros en el vehículo personal por viaje "
+                    "(excluye al chofer)."
+                ),
+            },
+            "MAX_PASSENGERS_UBER": {
+                "description": (
+                    "Máximo de pasajeros en Uber por viaje "
+                    "(excluye al conductor externo)."
+                ),
+            },
+            "CHARTER_THRESHOLD": {
+                "description": (
+                    "Si la cantidad total de pasajeros supera este número, "
+                    "se evalúa contratar un charter."
+                ),
+            },
+        },
+    },
+    "time_parameters": {
+        "label": "Tiempos",
+        "constants": {
+            "DEPARTURE_BUFFER_MINUTES": {
+                "description": (
+                    "Margen adicional (min) antes de la salida para "
+                    "imprevistos de último momento."
+                ),
+            },
+            "LOADING_TIME_MINUTES": {
+                "description": (
+                    "Tiempo de carga (min) del equipo y frescos en el "
+                    "vehículo antes de partir."
+                ),
+            },
+            "EVENT_PREP_HOURS": {
+                "description": (
+                    "Horas de antelación con que el equipo debe llegar al "
+                    "venue para montar (caso estándar)."
+                ),
+            },
+            "EVENT_PREP_HOURS_WITH_PICADA": {
+                "description": (
+                    "Horas de antelación cuando hay picada incluida "
+                    "(el servicio puede comenzar antes del evento principal)."
+                ),
+            },
+            "PICADA_THRESHOLD_GUESTS": {
+                "description": (
+                    "Comensales a partir de los cuales la picada se "
+                    "considera de gran volumen."
+                ),
+            },
+        },
+    },
+    "pea": {
+        "label": "Punto de encuentro alternativo (PEA)",
+        "constants": {
+            "PEA_MAX_TRANSIT_MINUTES": {
+                "description": (
+                    "Tiempo de tránsito máximo (min) a un PEA. Superar este "
+                    "umbral activa la advertencia 'lejos' para ese empleado "
+                    "(solo informativo — el candidato se devuelve igual)."
+                ),
+            },
+            "PEA_EXCLUSIVE_DIFF_MINUTES": {
+                "description": (
+                    "Diferencia mínima de tiempo (min) entre ir al PE vs PEA "
+                    "para contar a un empleado como que 'prefiere exclusivamente' "
+                    "el PEA."
+                ),
+            },
+            "PEA_MIN_EXCLUSIVE_PREFERENCE": {
+                "description": (
+                    "Referencia visual: cuántos empleados deberían preferir el PEA "
+                    "para que el desvío valga la pena. Solo guía al manager."
+                ),
+            },
+            "PEA_RADIUS_KM": {
+                "description": (
+                    "Radio (km) desde el PE original. Candidatos dentro → 'óptimos'. "
+                    "Fuera → 'revisar viáticos'. Solo informativo."
+                ),
+            },
+            "CLUSTER_RADIUS_KM": {
+                "description": (
+                    "Radio (km) para agrupar empleados en clústeres geográficos "
+                    "antes de buscar candidatos PEA."
+                ),
+            },
+            "PEA_ROUTE_PROXIMITY_KM": {
+                "description": (
+                    "Distancia máxima (km) del hogar del empleado a la ruta del "
+                    "chofer para ser elegible para PEA. Empleados más lejanos se "
+                    "excluyen (cero llamadas a Places API si ninguno califica)."
+                ),
+            },
+            "MIN_CLUSTER_SIZE": {
+                "description": (
+                    "Mínimo de empleados en un clúster para evaluar un PEA. "
+                    "Un único beneficiado no justifica el desvío."
+                ),
+            },
+        },
+    },
+    "pickup": {
+        "label": "Punto de pickup",
+        "constants": {
+            "PICKUP_MIN_TIME_SAVING_MINUTES": {
+                "description": (
+                    "Ahorro mínimo de tiempo (min) para que el pickup sea "
+                    "recomendable. Si es menor, se muestra advertencia (informativo)."
+                ),
+            },
+            "PICKUP_MAX_DETOUR_METERS": {
+                "description": (
+                    "Radio de búsqueda (m) de Places API alrededor del punto de "
+                    "cruce, y distancia máxima para que un lugar cuente como "
+                    "'en ruta' y no en una calle lateral."
+                ),
+            },
+            "PICKUP_MAX_TRANSIT_MINUTES": {
+                "description": (
+                    "Tiempo máximo de tránsito (min) del empleado al punto de "
+                    "cruce. Si se supera, se muestra advertencia (informativo)."
+                ),
+            },
+            "PICKUP_TOP_CANDIDATES": {
+                "description": (
+                    "Número de opciones de lugar devueltas por candidato de "
+                    "pickup, ordenadas por cercanía al punto de cruce."
+                ),
+            },
+            "PICKUP_PLACE_TYPES": {
+                "description": (
+                    "Tipos de lugar que busca la Places API para el punto de "
+                    "pickup. Tipos válidos de Google Maps: 'gas_station', "
+                    "'restaurant', etc."
+                ),
+            },
+        },
+    },
+    "cp": {
+        "label": "Centro de producción (CP)",
+        "constants": {
+            "CP_ADDRESS": {
+                "description": (
+                    "Dirección del Centro de Producción donde se cargan "
+                    "frescos y equipo antes de cada evento."
+                ),
+            },
+            "CP_LAT": {
+                "description": (
+                    "Latitud del Centro de Producción "
+                    "(coordenada obtenida de Google Maps)."
+                ),
+            },
+            "CP_LNG": {
+                "description": (
+                    "Longitud del Centro de Producción "
+                    "(coordenada obtenida de Google Maps)."
+                ),
+            },
+        },
+    },
+    "departure_formula": {
+        "label": "Fórmula de salida",
+        "constants": {
+            "DEPARTURE_PREP_HOURS": {
+                "description": (
+                    "Horas de preparación descontadas del horario del evento "
+                    "para calcular la hora de salida del CP."
+                ),
+            },
+            "DEPARTURE_BUFFER_MINUTES": {
+                "description": (
+                    "Margen adicional (min) antes de la salida para "
+                    "imprevistos de último momento."
+                ),
+            },
+            "LOADING_TIME_MINUTES": {
+                "description": (
+                    "Tiempo de carga (min) del equipo y frescos en el "
+                    "vehículo antes de partir."
+                ),
+            },
+            "LONG_EVENT_EXTRA_HOURS": {
+                "description": (
+                    "Horas adicionales de preparación para eventos largos "
+                    "o con picada de gran volumen."
+                ),
+            },
+            "LONG_EVENT_DURATION_THRESHOLD": {
+                "description": (
+                    "Duración del evento (horas) a partir de la cual se "
+                    "aplica la preparación adicional."
+                ),
+            },
+            "PICADA_GUEST_THRESHOLD": {
+                "description": (
+                    "Comensales a partir de los cuales se aplica la "
+                    "preparación adicional."
+                ),
+            },
+        },
+    },
+}
+
+
+def _sync_runtime(name: str, value: Any) -> None:
+    """
+    Push a single constant update to every Python module that imported it.
+
+    'from config import X' creates a local name X in the importing module's
+    namespace.  Updating config.X via setattr does NOT propagate to those
+    local names automatically.  This function iterates the four known modules
+    that import from config and updates each one that has a matching attribute.
+    """
+    _main = sys.modules[__name__]
+    for mod in [_config_module, _logistics_module, _maps_client_module, _main]:
+        if hasattr(mod, name):
+            setattr(mod, name, value)
+
+
+def _replace_constant_in_text(text: str, name: str, new_value: Any) -> str:
+    """
+    Find the assignment of `name` in config.py source text and replace its
+    value.  Preserves inline trailing comments on the same line; all other
+    lines (including multi-line continuation comments) are left untouched.
+
+    Handles five types:
+      dict  — multiline block, closing } must be at column 0 on its own line.
+      list  — single-line [item, ...] literal.
+      str   — single-quoted or double-quoted string literal.
+      float — numeric literal (possibly negative / scientific notation).
+      int   — integer literal (possibly negative).
+    """
+    escaped = re.escape(name)
+
+    if isinstance(new_value, dict):
+        inner = "\n".join(
+            f"    {repr(k)}: {repr(v)}," for k, v in new_value.items()
+        )
+        new_str = f"{name} = {{\n{inner}\n}}"
+        # Match NAME = { ... } where the closing } sits on its own line.
+        pattern = rf"^{escaped}\s*=\s*\{{[\s\S]*?\n\}}"
+        return re.sub(pattern, new_str, text, flags=re.MULTILINE)
+
+    if isinstance(new_value, list):
+        if all(isinstance(x, str) for x in new_value):
+            items = ", ".join(f'"{x}"' for x in new_value)
+        else:
+            items = ", ".join(repr(x) for x in new_value)
+        new_val_str = f"[{items}]"
+
+        def _list_replacer(m: re.Match) -> str:
+            return m.group(1) + new_val_str + (m.group(3) or "")
+
+        pattern = rf"^({escaped}\s*=\s*)(\[[^\]]*\])([ \t]*#[^\n]*)?"
+        return re.sub(pattern, _list_replacer, text, flags=re.MULTILINE)
+
+    if isinstance(new_value, str):
+        new_val_str = repr(new_value)
+
+        def _str_replacer(m: re.Match) -> str:
+            return m.group(1) + new_val_str + (m.group(3) or "")
+
+        pattern = rf'^({escaped}\s*=\s*)("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')([ \t]*#[^\n]*)?'
+        return re.sub(pattern, _str_replacer, text, flags=re.MULTILINE)
+
+    if isinstance(new_value, float):
+        new_val_str = repr(new_value)
+
+        def _float_replacer(m: re.Match) -> str:
+            return m.group(1) + new_val_str + (m.group(3) or "")
+
+        pattern = rf"^({escaped}\s*=\s*)(-?[\d.]+(?:[eE][+-]?\d+)?)([ \t]*#[^\n]*)?"
+        return re.sub(pattern, _float_replacer, text, flags=re.MULTILINE)
+
+    if isinstance(new_value, int):
+        new_val_str = str(new_value)
+
+        def _int_replacer(m: re.Match) -> str:
+            return m.group(1) + new_val_str + (m.group(3) or "")
+
+        pattern = rf"^({escaped}\s*=\s*)(-?\d+)([ \t]*#[^\n]*)?"
+        return re.sub(pattern, _int_replacer, text, flags=re.MULTILINE)
+
+    return text  # Unknown type — no change
+
+
+def _build_config_response() -> dict:
+    """
+    Build the full config response by merging _CONFIG_SCHEMA (labels and
+    descriptions) with current runtime values from the config module.
+    Values reflect any changes made via POST /config since server startup.
+    """
+    result: dict = {}
+    for cat_key, cat_info in _CONFIG_SCHEMA.items():
+        result[cat_key] = {
+            "label": cat_info["label"],
+            "constants": {},
+        }
+        for name, meta in cat_info["constants"].items():
+            result[cat_key]["constants"][name] = {
+                "value":       getattr(_config_module, name),
+                "description": meta["description"],
+            }
+    return result
+
+
+# -----------------------------------------------------------------------------
+# Config endpoints
+# -----------------------------------------------------------------------------
+
+@app.get(
+    "/config",
+    summary="Get all config constants grouped by category",
+    description=(
+        "Returns all business-rule constants from config.py, grouped by "
+        "category.  Each constant includes its current runtime value and a "
+        "short description.  Values reflect any runtime changes made via "
+        "POST /config since server startup."
+    ),
+)
+def endpoint_get_config() -> dict:
+    return _build_config_response()
+
+
+@app.post(
+    "/config",
+    summary="Update one or more config constants",
+    description=(
+        "Accepts a flat { 'CONSTANT_NAME': new_value, ... } JSON object. "
+        "Validates types, updates runtime references in all importing modules "
+        "so changes take effect immediately without a restart, and persists "
+        "the updated values to disk by rewriting config.py."
+    ),
+)
+def endpoint_update_config(changes: dict[str, Any] = Body(...)) -> dict:
+    """
+    Type validation rules:
+      - int stays int (floats are accepted and coerced if they are whole numbers)
+      - float stays float (ints are accepted and promoted)
+      - str stays str
+      - dict stays dict
+      - list stays list
+
+    Disk persistence: reads the current config.py text, replaces each
+    changed constant's value using regex while preserving comments and
+    formatting, and writes the file back.  re.sub replaces ALL occurrences
+    of a constant name, so duplicated definitions (DEPARTURE_BUFFER_MINUTES
+    appears twice in config.py) are kept in sync automatically.
+    """
+    if not changes:
+        return _build_config_response()
+
+    # Collect all known constant names and their current values.
+    all_known: dict[str, Any] = {}
+    for cat_info in _CONFIG_SCHEMA.values():
+        for name in cat_info["constants"]:
+            all_known[name] = getattr(_config_module, name)
+
+    errors: list[str] = []
+    coerced = dict(changes)
+
+    for name, new_val in coerced.items():
+        if name not in all_known:
+            errors.append(f"Unknown constant: '{name}'")
+            continue
+
+        current = all_known[name]
+
+        # bool is a subclass of int in Python — check it first.
+        if isinstance(current, bool) or isinstance(new_val, bool):
+            if type(current) is not type(new_val):
+                errors.append(
+                    f"'{name}': expected bool, got {type(new_val).__name__}"
+                )
+
+        # Allow int→float promotion (JSON always sends whole numbers as int).
+        elif isinstance(current, float) and isinstance(new_val, int):
+            coerced[name] = float(new_val)
+
+        # Allow float→int coercion only when the float is a whole number.
+        elif isinstance(current, int) and isinstance(new_val, float):
+            if new_val == int(new_val):
+                coerced[name] = int(new_val)
+            else:
+                errors.append(
+                    f"'{name}': expected int, got float {new_val}"
+                )
+
+        elif type(current) is not type(new_val):
+            errors.append(
+                f"'{name}': expected {type(current).__name__}, "
+                f"got {type(new_val).__name__}"
+            )
+
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+
+    # Read the CURRENT on-disk text (not the original snapshot) so that
+    # incremental saves accumulate correctly.
+    config_text = _CONFIG_PY_PATH.read_text(encoding="utf-8")
+
+    for name, new_val in coerced.items():
+        _sync_runtime(name, new_val)
+        config_text = _replace_constant_in_text(config_text, name, new_val)
+
+    _CONFIG_PY_PATH.write_text(config_text, encoding="utf-8")
+
+    return _build_config_response()
+
+
+@app.post(
+    "/config-reset",
+    summary="Restore all config constants to their original defaults",
+    description=(
+        "Writes the original config.py text (captured at server startup) "
+        "back to disk, then reloads all constants from the restored file "
+        "into the runtime namespaces of every importing module.  "
+        "Returns the restored config in the same shape as GET /config."
+    ),
+)
+def endpoint_config_reset() -> dict:
+    _CONFIG_PY_PATH.write_text(_ORIGINAL_CONFIG_TEXT, encoding="utf-8")
+
+    # Reload the config module from the restored file so getattr() reads the
+    # original values.  importlib.reload() updates the existing module object
+    # in-place — _config_module still refers to the same object after reload.
+    importlib.reload(_config_module)
+
+    # Propagate every schema constant from the freshly loaded config module
+    # to all other importing modules.
+    for cat_info in _CONFIG_SCHEMA.values():
+        for name in cat_info["constants"]:
+            if hasattr(_config_module, name):
+                _sync_runtime(name, getattr(_config_module, name))
+
+    return _build_config_response()

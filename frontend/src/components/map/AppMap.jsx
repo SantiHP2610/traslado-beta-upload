@@ -42,7 +42,7 @@
  * regardless of which panel or sub-component the user is looking at.
  */
 
-import { useMemo, useEffect }            from 'react'
+import { useMemo, useEffect, useState }  from 'react'
 import { Map, AdvancedMarker, Pin }      from '@vis.gl/react-google-maps'
 import polyline                          from '@mapbox/polyline'
 import { useAppState, ACTIONS }          from '../../state/appState'
@@ -59,6 +59,7 @@ import AssignmentPanel                   from '../panels/AssignmentPanel'
 import PickupResultPanel                 from '../panels/PickupResultPanel'
 import ConfirmationModal                 from '../panels/ConfirmationModal'
 import FinalOutputBlocks                 from '../panels/FinalOutputBlocks'
+import ConfigPanel, { GearButton }       from '../panels/ConfigPanel'
 
 const BA_CENTER    = { lat: -34.6037, lng: -58.3816 }
 const DEFAULT_ZOOM = 11
@@ -138,6 +139,9 @@ function computeBounds(staffWithCoords, driverRoutes, eventCoords) {
 export default function AppMap() {
   const { state, dispatch } = useAppState()
   const mapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || undefined
+
+  // Config panel visibility — purely local UI state, no global dispatch needed.
+  const [showConfig, setShowConfig] = useState(false)
 
   // Trigger automatic backend calls when step 2 starts.
   // This hook watches currentStep and fires once on the 1→2 transition.
@@ -272,6 +276,17 @@ export default function AppMap() {
 
       {/* Step 4: final output blocks — two draggable cards after confirmation */}
       {state.showOutput && <FinalOutputBlocks />}
+
+      {/* Gear icon — always visible, top-right corner, above all other panels */}
+      <GearButton
+        onClick={() => setShowConfig((v) => !v)}
+        active={showConfig}
+      />
+
+      {/* Config panel — slides in from the right; z-index 50 sits above panels */}
+      {showConfig && (
+        <ConfigPanel onClose={() => setShowConfig(false)} />
+      )}
     </div>
   )
 }

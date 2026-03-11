@@ -72,7 +72,7 @@ PEA_MAX_TRANSIT_MINUTES = 25       # threshold used to populate the per-employee
                                     # "exceeds_max_transit" warning flag in staff_metrics;
                                     # flagged employees may find the PEA inconvenient,
                                     # but the candidate is still returned for the manager to assess
-PEA_EXCLUSIVE_DIFF_MINUTES = 20    # difference (in minutes) between transit time to PE and
+PEA_EXCLUSIVE_DIFF_MINUTES = 22    # difference (in minutes) between transit time to PE and
                                     # transit time to PEA at which an employee is counted as
                                     # "exclusively preferring" the PEA; populates the informational
                                     # exclusively_prefer_count field shown to the manager
