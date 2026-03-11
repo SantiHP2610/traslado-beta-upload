@@ -89,6 +89,8 @@ function buildBody(assignments, frescosResult, chosenMeetingPoint, staff) {
                          .map((g) => g.map(fullName)),
       pickup_employee: assignments.pickup_employee
         ? fullName(assignments.pickup_employee) : null,
+      pending_employee: assignments.pending_employee
+        ? fullName(assignments.pending_employee) : null,
     },
     assigned_roles:       assignedRoles,
     chosen_meeting_point: {

@@ -1180,15 +1180,18 @@ class AssignmentsInput(BaseModel):
     """
     The user-submitted vehicle groupings produced by the interactive map.
 
-    driver:          full name ("Nombre Apellido") of the personal car driver.
-    car_passengers:  full names of employees travelling in the personal car.
-    uber_groups:     each inner list is one Uber booking; names in "Nombre Apellido".
-    pickup_employee: full name of the employee picked up along the route, or None.
+    driver:           full name ("Nombre Apellido") of the personal car driver.
+    car_passengers:   full names of employees travelling in the personal car.
+    uber_groups:      each inner list is one Uber booking; names in "Nombre Apellido".
+    pickup_employee:  full name of the employee picked up along the route, or None.
+    pending_employee: full name of the single employee left without Uber (alternative
+                      transport to be arranged separately), or None if not applicable.
     """
-    driver:          str
-    car_passengers:  list[str]
-    uber_groups:     list[list[str]]
-    pickup_employee: str | None = None
+    driver:           str
+    car_passengers:   list[str]
+    uber_groups:      list[list[str]]
+    pickup_employee:  str | None = None
+    pending_employee: str | None = None
 
 
 class ValidateAssignmentsRequest(BaseModel):

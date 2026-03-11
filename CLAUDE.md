@@ -123,6 +123,8 @@ Both vehicles always depart at the same time.
 - Rest → Uber groups of MAX_PASSENGERS_UBER (4). Single Uber passenger → warning (TODO: consult manager)
 - No personal car → 422 (separate /assign-uber-only endpoint needed, not built)
 
+**Pending employee (single-employee edge case):** When exactly 1 employee remains unassigned at validate time, the manager may choose "Buscar alternativa y dejar pendiente" instead of assigning them to Uber. This stores the employee's name in `assignments.pending_employee`. `validate_assignments()` treats `pending_employee` as a valid assignment (same coverage as Uber — the name is in the pool and is accounted for). The final output shows them under "Transporte alternativo a coordinar". `pending_employee` is a field in `AssignmentsInput` (optional, `str | None = None`) and flows through `build_assignment_summary()` and `build_final_output()` to the frontend output blocks.
+
 ### Step 5 — Meeting point and driver routes
 `nearest_meeting_point(event_coords)`: Distance Matrix, picks closest of 3 fixed PEs:
 - North: Puente Saavedra (Av. Gral Paz y Cabildo)

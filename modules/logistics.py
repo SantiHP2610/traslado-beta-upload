@@ -1892,11 +1892,15 @@ def validate_assignments(remaining_pool: list[dict], assignments: dict) -> dict:
                                      get_remaining_pool()["remaining_pool"].
                                      Each dict must have "Nombre" and "Apellido".
         assignments    (dict):       User-submitted groupings with keys:
-                                       "driver"          (str)
-                                       "car_passengers"  (list[str])
-                                       "uber_groups"     (list[list[str]])
-                                       "pickup_employee" (str | None)
+                                       "driver"           (str)
+                                       "car_passengers"   (list[str])
+                                       "uber_groups"      (list[list[str]])
+                                       "pickup_employee"  (str | None)
+                                       "pending_employee" (str | None)
                                      All name strings use "Nombre Apellido" format.
+                                     pending_employee counts as a valid assignment —
+                                     they appear in the pool but their transport will
+                                     be arranged separately (no Uber booking needed).
 
     Returns:
         dict: {
@@ -1950,6 +1954,13 @@ def validate_assignments(remaining_pool: list[dict], assignments: dict) -> dict:
     pickup_name = assignments.get("pickup_employee")
     if pickup_name:
         assigned_names.add(pickup_name.strip())
+
+    # pending_employee is set when the manager chose "Buscar alternativa y dejar
+    # pendiente" for the single remaining employee — they will travel by an
+    # alternative means arranged separately and must not appear as "unassigned".
+    pending_name = assignments.get("pending_employee")
+    if pending_name:
+        assigned_names.add(pending_name.strip())
 
     # -------------------------------------------------------------------------
     # Step 3: compute discrepancies via set difference.
@@ -2162,7 +2173,8 @@ def build_final_output(
                 "departure_from_pe":   str,        # "HH:MM"
                 "departure_breakdown": dict,       # full pe_departure result
                 "personal_vehicle":    dict,       # driver + passengers + pickup
-                "uber_groups":         list[dict]
+                "uber_groups":         list[dict],
+                "pending_employee":    str | None  # alternative transport, or None
             }
         }
     """
@@ -2203,6 +2215,9 @@ def build_final_output(
         "departure_breakdown": pe_departure,
         "personal_vehicle":    confirmed_summary.get("personal_vehicle"),
         "uber_groups":         confirmed_summary.get("uber_groups", []),
+        # Pass pending_employee through so the frontend can render the
+        # "Transporte alternativo a coordinar" note in the transport block.
+        "pending_employee":    confirmed_summary.get("pending_employee"),
     }
 
     return {
@@ -2269,7 +2284,9 @@ def build_assignment_summary(
             },
             "second_miniflete": dict | None,
             "departure_from_cp": str | None,    # "HH:MM"; None before confirm
-            "departure_from_pe": str | None     # "HH:MM"; None before confirm
+            "departure_from_pe": str | None,    # "HH:MM"; None before confirm
+            "pending_employee":  str | None     # name of employee with alternative
+                                                # transport, or None if not applicable
         }
     """
     # -------------------------------------------------------------------------
@@ -2336,4 +2353,7 @@ def build_assignment_summary(
             if pe_departure_time_result
             else None
         ),
+        # pending_employee is the single employee (if any) whose transport is to
+        # be arranged separately — they were left out of car and Uber on purpose.
+        "pending_employee": assignments.get("pending_employee"),
     }
