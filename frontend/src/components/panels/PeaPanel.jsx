@@ -164,7 +164,7 @@ export default function PeaPanel() {
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Hacé click sobre un marcador{' '}
-                  <span className="font-medium text-green-600">verde (PE)</span>
+                  <span className="font-medium text-yellow-500">amarillo (PE)</span>
                   {hasCandidates && (
                     <>
                       {' '}o{' '}

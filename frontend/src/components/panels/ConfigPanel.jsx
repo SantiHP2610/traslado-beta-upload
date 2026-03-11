@@ -64,10 +64,103 @@ const INPUT_BASE = {
 }
 
 // ---------------------------------------------------------------------------
+// Spanish labels for SECOND_MINIFLETE_CONDITIONS keys
+// ---------------------------------------------------------------------------
+
+const MINIFLETE_KEY_LABELS = {
+  'asado tradicional':      'Asado tradicional',
+  'asado finger food':      'Asado finger food',
+  'acompañamiento bebidas': 'Acompañamiento bebidas',
+}
+
+// ---------------------------------------------------------------------------
+// SecondMinifleteRow — renders SECOND_MINIFLETE_CONDITIONS as individual inputs
+//
+// Instead of exposing the raw dict as a JSON textarea, each key-value pair
+// gets its own labeled number input.  This is less error-prone (no JSON syntax
+// to type) and matches how a manager thinks about the thresholds.
+//
+// When saving, the three inputs are reconstructed into the same dict shape
+// that the backend expects, so POST /config requires no backend changes.
+// ---------------------------------------------------------------------------
+
+function SecondMinifleteRow({ name, meta, localChanges, onChange }) {
+  const currentDict = (name in localChanges) ? localChanges[name] : meta.value
+  const isChanged   = name in localChanges
+  const borderLeft  = isChanged ? '3px solid #2563EB' : '3px solid transparent'
+  const inputBg     = isChanged ? '#eff6ff' : '#fff'
+
+  function handleSubChange(key, raw) {
+    const n = parseInt(raw, 10)
+    if (!isFinite(n)) return
+    const updated = { ...currentDict, [key]: n }
+    // Reconstruct the full dict and route through onJsonChange (passed as onChange)
+    // so the parent parses it and stores the object in localChanges correctly.
+    onChange(name, JSON.stringify(updated))
+  }
+
+  return (
+    <div style={{ marginBottom: 14, paddingLeft: 8, borderLeft }}>
+      <p style={{
+        fontFamily: 'monospace',
+        fontSize:   11,
+        fontWeight: 600,
+        color:      '#1f2937',
+        margin:     '0 0 2px',
+      }}>
+        {name}
+      </p>
+      <p style={{
+        fontSize:   11,
+        color:      '#9ca3af',
+        margin:     '0 0 5px',
+        lineHeight: 1.45,
+      }}>
+        {meta.description}
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {Object.entries(currentDict).map(([key, val]) => (
+          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label style={{
+              fontSize:   11,
+              color:      '#374151',
+              flexShrink: 0,
+              width:      160,
+            }}>
+              {MINIFLETE_KEY_LABELS[key] ?? key}
+            </label>
+            <input
+              type="number"
+              step="1"
+              value={val}
+              onChange={(e) => handleSubChange(key, e.target.value)}
+              style={{ ...INPUT_BASE, width: 80, background: inputBg }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ConstantRow — renders name, description, and editable input for one constant
 // ---------------------------------------------------------------------------
 
 function ConstantRow({ name, meta, localChanges, rawJson, onChange, onJsonChange }) {
+  // SECOND_MINIFLETE_CONDITIONS gets its own component for a friendlier UX.
+  if (name === 'SECOND_MINIFLETE_CONDITIONS') {
+    return (
+      <SecondMinifleteRow
+        name={name}
+        meta={meta}
+        localChanges={localChanges}
+        onChange={onJsonChange}
+      />
+    )
+  }
+
   const type       = valueType(meta.value)
   const isChanged  = name in localChanges
   const isJsonType = type === 'json'
@@ -440,25 +533,24 @@ export function GearButton({ onClick, active }) {
       onClick={onClick}
       aria-label="Abrir configuración"
       style={{
-        position:     'absolute',
-        top:          12,
-        right:        12,
-        zIndex:       40,
-        width:        40,
-        height:       40,
-        borderRadius: '50%',
-        background:   active ? '#111827' : '#fff',
-        color:        active ? '#fff'    : '#374151',
-        border:       '1px solid #d1d5db',
-        boxShadow:    '0 2px 8px rgba(0,0,0,0.15)',
-        cursor:       'pointer',
-        display:      'flex',
-        alignItems:   'center',
+        position:       'absolute',
+        top:            12,
+        right:          12,
+        zIndex:         40,
+        width:          40,
+        height:         40,
+        background:     'none',
+        border:         'none',
+        boxShadow:      'none',
+        cursor:         'pointer',
+        display:        'flex',
+        alignItems:     'center',
         justifyContent: 'center',
-        transition:   'background 0.15s, color 0.15s',
+        color:          active ? '#111827' : '#4B5563',
+        padding:        0,
       }}
     >
-      <Settings size={18} />
+      <Settings size={20} />
     </button>
   )
 }
