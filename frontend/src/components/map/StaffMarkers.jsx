@@ -24,11 +24,26 @@
  * or any other marker exits edit mode.  The override is stored in the global
  * coordinateOverrides slice.  "Volver a ubicación original" reverts the marker.
  *
- * ── Position updates ─────────────────────────────────────────────────────────
+ * ── Animated transitions ─────────────────────────────────────────────────────
  * When a marker's effective position changes (new override set or cleared), it
- * snaps immediately to the new coordinates.  Animation was removed because
- * Pin's internal useEffect calls removeChild on every re-render — 60fps RAF
- * updates triggered a "removeChild on Node" crash in Google Maps' DOM.
+ * animates ease-out-cubic over 1500ms via useAnimatedPosition().
+ *
+ * The animation bypasses React state during the transition: lat/lng are
+ * interpolated in a requestAnimationFrame loop and written directly to
+ * markerRef.current.position on the AdvancedMarkerElement.  React state
+ * (snappedPos) is updated exactly once when the animation completes, to keep
+ * the position prop coherent for any future re-renders.
+ *
+ * Why not call setState on every frame?
+ *   setState triggers a React re-render → Pin's useEffect runs (its deps
+ *   include 'props', a new object on every render) → removeChild fires at
+ *   60fps → "removeChild on Node" crash in Google Maps' DOM.
+ *
+ * Direct mutation works because AdvancedMarker uses usePropBinding to sync
+ * marker.position from the 'position' prop.  usePropBinding is dep-tracked
+ * ([marker, position]): it only fires when the prop reference changes, not on
+ * every render.  While snappedPos is stable, prop binding is dormant and our
+ * direct mutations are the sole driver of the marker's screen position.
  *
  * ── Why assignment logic lives in this component ─────────────────────────────
  * Actions are spatially anchored to a specific marker: "assign to car" only
@@ -44,7 +59,7 @@
  * step.  Local useState is the right scope.
  */
 
-import { useState, useMemo }                      from 'react'
+import { useState, useMemo, useEffect, useRef }  from 'react'
 import { AdvancedMarker, InfoWindow, Pin }        from '@vis.gl/react-google-maps'
 import { useAppState, ACTIONS }                   from '../../state/appState'
 import { findPickup, geocodeAddress as geocodeAddressApi } from '../../api/endpoints'
@@ -90,6 +105,79 @@ function getMarkerColors(employee, assignments, chosenScenarioColor) {
   if (assignments.uber_passengers?.some((p) => sameEmployee(p, employee))) return { background: '#9E9E9E', borderColor: '#757575', glyphColor: '#ffffff' }
 
   return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
+}
+
+// ---------------------------------------------------------------------------
+// useAnimatedPosition — ease-out-cubic marker transition, crash-free
+//
+// Returns { snappedPos, markerRef }.
+//   snappedPos — the position React knows about; only updated at animation end.
+//   markerRef  — forward to <AdvancedMarker ref={markerRef}> so the hook can
+//                mutate marker.position directly during animation.
+//
+// During the RAF loop, markerRef.current.position is mutated frame-by-frame
+// without touching React state.  This prevents Pin's useEffect from running
+// at 60fps and avoids the "removeChild on Node" crash.
+// ---------------------------------------------------------------------------
+
+function useAnimatedPosition(targetLat, targetLng) {
+  const posRef    = useRef({ lat: targetLat, lng: targetLng })
+  const rafRef    = useRef(null)
+  const markerRef = useRef(null)
+
+  // snappedPos is only set once per animation (at completion).
+  // The position prop on AdvancedMarker always equals snappedPos, so
+  // usePropBinding (which is dep-tracked) stays dormant during animation and
+  // never fights with our direct marker.position mutations.
+  const [snappedPos, setSnappedPos] = useState({ lat: targetLat, lng: targetLng })
+
+  useEffect(() => {
+    const start = { ...posRef.current }
+    const end   = { lat: targetLat, lng: targetLng }
+
+    if (start.lat === end.lat && start.lng === end.lng) return
+
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+
+    const t0       = performance.now()
+    const DURATION = 1500
+    // ease-out-cubic: fast start that decelerates to a gentle stop.
+    const ease     = (t) => 1 - Math.pow(1 - t, 3)
+
+    function step(now) {
+      const progress = Math.min((now - t0) / DURATION, 1)
+      const e        = ease(progress)
+      const current  = {
+        lat: start.lat + (end.lat - start.lat) * e,
+        lng: start.lng + (end.lng - start.lng) * e,
+      }
+      posRef.current = current
+
+      // Mutate the marker's position directly — no React state update, no
+      // re-render, no Pin useEffect, no removeChild crash.
+      if (markerRef.current) {
+        markerRef.current.position = current
+      }
+
+      if (progress < 1) {
+        rafRef.current = requestAnimationFrame(step)
+      } else {
+        rafRef.current = null
+        // Sync React state once so future re-renders see the correct position.
+        setSnappedPos({ ...current })
+      }
+    }
+
+    rafRef.current = requestAnimationFrame(step)
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [targetLat, targetLng])
+
+  return { snappedPos, markerRef }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,17 +290,15 @@ function StaffMarker({
   onMarkerClick,    // (name: string) => void
   dispatch,
 }) {
-  const name      = fullName(employee)
+  const name       = fullName(employee)
   const baseCoords = employee.coordinates
-  // Snap directly to the effective position — no animation.
-  // Animation (requestAnimationFrame + setState at 60fps) caused a
-  // "removeChild on Node" crash: Pin's useEffect runs on every props
-  // change, and 60fps re-renders caused it to removeChild on every frame,
-  // conflicting with Google Maps' own DOM management.
-  const position = {
-    lat: override?.lat ?? baseCoords.lat,
-    lng: override?.lng ?? baseCoords.lng,
-  }
+  const targetLat  = override?.lat ?? baseCoords.lat
+  const targetLng  = override?.lng ?? baseCoords.lng
+
+  // snappedPos: stable React position (only changes at animation end).
+  // markerRef:  forwarded to AdvancedMarker so the RAF loop can mutate
+  //             marker.position directly without triggering React re-renders.
+  const { snappedPos, markerRef } = useAnimatedPosition(targetLat, targetLng)
 
   function handleDragEnd(e) {
     if (!e.latLng) return
@@ -253,7 +339,8 @@ function StaffMarker({
 
   return (
     <AdvancedMarker
-      position={position}
+      ref={markerRef}
+      position={snappedPos}
       title={`${name} — ${employee.Profesion}`}
       draggable={isEditing}
       onDragEnd={isEditing ? handleDragEnd : undefined}
@@ -605,7 +692,7 @@ export default function StaffMarkers({ staff }) {
                 <button
                   onClick={() => dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: selectedKey })}
                   style={{
-                    fontSize: 11, color: '#9ca3af', textDecoration: 'underline',
+                    fontSize: 11, color: '#6B7280', textDecoration: 'underline',
                     background: 'none', border: 'none', cursor: 'pointer', padding: 0,
                   }}
                 >
