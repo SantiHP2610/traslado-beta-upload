@@ -1865,6 +1865,81 @@ def assign_vehicle_passengers(
     }
 
 
+def assign_uber_only(
+    remaining_pool:       list[dict],
+    chosen_meeting_point: dict,
+) -> dict:
+    """
+    Assigns every employee in the remaining staff pool to Uber groups when no
+    personal vehicle is available for the event.
+
+    This is the no-car variant of assign_vehicle_passengers().  All employees
+    go to Uber; the personal_vehicle key in the return dict is None so that the
+    frontend and downstream functions can use the same response shape without
+    special-casing the no-car scenario.
+
+    Parameters:
+        remaining_pool       (list[dict]): Staff not yet assigned to any vehicle,
+                                           as returned by
+                                           get_remaining_pool()["remaining_pool"].
+        chosen_meeting_point (dict):       The meeting point the user confirmed
+                                           (PE or PEA).  Must have "name", "lat",
+                                           and "lng" keys.
+
+    Returns:
+        dict: {
+            "personal_vehicle": None,
+            "uber_groups": [
+                {
+                    "group_number": int,
+                    "passengers":   list[dict],
+                    "meeting_point": dict
+                },
+                ...
+            ],
+            "single_employee_warning": str | None  # set when exactly 1 employee
+        }
+    """
+    # -------------------------------------------------------------------------
+    # Step 1: group all employees into Uber batches.
+    # Python slice notation [i : i + MAX_PASSENGERS_UBER] handles the last
+    # batch being smaller than MAX_PASSENGERS_UBER without special casing.
+    # All Uber vehicles go to the chosen meeting point; no per-passenger routing.
+    # -------------------------------------------------------------------------
+    uber_groups = []
+    for i in range(0, len(remaining_pool), MAX_PASSENGERS_UBER):
+        batch = remaining_pool[i : i + MAX_PASSENGERS_UBER]
+        uber_groups.append({
+            "group_number":  len(uber_groups) + 1,
+            "passengers":    batch,
+            "meeting_point": chosen_meeting_point,
+        })
+
+    # -------------------------------------------------------------------------
+    # Step 2: edge-case — single employee in the entire pool.
+    # One person travelling alone in an Uber may require manager sign-off or an
+    # alternative arrangement; the warning surfaces that for the coordinator.
+    # -------------------------------------------------------------------------
+    single_employee_warning = None
+    if len(remaining_pool) == 1:
+        lone      = remaining_pool[0]
+        lone_name = (
+            f"{str(lone.get('Nombre', '')).strip()} "
+            f"{str(lone.get('Apellido', '')).strip()}"
+        ).strip()
+        single_employee_warning = (
+            f"{lone_name} is the only employee in the pool with no personal "
+            f"vehicle available. A single-passenger Uber is unusual — consult "
+            f"the manager about alternative transport arrangements."
+        )
+
+    return {
+        "personal_vehicle":        None,
+        "uber_groups":             uber_groups,
+        "single_employee_warning": single_employee_warning,
+    }
+
+
 # =============================================================================
 # Step 8 helpers — validation and summary assembly
 # =============================================================================

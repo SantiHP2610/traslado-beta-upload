@@ -121,7 +121,7 @@ Both vehicles always depart at the same time.
 **4b** `assign_vehicle_passengers(remaining_pool, driver, chosen_meeting_point)`:
 - Removes driver; sorts by Haversine to meeting point; closest MAX_PASSENGERS_PER_CAR (4) → car
 - Rest → Uber groups of MAX_PASSENGERS_UBER (4). Single Uber passenger → warning (TODO: consult manager)
-- No personal car → 422 (separate /assign-uber-only endpoint needed, not built)
+- No personal car → use /assign-uber-only instead (all remaining staff assigned to Uber groups)
 
 **Pending employee (single-employee edge case):** When exactly 1 employee remains unassigned at validate time, the manager may choose "Buscar alternativa y dejar pendiente" instead of assigning them to Uber. This stores the employee's name in `assignments.pending_employee`. `validate_assignments()` treats `pending_employee` as a valid assignment (same coverage as Uber — the name is in the pool and is accounted for). The final output shows them under "Transporte alternativo a coordinar". `pending_employee` is a field in `AssignmentsInput` (optional, `str | None = None`) and flows through `build_assignment_summary()` and `build_final_output()` to the frontend output blocks.
 
@@ -182,7 +182,7 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 ## Working endpoints
 
 `GET`: /read-excel, /geocode-staff, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats
-`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /assign-passengers, /validate-assignments, /confirm-assignments, /final-output
+`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output
 `DELETE`: /cache-clear
 
 ---

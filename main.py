@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, assign_uber_only, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -1164,6 +1164,85 @@ def endpoint_assign_passengers(body: AssignPassengersRequest):
     }
 
     return assign_vehicle_passengers(remaining_pool, driver, meeting_point_dict)
+
+
+class UberOnlyRequest(BaseModel):
+    """
+    Body for POST /assign-uber-only.
+
+    Used when no personal vehicle is available — every remaining employee
+    must travel by Uber.  The request shape is identical to
+    AssignPassengersRequest; a separate model makes the intent explicit and
+    allows the two endpoints to evolve independently.
+
+    chosen_meeting_point: the PE or PEA the user selected.
+    assigned_roles:       role strings already committed to the frescos vehicle
+                          and/or second miniflete; used to rebuild the remaining
+                          pool the same way /get-remaining-pool did.
+    """
+    chosen_meeting_point: MeetingPointInput
+    assigned_roles:       list[str]
+
+
+@app.post(
+    "/assign-uber-only",
+    summary="Assign all remaining staff to Uber groups (no personal vehicle)",
+    description=(
+        "Used when no employee has a personal vehicle available.  Reads the "
+        "staff list from the Excel, rebuilds the remaining pool, and assigns "
+        "every remaining employee to Uber groups of up to MAX_PASSENGERS_UBER "
+        "each.  All groups share the same chosen meeting point.  The "
+        "personal_vehicle key in the response is None."
+    ),
+)
+def endpoint_assign_uber_only(body: UberOnlyRequest):
+    """
+    Workflow:
+        1. Read the Excel to obtain the full staff list.
+        2. Geocode all staff.
+        3. Rebuild the remaining pool by excluding the frescos-assigned roles.
+        4. Call assign_uber_only() with the pool and the confirmed meeting point.
+
+    Returns a JSON object:
+    {
+        "personal_vehicle": null,
+        "uber_groups": [
+            {
+                "group_number":  int,
+                "passengers":    [ { ... }, ... ],
+                "meeting_point": { "name": str, "lat": float, "lng": float }
+            },
+            ...
+        ],
+        "single_employee_warning": str | null
+    }
+    """
+    data = _load_excel()
+
+    # -------------------------------------------------------------------------
+    # Step 1: geocode all staff.
+    # Not required for Uber-only (no Haversine sorting), but keeps the pool
+    # data consistent with what /validate-assignments and downstream functions
+    # expect (coordinates on each employee dict).
+    # -------------------------------------------------------------------------
+    geocode_staff(data["staff"])
+
+    # -------------------------------------------------------------------------
+    # Step 2: rebuild the remaining pool by excluding frescos-assigned roles.
+    # -------------------------------------------------------------------------
+    remaining_result = get_remaining_pool(data["staff"], body.assigned_roles)
+    remaining_pool   = remaining_result["remaining_pool"]
+
+    # -------------------------------------------------------------------------
+    # Step 3: assign all remaining employees to Uber groups.
+    # -------------------------------------------------------------------------
+    meeting_point_dict = {
+        "name": body.chosen_meeting_point.name,
+        "lat":  body.chosen_meeting_point.lat,
+        "lng":  body.chosen_meeting_point.lng,
+    }
+
+    return assign_uber_only(remaining_pool, meeting_point_dict)
 
 
 # =============================================================================
