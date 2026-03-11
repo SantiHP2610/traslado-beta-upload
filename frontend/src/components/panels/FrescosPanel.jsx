@@ -30,6 +30,13 @@
  * a crash from trying to read .assigned_names on null.  Dispatching it last,
  * after all state slices are populated, guarantees the summary view has all
  * the data it needs on its very first render.
+ *
+ * ── Inline edit section ───────────────────────────────────────────────────────
+ * After the initial assignment is displayed, the user can click "Editar
+ * asignación" to swap any assigned employee.  The edit section opens inline
+ * (no modal) and only re-runs getRemainingPool — the remaining three calls
+ * (second miniflete, personal vehicle detection, departure time) are
+ * independent of who rides the frescos vehicle, so they are not repeated.
  */
 
 import { useState } from 'react'
@@ -190,6 +197,80 @@ function FrescosSummary({ frescosResult, secondMiniflete, remainingPool, persona
 }
 
 // ---------------------------------------------------------------------------
+// Sub-component: inline assignment editor
+//
+// Renders one <select> per assigned slot, pre-populated with the current
+// assignee.  The dropdown lists every employee in the full staff list so the
+// user can freely swap any slot.  The component is only mounted while
+// editing === true, so initializing from props in useState is safe — the
+// initial value is always the current assignment at the moment edit opens.
+// ---------------------------------------------------------------------------
+
+function FrescosEditSection({ assignedNames, staff, saving, onConfirm, onCancel }) {
+  // Draft selections mirror assignedNames on mount; mutate locally until Confirm.
+  const [selections, setSelections] = useState([...assignedNames])
+
+  function handleChange(idx, value) {
+    const next = [...selections]
+    next[idx]  = value
+    setSelections(next)
+  }
+
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      {assignedNames.map((_, idx) => (
+        <div key={idx} className="space-y-1">
+          <p className="text-xs text-muted-foreground">
+            Empleado {idx + 1}
+          </p>
+          {/*
+            Native <select> with shadcn-style border/ring classes.
+            Avoids importing the full Radix Select component for a simple
+            single-panel use case; the native select is accessible by default.
+          */}
+          <select
+            className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            value={selections[idx]}
+            onChange={(e) => handleChange(idx, e.target.value)}
+          >
+            {staff.map((emp) => {
+              const name = `${emp.Nombre} ${emp.Apellido}`
+              return (
+                <option key={name} value={name}>
+                  {name} — {emp.Profesion}
+                </option>
+              )
+            })}
+          </select>
+        </div>
+      ))}
+
+      <div className="flex gap-2 pt-1">
+        <Button
+          className="flex-1"
+          onClick={() => onConfirm(selections)}
+          disabled={saving}
+        >
+          {saving ? (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
+          ) : (
+            'Confirmar cambio'
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          className="flex-1"
+          onClick={onCancel}
+          disabled={saving}
+        >
+          Cancelar
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -199,6 +280,12 @@ export default function FrescosPanel() {
   // Local state tracks which button was clicked so only that button shows its
   // spinner.  "si" | "no" | null — null means idle.
   const [activeButton, setActiveButton] = useState(null)
+
+  // Edit-mode local state — isolated from the main loading flow so that opening
+  // the edit section does not interfere with the initial step-1 spinner logic.
+  const [editing,    setEditing]    = useState(false)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError,  setEditError]  = useState(null)
 
   // Aliases for readability
   const event  = state.excelData?.event
@@ -253,6 +340,48 @@ export default function FrescosPanel() {
     }
   }
 
+  // Confirm an edited assignment.
+  //
+  // Only re-runs getRemainingPool — the other three calls (second miniflete,
+  // personal vehicle, departure time) are independent of which specific
+  // employee rides the frescos vehicle, so they are not repeated.
+  async function handleEditConfirm(newNames) {
+    setEditSaving(true)
+    setEditError(null)
+
+    try {
+      // Update frescosResult in global state with the user's new selection.
+      const updatedFrescos = { ...state.frescosResult, assigned_names: newNames }
+      dispatch({ type: ACTIONS.SET_FRESCOS_RESULT, payload: updatedFrescos })
+
+      // Re-derive Profesion strings from the new names so the backend pool
+      // filter receives the same role strings it uses for exact matching.
+      const newRoles  = deriveProfesiones(newNames, staff)
+      const newPool   = await getRemainingPool({ assigned_roles: newRoles })
+      dispatch({ type: ACTIONS.SET_REMAINING_POOL, payload: newPool })
+
+      setEditing(false)
+    } catch (err) {
+      setEditError(
+        err?.response?.data?.detail ??
+        err?.message ??
+        'Error al actualizar la asignación.',
+      )
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  function openEdit() {
+    setEditing(true)
+    setEditError(null)
+  }
+
+  function cancelEdit() {
+    setEditing(false)
+    setEditError(null)
+  }
+
   // Always render — the panel is visible at every step (question or summary).
   return (
     // Absolute positioning places the panel over the map without removing
@@ -280,12 +409,41 @@ export default function FrescosPanel() {
             // Summary view — shown once the sequence has completed.
             // All four state slices are guaranteed non-null here because
             // SET_CURRENT_STEP is only dispatched after all four succeed.
-            <FrescosSummary
-              frescosResult={state.frescosResult}
-              secondMiniflete={state.secondMinifleteResult}
-              remainingPool={state.remainingPool}
-              personalVehicle={state.personalVehicle}
-            />
+            <>
+              <FrescosSummary
+                frescosResult={state.frescosResult}
+                secondMiniflete={state.secondMinifleteResult}
+                remainingPool={state.remainingPool}
+                personalVehicle={state.personalVehicle}
+              />
+
+              {/*
+                "Editar asignación" link — subtle, secondary style so it does
+                not compete visually with the summary content.  Only visible
+                when the edit section is closed.  Clicking it opens the inline
+                editor directly below the summary, within the same card.
+              */}
+              {!editing ? (
+                <button
+                  className="text-xs text-gray-500 underline hover:text-gray-700 cursor-pointer"
+                  onClick={openEdit}
+                >
+                  Editar asignación
+                </button>
+              ) : (
+                <FrescosEditSection
+                  assignedNames={state.frescosResult.assigned_names}
+                  staff={staff}
+                  saving={editSaving}
+                  onConfirm={handleEditConfirm}
+                  onCancel={cancelEdit}
+                />
+              )}
+
+              {editError && (
+                <p className="text-xs text-destructive">{editError}</p>
+              )}
+            </>
           ) : (
             // Question view
             <VanQuestion
