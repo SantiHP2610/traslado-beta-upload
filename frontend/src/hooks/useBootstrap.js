@@ -84,6 +84,10 @@ export function useBootstrap() {
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_STAFF_WITH_COORDS, payload: staffWithCoords })
         dispatch({ type: ACTIONS.SET_LOADING_STEP,      payload: null })
+        // Advance from step 0 (pre-load) to step 1 (van question).
+        // This puts 0 into stepHistory so "Volver atrás" can undo the frescos
+        // panel all the way back to the clean initial state if needed.
+        dispatch({ type: ACTIONS.SET_CURRENT_STEP,      payload: 1 })
       } catch (err) {
         if (!cancelled) {
           dispatch({

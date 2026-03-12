@@ -44,6 +44,7 @@
 
 import { useMemo, useEffect, useState }  from 'react'
 import { Map, AdvancedMarker, Pin }      from '@vis.gl/react-google-maps'
+import { ChevronLeft }                  from 'lucide-react'
 import polyline                          from '@mapbox/polyline'
 import { useAppState, ACTIONS }          from '../../state/appState'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
@@ -276,6 +277,40 @@ export default function AppMap() {
 
       {/* Step 4: final output blocks — two draggable cards after confirmation */}
       {state.showOutput && <FinalOutputBlocks />}
+
+      {/*
+        "Volver atrás" button — bottom-left corner.
+        Visible whenever there is a step to go back to (stepHistory has entries)
+        and the final output is not displayed (user should use "Volver a editar"
+        inside FinalOutputBlocks instead of this global back button at that stage).
+      */}
+      {state.stepHistory.length > 0 && !state.showOutput && (
+        <button
+          onClick={() => dispatch({ type: ACTIONS.STEP_BACK })}
+          style={{
+            position:       'absolute',
+            bottom:         24,
+            left:           16,
+            zIndex:         10,
+            pointerEvents:  'auto',
+            display:        'flex',
+            alignItems:     'center',
+            gap:            4,
+            padding:        '6px 12px',
+            background:     '#ffffff',
+            border:         'none',
+            borderRadius:   8,
+            boxShadow:      '0 2px 8px rgba(0,0,0,0.18)',
+            fontSize:       13,
+            fontWeight:     500,
+            color:          '#374151',
+            cursor:         'pointer',
+          }}
+        >
+          <ChevronLeft size={15} />
+          Volver atrás
+        </button>
+      )}
 
       {/* Gear icon — always visible, top-right corner, above all other panels */}
       <GearButton

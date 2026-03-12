@@ -90,7 +90,8 @@ const initialState = {
   editingMarker: null,
 
   // UI state
-  currentStep: 1,      // which step the user is currently on (1-indexed int)
+  currentStep: 0,      // which step the user is currently on (0-indexed int; 0 = pre-frescos)
+  stepHistory: [],     // stack of previous currentStep values; enables STEP_BACK
   loadingStep: null,   // string key of the in-flight step, or null when idle
   error: null,         // last error message surfaced to the user, or null
   showModal:  false,   // true when the step-4 ConfirmationModal is visible
@@ -123,6 +124,7 @@ export const ACTIONS = {
   CLEAR_ALL_COORDINATE_OVERRIDES: 'CLEAR_ALL_COORDINATE_OVERRIDES',
   SET_EDITING_MARKER:             'SET_EDITING_MARKER',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
+  STEP_BACK:                 'STEP_BACK',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
   SET_ERROR:                 'SET_ERROR',
 }
@@ -187,7 +189,43 @@ function appReducer(state, action) {
       return { ...state, showOutput: action.payload }
 
     case ACTIONS.SET_CURRENT_STEP:
-      return { ...state, currentStep: action.payload }
+      // Push the current step onto the history stack before advancing.
+      // This lets STEP_BACK pop it to undo the transition.
+      return {
+        ...state,
+        stepHistory: [...state.stepHistory, state.currentStep],
+        currentStep: action.payload,
+      }
+
+    case ACTIONS.STEP_BACK: {
+      if (state.stepHistory.length === 0) return state
+
+      const newHistory    = state.stepHistory.slice(0, -1)
+      const previousStep  = state.stepHistory[state.stepHistory.length - 1]
+
+      // Clear state that was populated DURING the step being undone.
+      // The clearing set is keyed on the step we are LEAVING.
+      const clearing = { error: null, loadingStep: null }
+
+      if (state.currentStep >= 4) {
+        // Leaving step 4 → step 3: undo confirmation and final output.
+        Object.assign(clearing, { showModal: false, showOutput: false, finalOutput: null })
+      } else if (state.currentStep >= 3) {
+        // Leaving step 3 → step 2: undo passenger assignments; user must
+        // re-select the meeting point on the map before re-entering step 3.
+        Object.assign(clearing, { assignments: null, activePickupResult: null, chosenMeetingPoint: null })
+      } else if (state.currentStep >= 2) {
+        // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
+        // point data so useStepTwo will recompute them if user re-advances.
+        Object.assign(clearing, { meetingPoint: null, driverRoutes: null, peaEvaluation: null, chosenMeetingPoint: null })
+      } else if (state.currentStep >= 1) {
+        // Leaving step 1 → step 0: undo the "van question" (frescos panel).
+        // Clears the four slices that were set when the user answered it.
+        Object.assign(clearing, { frescosResult: null, secondMinifleteResult: null, remainingPool: null, personalVehicle: null })
+      }
+
+      return { ...state, ...clearing, stepHistory: newHistory, currentStep: previousStep }
+    }
 
     case ACTIONS.SET_COORDINATE_OVERRIDE: {
       // Spread the existing overrides and upsert the new entry so that

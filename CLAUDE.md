@@ -181,7 +181,7 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 
 ## Working endpoints
 
-`GET`: /read-excel, /geocode-staff, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats, /config
+`GET`: /read-excel, /geocode-staff, /geocode-address, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats, /config
 `POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
 `DELETE`: /cache-clear
 
@@ -189,10 +189,8 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 
 ## TODOs
 
-- ~~**Places API caching**: Cache `find_pea_candidates()` and `find_pickup_candidate()`~~ → DONE: `modules/api_cache.py` caches all Google API calls to `.api_cache/`. Toggle via `API_CACHE_ENABLED` in `.env`.
--**Final output redesign (step 4 post-confirm)**: Replace the current two small draggable blocks (`FinalOutputBlocks`) with a single large modal/panel that occupies most of the screen. Map stays running and visible behind it (semi-transparent backdrop). Must include a "Volver a editar" button that returns to step 3 with full state preserved (same behavior as current "Editar"). Consolidate both blocks (frescos + transport) into sections within this single panel. The current ConfirmationModal should transition into this final view, not coexist with separate blocks.
+- **Final output redesign (step 4 post-confirm)**: Replace the current two small draggable blocks (`FinalOutputBlocks`) with a single large modal/panel that occupies most of the screen. Map stays running and visible behind it (semi-transparent backdrop). Must include a "Volver a editar" button that returns to step 3 with full state preserved (same behavior as current "Editar"). Consolidate both blocks (frescos + transport) into sections within this single panel. The current ConfirmationModal should transition into this final view, not coexist with separate blocks.
 - **Pickup map highlight**: Visual circle overlay around cross-points and candidates for CEO/manager review
-- **End-to-end departure time verification** with Routes API arrivalTime in production
 
 ---
 
@@ -224,7 +222,7 @@ State in `appState.jsx`: `useReducer` + split contexts (state + dispatch, preven
 | excelData, staffWithCoords | useBootstrap | Boot |
 | loadingStep, error | useBootstrap, FrescosPanel | All |
 | frescosResult, secondMinifleteResult, remainingPool, personalVehicle | FrescosPanel (4 calls) | 1 |
-| currentStep | FrescosPanel (after all calls succeed) | 1→2 |
+| currentStep, stepHistory | useBootstrap (0→1) / FrescosPanel (1→2) / useStepTwo (2→3) | All |
 | meetingPoint, driverRoutes, peaEvaluation | useStepTwo (auto on step 2) | 2 |
 | chosenMeetingPoint | MeetingPointMarkers InfoWindow | 2 |
 | eventCoords | EventMarker (polyline or Geocoding) | 1+ |
@@ -262,8 +260,19 @@ Context menu on marker click: "Asignar al vehículo", "Buscar pickup en ruta", "
 Driver marker: green, no actions, "Chofer — asignado automáticamente". Steps 1-2: InfoWindow only.
 Auto-fill remaining to Uber happens at validate time (not incrementally).
 
+**Two-phase validate flow** (AssignmentPanel): clicking "Asignar N restantes a Uber y validar":
+- Phase 1 — dispatch auto-fill to global state + set `pendingAutoFillCheck(true)` flag → triggers re-render so Uber groups appear on screen before any warning.
+- Phase 2 — `useEffect([pendingAutoFillCheck, assignments])` fires after paint; checks whether any Uber group has exactly 1 passenger; if yes → shows two-button choice; if no → calls `doValidate()` immediately.
+- Solo-passenger warning shows amber border on the solo group and two buttons: "Buscar alternativa y dejar pendiente" (stores `pending_employee` name, removes from Uber) / "Continuar con 1 pasajero en Uber" (proceeds as-is).
+- "Reiniciar asignaciones" button resets all assignments back to driver-only initial state (dispatches fresh `SET_ASSIGNMENTS` with empty car/uber arrays).
+
 ### Marker position editing (all steps)
 Every InfoWindow has an "Editar dirección" link at the bottom. Clicking it enters edit mode for that marker only: the pin becomes draggable and an address input + "Geocodificar" / "Listo" UI appears in the InfoWindow. Position changes (drag or geocode) are stored in `coordinateOverrides[name]` and overrule `employee.coordinates` for rendering. "Volver a ubicación original" reverts the override. Only one marker is editable at a time (`editingMarker` state); clicking any other marker exits edit mode. All position changes animate with ease-out-cubic over 800ms via `useAnimatedPosition` (requestAnimationFrame). Override indicator: small white dot badge on the pin. Backend: `GET /geocode-address?address=` wraps `geocode()` for on-demand address resolution.
+
+**Driver coordinate override (step 2)**: when the driver's marker changes position (drag or address geocode) in step 2 BEFORE a meeting point is confirmed, `useStepTwo` Effect 2 automatically re-calls `/calculate-driver-route` and `/evaluate-pea` with the new origin. Effective coordinates are computed as `override?.lat ?? originalCoords?.lat ?? null` — this fires for both setting an override AND clearing one ("Volver a ubicación original"), so routes always reflect the driver's current position. After `chosenMeetingPoint` is set, driver editing is locked: the InfoWindow shows "Dirección bloqueada — punto de encuentro ya seleccionado." instead of the edit link.
+
+### Global back button
+A "Volver atrás" button (bottom-left corner, `position: absolute; bottom: 24; left: 16`) is visible whenever `state.stepHistory.length > 0` AND `state.showOutput` is false. Dispatches `STEP_BACK`, which pops the history stack and clears step-specific state: step 4 → clears modal/output/finalOutput; step 3 → clears assignments/activePickupResult/chosenMeetingPoint; step 2 → clears routes/PEA/meetingPoint/chosenMeetingPoint; step 1 → clears frescos/miniflete/pool/personalVehicle.
 
 ### Config panel
 A gear icon button (top-right corner, always visible, z-40) opens a full-height settings panel (`ConfigPanel.jsx`, z-50) that slides in from the right. The panel loads all `config.py` constants via `GET /config`, grouped by category with Spanish section headers. Each constant shows its name (monospace), a description, and an editable input (number for int/float, text for strings, JSON textarea for dicts/lists). Changed fields get a blue left border.
@@ -307,3 +316,7 @@ Categories: Frescos/Minifletes, Capacidad de vehículos, Tiempos, PEA, Pickup, C
 23. "Editar" preserves all state, no API re-calls
 24. `pickup_transit_minutes` stored on `state.assignments`, computed locally
 25. `FinalOutputRequest` has 4 fields only; `/final-output` reads rest from Excel
+26. Two-phase validate in `AssignmentPanel` — Phase 1 dispatches auto-fill + sets `pendingAutoFillCheck(true)` flag; Phase 2 `useEffect` fires after re-render to check for solo group — avoids reading stale state inside the click handler before the reducer has processed the auto-fill dispatch
+27. Step history stack: `initialState.currentStep = 0`; bootstrap dispatches `SET_CURRENT_STEP 1` to seed `stepHistory = [0]`; `STEP_BACK` determines what to clear from `state.currentStep` (the step being LEFT), not the destination step
+28. `effectiveLat = override?.lat ?? originalCoords?.lat ?? null` unifies override-set and override-cleared cases into one dep value for `useStepTwo` Effect 2 — removing `!driverOverride` guard and using `effectiveLat == null` instead ensures clearing an override also triggers route recalculation
+29. Optional `driver_lat`/`driver_lng` query params on `/calculate-driver-route` and `/evaluate-pea` — backend stays stateless; frontend passes current effective driver coordinates when available so the backend skips its own geocoding
