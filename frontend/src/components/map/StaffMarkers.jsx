@@ -565,6 +565,12 @@ export default function StaffMarkers({ staff }) {
     return names
   }, [frescosResult, secondMinifleteResult])
 
+  // Driver name — used to detect whether the selected marker is the driver
+  // and to enforce the address-lock after a meeting point has been chosen.
+  const driverName = personalVehicle?.driver
+    ? `${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
+    : null
+
   const isPea = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
   const chosenScenarioColor = !chosenMeetingPoint ? null : isPea ? 'pea' : 'pe'
 
@@ -681,35 +687,46 @@ export default function StaffMarkers({ staff }) {
                 so Tailwind utility classes may not apply reliably here.
                 "Editar dirección" enters edit mode for this marker.
                 "Volver a original" reverts the override (snaps back immediately).
+                The driver's edit button is hidden once a meeting point has been
+                chosen — routes are committed and the origin can no longer change.
               */}
-              <div style={{
-                padding: '6px 12px 10px',
-                borderTop: '1px solid #e5e7eb',
-                display: 'flex',
-                gap: 12,
-                alignItems: 'center',
-              }}>
-                <button
-                  onClick={() => dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: selectedKey })}
-                  style={{
-                    fontSize: 11, color: '#6B7280', textDecoration: 'underline',
-                    background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                  }}
-                >
-                  Editar dirección
-                </button>
-                {selectedOverride && (
+              {selectedKey === driverName && chosenMeetingPoint ? (
+                // Driver address locked — meeting point already selected.
+                <div style={{ padding: '6px 12px 10px', borderTop: '1px solid #e5e7eb' }}>
+                  <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
+                    Dirección bloqueada — punto de encuentro ya seleccionado.
+                  </p>
+                </div>
+              ) : (
+                <div style={{
+                  padding: '6px 12px 10px',
+                  borderTop: '1px solid #e5e7eb',
+                  display: 'flex',
+                  gap: 12,
+                  alignItems: 'center',
+                }}>
                   <button
-                    onClick={() => dispatch({ type: ACTIONS.CLEAR_COORDINATE_OVERRIDE, payload: { name: selectedKey } })}
+                    onClick={() => dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: selectedKey })}
                     style={{
-                      fontSize: 11, color: '#9ca3af', textDecoration: 'underline',
+                      fontSize: 11, color: '#6B7280', textDecoration: 'underline',
                       background: 'none', border: 'none', cursor: 'pointer', padding: 0,
                     }}
                   >
-                    Volver a original
+                    Editar dirección
                   </button>
-                )}
-              </div>
+                  {selectedOverride && (
+                    <button
+                      onClick={() => dispatch({ type: ACTIONS.CLEAR_COORDINATE_OVERRIDE, payload: { name: selectedKey } })}
+                      style={{
+                        fontSize: 11, color: '#9ca3af', textDecoration: 'underline',
+                        background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                      }}
+                    >
+                      Volver a original
+                    </button>
+                  )}
+                </div>
+              )}
             </>
           )}
         </InfoWindow>

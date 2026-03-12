@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -641,12 +641,17 @@ def endpoint_detect_personal_vehicle():
         "Raises 422 if no personal vehicle is found in the staff list."
     ),
 )
-def endpoint_calculate_driver_route():
+def endpoint_calculate_driver_route(
+    driver_lat: Optional[float] = Query(None, description="Override driver latitude — skips geocoding the driver address from Excel"),
+    driver_lng: Optional[float] = Query(None, description="Override driver longitude — skips geocoding the driver address from Excel"),
+):
     """
     Workflow:
         1. Read the Excel for the full staff list and event data.
         2. Detect the personal vehicle — if none, raise 422 immediately.
-        3. Build the driver's home address from Direccion + CP + Ciudad and geocode it.
+        3. Build the driver's home address from Direccion + CP + Ciudad and geocode it
+           (skipped if driver_lat/driver_lng query params are provided — used when the
+           frontend has a coordinate override from marker drag or address edit).
         4. Build the event address from direccion_evento + ciudad_evento and geocode it.
         5. Call nearest_meeting_point() to select the PE closest to the event venue.
         6. Call calculate_driver_route() with the three coordinate sets.
@@ -684,20 +689,25 @@ def endpoint_calculate_driver_route():
     driver = vehicle_info["driver"]
 
     # -------------------------------------------------------------------------
-    # Step 2: geocode the driver's home address.
-    # Address columns come from the Excel 'equipo' sheet — keys stay in Spanish.
+    # Step 2: resolve the driver's coordinates.
+    # If the frontend supplies driver_lat/driver_lng (coordinate override from
+    # marker drag or address edit), use those directly.  Otherwise geocode the
+    # driver's address from the Excel — the normal path on first load.
     # -------------------------------------------------------------------------
-    driver_address = (
-        f"{str(driver.get('Direccion', '')).strip()}, "
-        f"{str(driver.get('CP', '')).strip()}, "
-        f"{str(driver.get('Ciudad', '')).strip()}"
-    )
-    driver_coords = geocode(driver_address)
-    if driver_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not geocode driver address: '{driver_address}'",
+    if driver_lat is not None and driver_lng is not None:
+        driver_coords = {"lat": driver_lat, "lng": driver_lng}
+    else:
+        driver_address = (
+            f"{str(driver.get('Direccion', '')).strip()}, "
+            f"{str(driver.get('CP', '')).strip()}, "
+            f"{str(driver.get('Ciudad', '')).strip()}"
         )
+        driver_coords = geocode(driver_address)
+        if driver_coords is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not geocode driver address: '{driver_address}'",
+            )
 
     # -------------------------------------------------------------------------
     # Step 3: geocode the event venue address.
@@ -751,14 +761,19 @@ def endpoint_calculate_driver_route():
         "an employee from the map."
     ),
 )
-def endpoint_evaluate_pea():
+def endpoint_evaluate_pea(
+    driver_lat: Optional[float] = Query(None, description="Override driver latitude — skips using the geocoded driver coordinates from Excel"),
+    driver_lng: Optional[float] = Query(None, description="Override driver longitude — skips using the geocoded driver coordinates from Excel"),
+):
     """
     Workflow:
         1. Read the Excel for staff and event data.
         2. Geocode all staff — adds "coordinates" to each employee dict in-place.
            The remaining-pool members need coordinates for the transit-time matrix.
         3. Detect the personal vehicle; raise 422 if none exists.
-        4. Use the driver's geocoded coordinates (already set in step 2).
+        4. Resolve driver coordinates: use driver_lat/driver_lng query params if
+           provided (frontend coordinate override), otherwise use the geocoded
+           coordinates set in step 2.
         5. Geocode the event venue address.
         6. Find the nearest meeting point (PE) to the event venue.
         7. Calculate both driver routes (base: home→PE→event, direct: home→event).
@@ -852,15 +867,25 @@ def endpoint_evaluate_pea():
             detail="No personal vehicle found in staff list.",
         )
 
-    driver        = vehicle_info["driver"]
-    driver_coords = driver["coordinates"]
-    driver_name   = f"{driver.get('Nombre', '')} {driver.get('Apellido', '')}".strip()
+    driver      = vehicle_info["driver"]
+    driver_name = f"{driver.get('Nombre', '')} {driver.get('Apellido', '')}".strip()
 
-    if driver_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail="Could not geocode the driver's home address.",
-        )
+    # -------------------------------------------------------------------------
+    # Step 2b: resolve driver coordinates.
+    # If the frontend supplies driver_lat/driver_lng (coordinate override from
+    # marker drag or address edit), use those directly so the routes and PEA
+    # candidates are computed from the corrected position.  Otherwise fall back
+    # to the coordinates already set on the driver dict by geocode_staff().
+    # -------------------------------------------------------------------------
+    if driver_lat is not None and driver_lng is not None:
+        driver_coords = {"lat": driver_lat, "lng": driver_lng}
+    else:
+        driver_coords = driver["coordinates"]
+        if driver_coords is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not geocode the driver's home address.",
+            )
 
     # -------------------------------------------------------------------------
     # Step 3: geocode the event venue address.

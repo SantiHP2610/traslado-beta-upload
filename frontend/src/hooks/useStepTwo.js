@@ -41,6 +41,15 @@
  * the flow unblocked while setting chosenMeetingPoint to the PE so that
  * subsequent passenger-assignment logic always has a valid meeting point.
  *
+ * ── Driver coordinate override re-calculation ────────────────────────────────
+ * When the user drags the driver's marker or geocodes a new address in step 2
+ * (before a meeting point is chosen), the routes and PEA must be re-computed
+ * from the new driver origin.  A second useEffect watches the driver's lat/lng
+ * override and re-runs only the route + PEA calls (nearest meeting point stays
+ * the same — it depends on the event venue, not the driver).  The override
+ * coords are passed to the backend as optional query params so the backend
+ * skips its own geocoding and uses them directly.
+ *
  * ── Loading phases ────────────────────────────────────────────────────────────
  * "meeting_point" → computing nearest PE via Distance Matrix
  * "routes"        → computing driver routes via Routes API
@@ -59,6 +68,15 @@ import {
 export function useStepTwo() {
   const { state, dispatch } = useAppState()
 
+  // Derive the driver's name and coordinate override here so both effects
+  // can reference them as stable primitives in their dependency arrays.
+  const driver     = state.personalVehicle?.driver
+  const driverName = driver ? `${driver.Nombre} ${driver.Apellido}` : null
+  const driverOverride = driverName
+    ? state.coordinateOverrides?.[driverName]
+    : null
+
+  // ── Effect 1: initial step 2 computation (1→2 transition) ──────────────────
   useEffect(() => {
     // Only fire on the exact 1→2 transition.
     // Guard against null personalVehicle — step 2 starts only after step 1
@@ -96,23 +114,20 @@ export function useStepTwo() {
         // ── Phase 2: compute base route (home → PE → event) ───────────────────
         // and direct route (home → event, used for PEA and pickup evaluation).
         // Both routes are returned as encoded polylines + duration/distance.
+        // Pass any existing driver coordinate override so the first render
+        // already uses the corrected position if the user moved the pin in step 1.
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
 
-        const driverRoutes = await calculateDriverRoute()
+        const overrideLat = driverOverride?.lat ?? null
+        const overrideLng = driverOverride?.lng ?? null
+        const driverRoutes = await calculateDriverRoute(overrideLat, overrideLng)
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
 
         // ── Phase 3: PEA evaluation ────────────────────────────────────────────
-        // evaluatePea() runs the full PEA pipeline on the backend:
-        //   - decodes the direct route polyline
-        //   - searches for transit hubs along it (Places API)
-        //   - evaluates each candidate vs. remaining pool (Distance Matrix)
-        //   - returns up to 3 ranked candidates
-        // We extract only pea_evaluation — meeting_point and driver_routes are
-        // already in state from the two prior calls.
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'pea' })
 
-        const peaResult = await evaluatePea()
+        const peaResult = await evaluatePea(overrideLat, overrideLng)
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_PEA_EVALUATION, payload: peaResult.pea_evaluation })
 
@@ -126,6 +141,7 @@ export function useStepTwo() {
                      err?.message ??
                      'Error al calcular el punto de encuentro y las rutas.',
           })
+          dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: null })
         }
       }
     }
@@ -136,4 +152,58 @@ export function useStepTwo() {
       cancelled = true
     }
   }, [state.currentStep]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Effect 2: re-run routes + PEA when the driver's position changes ────────
+  // Fires when the driver's coordinate override lat or lng changes.
+  // Only acts during step 2 before a meeting point has been committed —
+  // once the user selects PE or PEA the routes are locked and the driver's
+  // address can no longer be edited (StaffMarkers shows a lock message instead).
+  // nearestMeetingPoint is NOT re-called: it depends only on the event venue.
+  useEffect(() => {
+    if (
+      state.currentStep !== 2 ||
+      state.chosenMeetingPoint ||
+      !state.personalVehicle?.has_personal_vehicle ||
+      !driverOverride
+    ) return
+
+    let cancelled = false
+
+    async function rerunRoutesAndPea() {
+      dispatch({ type: ACTIONS.SET_ERROR, payload: null })
+
+      try {
+        dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
+
+        const driverRoutes = await calculateDriverRoute(driverOverride.lat, driverOverride.lng)
+        if (cancelled) return
+        dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
+
+        dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'pea' })
+
+        const peaResult = await evaluatePea(driverOverride.lat, driverOverride.lng)
+        if (cancelled) return
+        dispatch({ type: ACTIONS.SET_PEA_EVALUATION, payload: peaResult.pea_evaluation })
+
+        dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: null })
+
+      } catch (err) {
+        if (!cancelled) {
+          dispatch({
+            type:    ACTIONS.SET_ERROR,
+            payload: err?.response?.data?.detail ??
+                     err?.message ??
+                     'Error al recalcular rutas con la nueva posición del chofer.',
+          })
+          dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: null })
+        }
+      }
+    }
+
+    rerunRoutesAndPea()
+
+    return () => {
+      cancelled = true
+    }
+  }, [driverOverride?.lat, driverOverride?.lng]) // eslint-disable-line react-hooks/exhaustive-deps
 }

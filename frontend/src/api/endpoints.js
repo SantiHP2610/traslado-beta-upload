@@ -157,10 +157,17 @@ export async function detectPersonalVehicle() {
 /**
  * Computes the driver's base route (home→PE→event) and direct route (home→event).
  * Both encoded polylines are returned for map rendering and PEA/pickup evaluation.
+ * @param {number|null} [driverLat]  Override driver latitude (from coordinate override).
+ * @param {number|null} [driverLng]  Override driver longitude (from coordinate override).
  * @returns {{ base_route: object, direct_route: object }}
  */
-export async function calculateDriverRoute() {
-  const response = await client.get('/calculate-driver-route')
+export async function calculateDriverRoute(driverLat = null, driverLng = null) {
+  const params = {}
+  if (driverLat != null && driverLng != null) {
+    params.driver_lat = driverLat
+    params.driver_lng = driverLng
+  }
+  const response = await client.get('/calculate-driver-route', { params })
   return response.data
 }
 
@@ -174,14 +181,21 @@ export async function calculateDriverRoute() {
  *
  * Pickup logic is NOT included here — use findPickup() on demand instead.
  *
+ * @param {number|null} [driverLat]  Override driver latitude (from coordinate override).
+ * @param {number|null} [driverLng]  Override driver longitude (from coordinate override).
  * @returns {{
  *   meeting_point: object,
  *   driver_routes: { base_route: object, direct_route: object },
  *   pea_evaluation: { has_candidates: boolean, candidates: object[] }
  * }}
  */
-export async function evaluatePea() {
-  const response = await client.get('/evaluate-pea')
+export async function evaluatePea(driverLat = null, driverLng = null) {
+  const params = {}
+  if (driverLat != null && driverLng != null) {
+    params.driver_lat = driverLat
+    params.driver_lng = driverLng
+  }
+  const response = await client.get('/evaluate-pea', { params })
   return response.data
 }
 
