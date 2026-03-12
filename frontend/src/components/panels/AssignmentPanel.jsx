@@ -11,29 +11,26 @@
  * 4. Pickup section (if pickup_employee is set): employee name + venue.
  * 5. Progress counter: "X de Y asignados"
  * 6. List of unassigned employees (if any).
- * 7. Validate area: behaviour depends on the post-auto-fill Uber grouping.
- *    - No solo Uber group: single button ("Validar" or "Asignar X a Uber y validar").
- *    - A solo Uber group would exist: TWO buttons —
- *        PRIMARY  "Buscar alternativa y dejar pendiente": stores the solo
- *          passenger as assignments.pending_employee, removes them from Uber.
- *        SECONDARY "Continuar con Uber individual": keeps the solo group and
- *          calls POST /validate-assignments.
- *    This applies both when the solo is an unassigned employee that would be
- *    auto-filled AND when the user manually put someone in Uber and they ended
- *    up alone in a group (e.g. 5 Uber passengers → groups of 4 + 1).
+ * 7. Validate area — two-phase flow when unassigned employees exist:
  *
- * ── Why validate auto-fills Uber ─────────────────────────────────────────────
- * The spec (Part E) says Uber is the default fallback: any employee not
- * explicitly placed in the personal car or as a pickup naturally takes Uber
- * to the meeting point.  Rather than forcing the user to manually click
- * "Asignar a Uber" for every remaining employee, the validate button does it
- * for them and shows a brief confirmation if a single-employee warning fires.
+ *    Phase 1 (on validate click): auto-fill unassigned → Uber, dispatch to state
+ *    so the panel re-renders showing the filled groups visually.
  *
- * ── Why this panel is at top-4 left-80 ───────────────────────────────────────
- * PeaPanel (step 2) occupied top-4 left-80 and is no longer rendered in
- * step 3.  AssignmentPanel reuses that slot so the two panels (FrescosPanel
- * at top-4 left-4 and AssignmentPanel at top-4 left-80) sit side by side
- * just as FrescosPanel and PeaPanel did in step 2.
+ *    Phase 2 (after re-render, via useEffect): check if any Uber group has
+ *    exactly 1 passenger.
+ *      - No solo group → proceed directly to POST /validate-assignments.
+ *      - Solo group found → highlight that group with an amber warning border
+ *        and show two decision buttons:
+ *          PRIMARY  "Buscar alternativa y dejar pendiente": moves the solo
+ *            passenger to pending_employee, removes empty group, calls validate.
+ *          SECONDARY "Continuar con 1 pasajero en Uber": keeps as-is, calls validate.
+ *
+ * ── Why two phases ────────────────────────────────────────────────────────────
+ * Without Phase 1 the manager sees "5 unassigned" and then immediately the
+ * two-button choice with no visual feedback about who ended up where.  Phase 1
+ * makes the assignment list render first so the manager understands the context
+ * (e.g. "Uber 1: Michelle, Camila, Delfina, Yamila / Uber 2: Ailen ⚠️") before
+ * being asked to decide.
  *
  * ── Why assigned_roles is re-derived, not stored in state ────────────────────
  * The backend's /validate-assignments rebuilds the remaining pool using
@@ -43,7 +40,7 @@
  * than the complexity of an extra action.
  */
 
-import { useState }                           from 'react'
+import { useState, useEffect }                from 'react'
 import { RotateCcw }                          from 'lucide-react'
 import { useAppState, ACTIONS }               from '../../state/appState'
 import { validateAssignments }                from '../../api/endpoints'
@@ -97,24 +94,21 @@ function buildAssignmentsInput(assignments) {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: employee badge
-// ---------------------------------------------------------------------------
-
-function EmpBadge({ name, color = 'bg-muted' }) {
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${color}`}>
-      {name}
-    </span>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
 export default function AssignmentPanel() {
   const { state, dispatch } = useAppState()
-  const [validating, setValidating] = useState(false)
+  const [validating, setValidating]                     = useState(false)
+  // showSoloChoice is set to true by Phase 2 (useEffect) after the auto-filled
+  // groups are already visible.  Never derived from render-time state.
+  const [showSoloChoice, setShowSoloChoice]             = useState(false)
+  // Solo passenger captured at Phase 2 time; consumed by handlePendiente.
+  const [pendingSolo, setPendingSolo]                   = useState(null)
+  // Boolean state flag: set to true by handleValidate (Phase 1), cleared by
+  // the useEffect (Phase 2).  Using state (not ref) so the change is visible
+  // in the effect's dependency array.
+  const [pendingAutoFillCheck, setPendingAutoFillCheck] = useState(false)
 
   const {
     assignments,
@@ -125,73 +119,132 @@ export default function AssignmentPanel() {
     excelData,
   } = state
 
-  if (!assignments) return null
-
+  // Derived values — computed unconditionally so they are available to hooks
+  // and handlers regardless of whether assignments is null.
   const staff         = excelData?.staff ?? []
   const pool          = remainingPool?.remaining_pool ?? []
   const totalToAssign = pool.length
 
-  const driver          = assignments.driver
-  const carPassengers   = assignments.car_passengers ?? []
-  const uberPassengers  = assignments.uber_passengers ?? []
-  const pickupEmployee  = assignments.pickup_employee
-  const pickupPlace     = assignments.pickup_place
-  const hasVehicle      = personalVehicle?.has_personal_vehicle
+  const driver         = assignments?.driver
+  const carPassengers  = assignments?.car_passengers ?? []
+  const uberPassengers = assignments?.uber_passengers ?? []
+  const pickupEmployee = assignments?.pickup_employee
+  const pickupPlace    = assignments?.pickup_place
+  const hasVehicle     = personalVehicle?.has_personal_vehicle
 
-  // Vehicle label: "{description} de {Nombre} {Apellido}" — shown wherever
-  // "Vehículo propio" appeared before.  Derived from personalVehicle so all
-  // components show the same name without a separate state slice.
   const vehicleLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
     ? `${personalVehicle.vehicle_description} de ${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
     : 'Vehículo'
 
-  // Employees who count as "assigned" (for progress and unassigned list)
   const assignedNames = new Set([
-    ...(driver         ? [fullName(driver)]             : []),
+    ...(driver         ? [fullName(driver)]         : []),
     ...carPassengers.map(fullName),
     ...uberPassengers.map(fullName),
-    ...(pickupEmployee ? [fullName(pickupEmployee)]     : []),
+    ...(pickupEmployee ? [fullName(pickupEmployee)] : []),
   ])
 
   const assignedCount = assignedNames.size
   const unassigned    = pool.filter((emp) => !assignedNames.has(fullName(emp)))
   const uberGroups    = chunkArray(uberPassengers, MAX_UBER)
 
-  // Detect solo Uber group AFTER auto-fill (before the user clicks validate).
-  // Auto-fill appends unassigned to the existing uber_passengers list, then
-  // chunks into groups of MAX_UBER.  If any group has exactly 1 passenger,
-  // the manager should decide: leave them pending or accept the solo Uber.
-  // This check covers two cases:
-  //   - 1 unassigned employee that would be the only person in their Uber group
-  //   - Already-assigned employees that ended up alone (e.g. 5 in Uber → 4+1)
-  const filledUberAfterAutoFill = [...uberPassengers, ...unassigned]
-  const filledGroupsAfterAutoFill = chunkArray(filledUberAfterAutoFill, MAX_UBER)
-  const soloGroup      = filledGroupsAfterAutoFill.find((g) => g.length === 1)
-  const hasSoloUberGroup = Boolean(soloGroup)
-  const soloPassenger  = soloGroup?.[0] ?? null
+  // ── Phase 2: solo-group check after auto-fill re-render ─────────────────
+  // MUST be before any conditional return (Rules of Hooks).
+  // The flag guard means it only does real work in the render cycle immediately
+  // following a Phase 1 dispatch; all other renders are a cheap no-op.
+  useEffect(() => {
+    if (!pendingAutoFillCheck || !assignments) return
+    setPendingAutoFillCheck(false)
 
-  // "Buscar alternativa y dejar pendiente" path.
-  // Removes the solo Uber passenger from uber_passengers (whether they were
-  // already there or in unassigned) and stores them as pending_employee so
-  // ConfirmationModal and FinalOutputBlocks can display an amber warning.
-  // No backend call: the manager explicitly chose not to assign this person
-  // to Uber, so the "all assigned" invariant is intentionally waived here.
-  function handlePendiente() {
-    const soloName  = fullName(soloPassenger)
-    const newUber   = uberPassengers.filter((emp) => fullName(emp) !== soloName)
+    const groups    = chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
+    const soloGroup = groups.find((g) => g.length === 1)
+    if (soloGroup) {
+      // Show the two-button choice; the amber-highlighted group is already visible.
+      setPendingSolo(soloGroup[0])
+      setShowSoloChoice(true)
+    } else {
+      // No solo group — proceed straight to API validation.
+      doValidate(assignments)
+    }
+  }, [pendingAutoFillCheck, assignments]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Conditional return AFTER all hooks — never before.
+  if (!assignments) return null
+
+  // ── API call: POST /validate-assignments ────────────────────────────────
+  // Caller is responsible for ensuring state already reflects the intended
+  // assignments before calling this (no redundant SET_ASSIGNMENTS dispatch here).
+  async function doValidate(assignmentsSnapshot) {
+    const assignedRoles    = deriveProfesiones(frescosResult?.assigned_names ?? [], staff)
+    const assignmentsInput = buildAssignmentsInput(assignmentsSnapshot)
+
+    setValidating(true)
+    dispatch({ type: ACTIONS.SET_ERROR, payload: null })
+
+    try {
+      await validateAssignments({
+        assignments:    assignmentsInput,
+        assigned_roles: assignedRoles,
+      })
+
+      // Advance to step 4 — AssignmentPanel (step 3 only) unmounts.
+      dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 4 })
+      dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: true })
+
+    } catch (err) {
+      const detail = err?.response?.data?.detail
+      const msg = typeof detail === 'object'
+        ? detail.message ?? JSON.stringify(detail)
+        : err?.message ?? 'Error al validar asignaciones.'
+      dispatch({ type: ACTIONS.SET_ERROR, payload: msg })
+    } finally {
+      setValidating(false)
+    }
+  }
+
+  // ── Phase 1: auto-fill + trigger Phase 2 ────────────────────────────────
+  // Dispatches unassigned → Uber so the UI shows the filled groups.
+  // Sets the ref flag so the useEffect knows to run the solo check next render.
+  function handleValidate() {
+    const filled = [...uberPassengers, ...unassigned]
     dispatch({
       type:    ACTIONS.SET_ASSIGNMENTS,
-      payload: { ...assignments, uber_passengers: newUber, pending_employee: soloPassenger },
+      payload: { ...assignments, uber_passengers: filled },
     })
+    // Signal Phase 2 — the state change batches with the dispatch above so
+    // the component re-renders once with the filled groups visible, then the
+    // useEffect fires and checks for a solo group.
+    setPendingAutoFillCheck(true)
+  }
+
+  // "Buscar alternativa y dejar pendiente": remove the solo passenger from Uber
+  // and store them as pending_employee.  No backend call — the manager explicitly
+  // chose not to assign this person to Uber.
+  function handlePendiente() {
+    const soloName = fullName(pendingSolo)
+    // uberPassengers already contains the auto-filled list from Phase 1.
+    const newUber  = uberPassengers.filter((emp) => fullName(emp) !== soloName)
+    dispatch({
+      type:    ACTIONS.SET_ASSIGNMENTS,
+      payload: { ...assignments, uber_passengers: newUber, pending_employee: pendingSolo },
+    })
+    setShowSoloChoice(false)
     dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 4 })
     dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: true })
   }
 
+  // "Continuar con 1 pasajero en Uber": manager accepts the solo group.
+  // assignments already has the auto-filled uber_passengers from Phase 1.
+  async function handleContinueWithSolo() {
+    setShowSoloChoice(false)
+    await doValidate(assignments)
+  }
+
   // "Reiniciar asignaciones" — clears car and Uber assignments, keeps driver.
-  // Visible once at least one employee has been placed in car or Uber, so the
-  // button is never shown on a blank slate.  No confirmation needed because
-  // the manager can immediately re-assign — the action costs seconds to undo.
+  // Also resets any in-progress solo-check state so the panel returns to normal.
   function handleReset() {
+    setPendingAutoFillCheck(false)
+    setShowSoloChoice(false)
+    setPendingSolo(null)
     dispatch({
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
@@ -203,60 +256,6 @@ export default function AssignmentPanel() {
         pending_employee: null,
       },
     })
-  }
-
-  async function handleValidate() {
-    // ── Part E: auto-fill remaining unassigned into Uber ──────────────────
-    const filled = [
-      ...uberPassengers,
-      ...unassigned,
-    ]
-
-    const updatedAssignments = {
-      ...assignments,
-      uber_passengers: filled,
-    }
-
-    // Optimistically update state so the panel reflects the auto-fill.
-    dispatch({ type: ACTIONS.SET_ASSIGNMENTS, payload: updatedAssignments })
-
-    // ── Build request body ────────────────────────────────────────────────
-    const assignedRoles   = deriveProfesiones(
-      frescosResult?.assigned_names ?? [],
-      staff,
-    )
-    const assignmentsInput = buildAssignmentsInput(updatedAssignments)
-
-    setValidating(true)
-    dispatch({ type: ACTIONS.SET_ERROR, payload: null })
-
-    try {
-      const result = await validateAssignments({
-        assignments:    assignmentsInput,
-        assigned_roles: assignedRoles,
-      })
-
-      // Advance to step 4 — AssignmentPanel (step 3 only) unmounts.
-      // The ConfirmationModal renders based on showModal, not currentStep,
-      // so it will appear over the step-4 view immediately.
-      dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 4 })
-
-      // Open the confirmation modal.  The modal reads all its display data from
-      // existing state slices (assignments, frescosResult, chosenMeetingPoint,
-      // etc.) — the validate response is only a server-side sanity check and
-      // does not need to be stored.
-      dispatch({ type: ACTIONS.SET_SHOW_MODAL, payload: true })
-
-    } catch (err) {
-      // 422 means validation failed: unassigned or unknown employees.
-      const detail = err?.response?.data?.detail
-      const msg = typeof detail === 'object'
-        ? detail.message ?? JSON.stringify(detail)
-        : err?.message ?? 'Error al validar asignaciones.'
-      dispatch({ type: ACTIONS.SET_ERROR, payload: msg })
-    } finally {
-      setValidating(false)
-    }
   }
 
   return (
@@ -358,19 +357,34 @@ export default function AssignmentPanel() {
             {uberPassengers.length === 0 ? (
               <p className="text-xs text-muted-foreground">Sin pasajeros asignados</p>
             ) : (
-              uberGroups.map((group, gi) => (
-                <div key={gi} className="space-y-0.5">
-                  {uberGroups.length > 1 && (
-                    <p className="text-xs text-muted-foreground">Uber {gi + 1}</p>
-                  )}
-                  {group.map((emp) => (
-                    <div key={fullName(emp)} className="flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-slate-400 shrink-0" />
-                      <span className="text-xs">{fullName(emp)} — {emp.Profesion}</span>
-                    </div>
-                  ))}
-                </div>
-              ))
+              uberGroups.map((group, gi) => {
+                // Highlight the solo group after Phase 2 detects it.
+                const isSoloWarning = showSoloChoice && group.length === 1
+                return (
+                  <div
+                    key={gi}
+                    className={`space-y-0.5 ${
+                      isSoloWarning
+                        ? 'rounded border border-amber-400 bg-amber-50 px-1.5 py-1'
+                        : ''
+                    }`}
+                  >
+                    {uberGroups.length > 1 && (
+                      <p className={`text-xs ${isSoloWarning ? 'font-semibold text-amber-700' : 'text-muted-foreground'}`}>
+                        Uber {gi + 1}{isSoloWarning ? ' ⚠️' : ''}
+                      </p>
+                    )}
+                    {group.map((emp) => (
+                      <div key={fullName(emp)} className="flex items-center gap-1.5">
+                        <span className={`h-2 w-2 rounded-full shrink-0 ${isSoloWarning ? 'bg-amber-500' : 'bg-slate-400'}`} />
+                        <span className={`text-xs ${isSoloWarning ? 'font-medium text-amber-800' : ''}`}>
+                          {fullName(emp)} — {emp.Profesion}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })
             )}
           </div>
 
@@ -395,13 +409,12 @@ export default function AssignmentPanel() {
               {assignedCount} de {totalToAssign} asignados
             </p>
 
-            {hasSoloUberGroup ? (
+            {showSoloChoice ? (
               /*
-                A solo Uber group would exist after auto-fill.
-                The manager chooses: leave the solo passenger pending (primary)
-                or accept the single-passenger Uber booking (secondary).
-                This triggers for the "1 unassigned" case AND for manually
-                assigned employees who ended up alone in a group (e.g. 5→4+1).
+                Phase 2 result: a solo Uber group was detected after auto-fill.
+                The assignment list above already shows the filled groups with
+                the solo group highlighted in amber so the manager has full
+                context before deciding.
               */
               <div className="flex flex-col gap-2">
                 <Button
@@ -414,13 +427,13 @@ export default function AssignmentPanel() {
                 <Button
                   className="w-full border border-gray-300 text-gray-700 hover:bg-gray-50"
                   variant="outline"
-                  onClick={handleValidate}
+                  onClick={handleContinueWithSolo}
                   disabled={validating}
                 >
                   {validating ? (
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-700 border-t-transparent" />
                   ) : (
-                    'Continuar con Uber individual'
+                    'Continuar con 1 pasajero en Uber'
                   )}
                 </Button>
               </div>
