@@ -44,11 +44,14 @@
  * ── Driver coordinate override re-calculation ────────────────────────────────
  * When the user drags the driver's marker or geocodes a new address in step 2
  * (before a meeting point is chosen), the routes and PEA must be re-computed
- * from the new driver origin.  A second useEffect watches the driver's lat/lng
- * override and re-runs only the route + PEA calls (nearest meeting point stays
- * the same — it depends on the event venue, not the driver).  The override
- * coords are passed to the backend as optional query params so the backend
+ * from the new driver origin.  A second useEffect watches the driver's
+ * *effective* lat/lng — which is the override if set, or the original geocoded
+ * position from staffWithCoords otherwise.  Using effective coords means the
+ * effect fires for BOTH setting an override AND clearing one ("Volver a
+ * ubicación original"), so routes always reflect the driver's current position.
+ * The coords are passed to the backend as optional query params so the backend
  * skips its own geocoding and uses them directly.
+ * nearestMeetingPoint is NOT re-called: it depends on the event venue only.
  *
  * ── Loading phases ────────────────────────────────────────────────────────────
  * "meeting_point" → computing nearest PE via Distance Matrix
@@ -68,13 +71,26 @@ import {
 export function useStepTwo() {
   const { state, dispatch } = useAppState()
 
-  // Derive the driver's name and coordinate override here so both effects
-  // can reference them as stable primitives in their dependency arrays.
+  // Derive driver identity and coordinates here so both effects can reference
+  // stable primitives in their dependency arrays.
   const driver     = state.personalVehicle?.driver
   const driverName = driver ? `${driver.Nombre} ${driver.Apellido}` : null
+
   const driverOverride = driverName
     ? state.coordinateOverrides?.[driverName]
     : null
+
+  // Original geocoded coords from the bootstrap staffWithCoords list.
+  // Used as the fallback when no override exists so that clearing an override
+  // also changes the effective lat/lng and triggers a recalculation.
+  const driverOriginalCoords = driverName
+    ? state.staffWithCoords?.find((e) => `${e.Nombre} ${e.Apellido}` === driverName)?.coordinates
+    : null
+
+  // Effective coords: override takes precedence; fall back to original geocoded
+  // position.  These are the values Effect 2 tracks and passes to the API.
+  const effectiveLat = driverOverride?.lat ?? driverOriginalCoords?.lat ?? null
+  const effectiveLng = driverOverride?.lng ?? driverOriginalCoords?.lng ?? null
 
   // ── Effect 1: initial step 2 computation (1→2 transition) ──────────────────
   useEffect(() => {
@@ -153,18 +169,27 @@ export function useStepTwo() {
     }
   }, [state.currentStep]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Effect 2: re-run routes + PEA when the driver's position changes ────────
-  // Fires when the driver's coordinate override lat or lng changes.
-  // Only acts during step 2 before a meeting point has been committed —
-  // once the user selects PE or PEA the routes are locked and the driver's
-  // address can no longer be edited (StaffMarkers shows a lock message instead).
-  // nearestMeetingPoint is NOT re-called: it depends only on the event venue.
+  // ── Effect 2: re-run routes + PEA when the driver's effective position changes ─
+  // Deps are effectiveLat/effectiveLng, not the raw override, so this fires for
+  // BOTH cases:
+  //   • Override SET   (drag / address geocode) → effective coords change to new value
+  //   • Override CLEARED ("Volver a ubicación original") → effective coords change
+  //     back to the original geocoded position
+  // Using only driverOverride?.lat/lng as deps would miss the clear case because
+  // the guard "!driverOverride" would return early after the dep changed.
+  //
+  // The effect is a no-op on initial mount (currentStep !== 2) and does not
+  // duplicate Effect 1's work — Effect 1 handles the 1→2 transition; this effect
+  // only fires on subsequent coordinate changes while already in step 2.
+  //
+  // nearestMeetingPoint is NOT re-called: it depends on the event venue, not driver.
   useEffect(() => {
     if (
       state.currentStep !== 2 ||
       state.chosenMeetingPoint ||
       !state.personalVehicle?.has_personal_vehicle ||
-      !driverOverride
+      effectiveLat == null ||
+      effectiveLng == null
     ) return
 
     let cancelled = false
@@ -175,13 +200,13 @@ export function useStepTwo() {
       try {
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
 
-        const driverRoutes = await calculateDriverRoute(driverOverride.lat, driverOverride.lng)
+        const driverRoutes = await calculateDriverRoute(effectiveLat, effectiveLng)
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
 
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'pea' })
 
-        const peaResult = await evaluatePea(driverOverride.lat, driverOverride.lng)
+        const peaResult = await evaluatePea(effectiveLat, effectiveLng)
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_PEA_EVALUATION, payload: peaResult.pea_evaluation })
 
@@ -205,5 +230,5 @@ export function useStepTwo() {
     return () => {
       cancelled = true
     }
-  }, [driverOverride?.lat, driverOverride?.lng]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effectiveLat, effectiveLng]) // eslint-disable-line react-hooks/exhaustive-deps
 }
