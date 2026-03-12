@@ -1,58 +1,31 @@
 /**
  * ConfirmationModal.jsx
- * Step 4 — draggable confirmation modal.
+ * Step 4 — centered confirmation modal (no longer draggable).
  *
- * ── What this component shows ─────────────────────────────────────────────────
- * A summary of the full assignment plan assembled from existing state slices.
- * The user reviews it and either edits (returns to step 3) or confirms (calls
- * POST /final-output, which triggers both departure-time calculations).
+ * All logic, API calls, and state dispatches are IDENTICAL to the original.
+ * Visual changes:
+ *   • useDraggable removed — modal is centered via fixed + translate(-50%,-50%)
+ *   • Width increased from 340 → 500px, max-height 80vh with overflow-y:auto
+ *   • "Confirmar" button is primary/prominent, "Editar" is secondary
  *
- * ── Why the modal reads from state, not from the validate response ─────────────
- * POST /validate-assignments is a server-side sanity check — its return value is
- * discarded.  All display data (names, Profesion, vehicle, meeting point) already
- * lives in existing state slices (assignments, frescosResult, personalVehicle,
- * chosenMeetingPoint).  Reusing those avoids storing a redundant duplicate of
- * the same data in a separate "validateResult" slice.
+ * ── Why the modal reads from state, not from the validate response ─────────
+ * POST /validate-assignments is a server-side sanity check — its return value
+ * is discarded.  All display data already lives in existing state slices.
  *
- * ── What happens after confirmation ─────────────────────────────────────────
- * "Confirmar" calls POST /final-output, then dispatches SET_SHOW_OUTPUT true
- * and SET_SHOW_MODAL false.  The modal closes and FinalOutputBlocks takes over:
- * a single large centered panel (85vw × 85vh) with both frescos and transport
- * sections, clipboard copy buttons, and a "Volver a editar" button.
- *
- * ── Overlay approach ─────────────────────────────────────────────────────────
- * The backdrop div uses pointer-events:none.  This darkens the map visually
- * without capturing any pointer events, so the user can still pan, zoom, and
- * inspect markers through the overlay.  Only the modal card has pointer-events
- * auto (the default).
- *
- * ── Drag ─────────────────────────────────────────────────────────────────────
- * useDraggable() returns { pos, onMouseDown }.  The card header is the drag
- * handle — dragging from the content area is intentionally not supported so
- * the user can click buttons and scroll the list without accidentally moving it.
- *
- * ── Why POST /final-output instead of POST /confirm-assignments ───────────────
- * /final-output reads event_duration_hours (hardcoded 5.0) and detects picada
- * from the Excel internally, so the frontend does not need to derive or pass
- * those values.  /confirm-assignments requires them as explicit body fields —
- * it is a partial API designed for a separate UI step that this app consolidates
- * into a single confirm click.  /final-output is the single-call path that
- * returns both draggable output blocks in one round-trip.
+ * ── What happens after confirmation ──────────────────────────────────────
+ * "Confirmar" calls POST /final-output → SET_SHOW_OUTPUT true + SET_SHOW_MODAL
+ * false → FinalOutputBlocks takes over.
  */
 
-import { useState }                          from 'react'
-import { useAppState, ACTIONS }              from '../../state/appState'
-import { finalOutput }                       from '../../api/endpoints'
-import { useDraggable }                      from '../../hooks/useDraggable'
-import { Card, CardContent, CardHeader,
-         CardTitle }                         from '@/components/ui/card'
-import { Button }                            from '@/components/ui/button'
+import { useState }              from 'react'
+import { useAppState, ACTIONS }  from '../../state/appState'
+import { finalOutput }           from '../../api/endpoints'
 
-// Maximum passengers per Uber booking — matches config.py MAX_PASSENGERS_UBER.
+// Maximum passengers per Uber booking
 const MAX_UBER = 4
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers (unchanged from original)
 // ---------------------------------------------------------------------------
 
 function fullName(emp) {
@@ -65,25 +38,19 @@ function chunkArray(arr, size) {
   return groups
 }
 
-// Look up Profesion for each assigned name — needed because frescosResult
-// stores "Nombre Apellido" strings, not full employee objects.
 function deriveProfesiones(assignedNames, staff) {
   return assignedNames
     .map((name) => staff.find((e) => `${e.Nombre} ${e.Apellido}` === name)?.Profesion)
     .filter(Boolean)
 }
 
-// Build the AssignmentsInput shape for POST /final-output.
-// Converts local employee objects → "Nombre Apellido" name strings and
-// groups uber_passengers into uber_groups of MAX_UBER each.
 function buildBody(assignments, frescosResult, chosenMeetingPoint, staff) {
   const hasOwnVan     = frescosResult?.vehicle === 'camioneta propia'
   const assignedRoles = deriveProfesiones(frescosResult?.assigned_names ?? [], staff)
 
   return {
     assignments: {
-      driver:          assignments.driver
-        ? fullName(assignments.driver) : '',
+      driver:          assignments.driver ? fullName(assignments.driver) : '',
       car_passengers:  (assignments.car_passengers ?? []).map(fullName),
       uber_groups:     chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
                          .map((g) => g.map(fullName)),
@@ -103,7 +70,7 @@ function buildBody(assignments, frescosResult, chosenMeetingPoint, staff) {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// Sub-components (unchanged from original)
 // ---------------------------------------------------------------------------
 
 function SectionTitle({ children }) {
@@ -131,12 +98,6 @@ export default function ConfirmationModal() {
   const { state, dispatch } = useAppState()
   const [confirming, setConfirming] = useState(false)
 
-  // Start near the horizontal center, slightly down from the top.
-  const { pos, onMouseDown } = useDraggable({
-    x: Math.max(8, Math.round(window.innerWidth * 0.28)),
-    y: Math.max(8, Math.round(window.innerHeight * 0.10)),
-  })
-
   const {
     assignments,
     frescosResult,
@@ -149,10 +110,9 @@ export default function ConfirmationModal() {
     showOutput,
   } = state
 
-  const staff    = excelData?.staff ?? []
-  const event    = excelData?.event ?? {}
+  const staff = excelData?.staff ?? []
+  const event = excelData?.event ?? {}
 
-  // Determine whether the user chose a PEA (different from the original PE).
   const isPea    = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
   const remuNote = isPea
     ? peaEvaluation?.candidates?.find((c) => c.name === chosenMeetingPoint?.name)
@@ -167,27 +127,19 @@ export default function ConfirmationModal() {
   const hasVehicle     = personalVehicle?.has_personal_vehicle
   const vehicleDesc    = personalVehicle?.vehicle_description
 
-  // Vehicle label: "{description} de {Nombre} {Apellido}" — replaces the generic
-  // "Vehículo propio" section title with the actual car make and driver name.
   const vehicleLabel = vehicleDesc && driver
     ? `${vehicleDesc} de ${fullName(driver)}`
     : driver ? `Vehículo de ${fullName(driver)}` : 'Vehículo'
 
   const uberGroups = chunkArray(uberPassengers, MAX_UBER)
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
+  // ── Handlers (unchanged) ─────────────────────────────────────────────────
 
-  // "Editar" — close modal and return to step 3.
-  // All state (assignments, chosenMeetingPoint, frescosResult, routes, PEA
-  // evaluation) is preserved exactly as the user left it — no API calls are
-  // repeated.  The expensive geocoding and routing calls from steps 1–3 are
-  // not re-run; the user simply returns to the populated step-3 view.
   function handleEdit() {
-    dispatch({ type: ACTIONS.SET_SHOW_MODAL, payload: false })
+    dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: false })
     dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 3 })
   }
 
-  // "Confirmar" — call POST /final-output then show the two output blocks.
   async function handleConfirm() {
     if (!assignments || !frescosResult || !chosenMeetingPoint) return
     setConfirming(true)
@@ -196,9 +148,7 @@ export default function ConfirmationModal() {
     try {
       const body   = buildBody(assignments, frescosResult, chosenMeetingPoint, staff)
       const result = await finalOutput(body)
-      // Store the full block response — FinalOutputBlocks reads from this.
       dispatch({ type: ACTIONS.SET_FINAL_OUTPUT, payload: result })
-      // Show the final output panel and close this modal — the panel takes over.
       dispatch({ type: ACTIONS.SET_SHOW_OUTPUT,  payload: true  })
       dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: false })
     } catch (err) {
@@ -216,228 +166,261 @@ export default function ConfirmationModal() {
 
   return (
     <>
-      {/*
-        Backdrop — dims the map to signal that the modal requires attention,
-        but pointer-events:none ensures the user can still pan, zoom, and
-        click markers through it.  The map never becomes a dead zone.
-      */}
+      {/* Backdrop — dims map but pointer-events:none keeps map interactive */}
       <div
         style={{
-          position: 'fixed',
-          inset: 0,
-          backgroundColor: 'rgba(0,0,0,0.30)',
-          zIndex: 40,
-          pointerEvents: 'none',
+          position:        'fixed',
+          inset:           0,
+          backgroundColor: 'rgba(0,0,0,0.32)',
+          zIndex:          40,
+          pointerEvents:   'none',
         }}
       />
 
-      {/* Modal card — full pointer-event capture so buttons and scroll work. */}
+      {/* Modal — centered via translate */}
       <div
         style={{
-          position: 'fixed',
-          left: pos.x,
-          top:  pos.y,
-          zIndex: 50,
-          width: 340,
+          position:      'fixed',
+          top:           '50%',
+          left:          '50%',
+          transform:     'translate(-50%, -50%)',
+          zIndex:        50,
+          width:         500,
+          maxWidth:      'calc(100vw - 32px)',
+          maxHeight:     '80vh',
+          background:    '#fff',
+          borderRadius:  12,
+          boxShadow:     '0 8px 40px rgba(0,0,0,0.22)',
+          display:       'flex',
+          flexDirection: 'column',
           pointerEvents: 'auto',
-          userSelect: 'none',
+          animation:     'fadeIn 180ms ease-out',
         }}
       >
-        <Card className="shadow-2xl">
+        {/* Header */}
+        <div
+          style={{
+            padding:      '18px 24px 14px',
+            borderBottom: '1px solid #e5e7eb',
+            flexShrink:   0,
+          }}
+        >
+          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0, color: '#111827' }}>
+            Confirmar plan de traslado
+          </h2>
+          {(event.fecha || event.hora_inicio || event.tipo) && (
+            <p style={{ fontSize: 12, color: '#6b7280', margin: '4px 0 0' }}>
+              {[event.fecha, event.hora_inicio, event.tipo].filter(Boolean).join(' — ')}
+            </p>
+          )}
+        </div>
 
-          {/* Drag handle — the entire header row moves the modal. */}
-          <CardHeader
-            className="pb-2 cursor-grab active:cursor-grabbing select-none"
-            onMouseDown={onMouseDown}
-          >
-            <CardTitle className="text-base">Confirmar plan de traslado</CardTitle>
-            {event.fecha || event.hora_inicio || event.tipo ? (
-              <p className="text-xs text-muted-foreground">
-                {[event.fecha, event.hora_inicio, event.tipo].filter(Boolean).join(' — ')}
-              </p>
-            ) : null}
-          </CardHeader>
+        {/* Scrollable content */}
+        <div
+          style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}
+          className="space-y-4"
+        >
+          {/* Section 1: Frescos */}
+          <div className="space-y-1.5">
+            <SectionTitle>Frescos</SectionTitle>
+            <p className="text-xs font-medium">
+              {frescosResult?.vehicle === 'camioneta propia'
+                ? 'Vehículo QH'
+                : 'Miniflete contratado'}
+            </p>
+            {(frescosResult?.assigned_names ?? []).map((name) => {
+              const emp = staff.find((e) => `${e.Nombre} ${e.Apellido}` === name)
+              return (
+                <NameRow key={name} name={name} role={emp?.Profesion} color="bg-orange-400" />
+              )
+            })}
+            {secondMinifleteResult?.needs_second_miniflete && (
+              <div className="pt-1 space-y-0.5">
+                <p className="text-xs font-medium text-muted-foreground">Segundo miniflete</p>
+                <p className="text-xs text-muted-foreground">{secondMinifleteResult.reason}</p>
+              </div>
+            )}
+          </div>
 
-          <CardContent className="pt-0 space-y-4 max-h-[68vh] overflow-y-auto">
+          {/* Section 2: Punto de encuentro */}
+          <div className="space-y-1">
+            <SectionTitle>Punto de encuentro</SectionTitle>
+            <p className="text-xs font-medium">{chosenMeetingPoint?.name}</p>
+            {remuNote && <p className="text-xs text-amber-600">{remuNote}</p>}
+          </div>
 
-            {/* ── Section 1: Frescos vehicle ──────────────────────────────── */}
+          {/* Section 3: Personal vehicle */}
+          {hasVehicle && (
             <div className="space-y-1.5">
-              <SectionTitle>Frescos</SectionTitle>
-              <p className="text-xs font-medium">
-                {frescosResult?.vehicle === 'camioneta propia'
-                  ? 'Vehículo QH'
-                  : 'Miniflete contratado'}
-              </p>
-              {(frescosResult?.assigned_names ?? []).map((name) => {
-                const emp  = staff.find((e) => `${e.Nombre} ${e.Apellido}` === name)
-                return (
+              <SectionTitle>{vehicleLabel}</SectionTitle>
+              {driver && (
+                <NameRow
+                  name={fullName(driver)}
+                  role={driver.Profesion}
+                  color="bg-green-500"
+                />
+              )}
+              {carPassengers.map((emp) => (
+                <NameRow
+                  key={fullName(emp)}
+                  name={fullName(emp)}
+                  role={emp.Profesion}
+                  color="bg-green-500"
+                />
+              ))}
+              {carPassengers.length === 0 && !pickupEmployee && (
+                <p className="text-xs text-muted-foreground pl-3.5">Sin pasajeros</p>
+              )}
+              {pickupEmployee && (
+                <div className="pl-1 space-y-0.5">
                   <NameRow
-                    key={name}
-                    name={name}
-                    role={emp?.Profesion}
-                    color="bg-orange-400"
+                    name={fullName(pickupEmployee)}
+                    role={pickupEmployee.Profesion}
+                    color="bg-yellow-400"
                   />
-                )
-              })}
-              {secondMinifleteResult?.needs_second_miniflete && (
-                <div className="pt-1 space-y-0.5">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    Segundo miniflete
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {secondMinifleteResult.reason}
-                  </p>
+                  {pickupPlace && (
+                    <p className="text-xs text-muted-foreground pl-3.5">
+                      Pickup en {pickupPlace.place_name}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
+          )}
 
-            {/* ── Section 2: Punto de encuentro ───────────────────────────── */}
-            <div className="space-y-1">
-              <SectionTitle>Punto de encuentro</SectionTitle>
-              <p className="text-xs font-medium">{chosenMeetingPoint?.name}</p>
-              {remuNote && (
-                <p className="text-xs text-amber-600">{remuNote}</p>
-              )}
-            </div>
-
-            {/* ── Section 3: Personal vehicle ──────────────────────────────── */}
-            {hasVehicle && (
-              <div className="space-y-1.5">
-                <SectionTitle>{vehicleLabel}</SectionTitle>
-                {driver && (
-                  <p className="text-xs font-medium">
-                    {vehicleDesc
-                      ? `${vehicleDesc} de ${fullName(driver)}`
-                      : `Vehículo de ${fullName(driver)}`}
-                  </p>
-                )}
-                {/* Driver row */}
-                {driver && (
-                  <NameRow
-                    name={fullName(driver)}
-                    role={driver.Profesion}
-                    color="bg-green-500"
-                  />
-                )}
-                {/* Car passengers */}
-                {carPassengers.map((emp) => (
-                  <NameRow
-                    key={fullName(emp)}
-                    name={fullName(emp)}
-                    role={emp.Profesion}
-                    color="bg-green-500"
-                  />
-                ))}
-                {carPassengers.length === 0 && !pickupEmployee && (
-                  <p className="text-xs text-muted-foreground pl-3.5">
-                    Sin pasajeros
-                  </p>
-                )}
-                {/* Pickup */}
-                {pickupEmployee && (
-                  <div className="pl-1 space-y-0.5">
+          {/* Section 4: Uber */}
+          <div className="space-y-1.5">
+            <SectionTitle>
+              Uber ({uberPassengers.length}{' '}
+              {uberPassengers.length === 1 ? 'pasajero' : 'pasajeros'})
+            </SectionTitle>
+            {uberPassengers.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Sin pasajeros Uber</p>
+            ) : (
+              uberGroups.map((group, gi) => (
+                <div key={gi} className="space-y-0.5">
+                  {uberGroups.length > 1 && (
+                    <p className="text-xs text-muted-foreground">Uber {gi + 1}</p>
+                  )}
+                  {group.map((emp) => (
                     <NameRow
-                      name={fullName(pickupEmployee)}
-                      role={pickupEmployee.Profesion}
-                      color="bg-yellow-400"
+                      key={fullName(emp)}
+                      name={fullName(emp)}
+                      role={emp.Profesion}
+                      color="bg-slate-400"
                     />
-                    {pickupPlace && (
-                      <p className="text-xs text-muted-foreground pl-3.5">
-                        Pickup en {pickupPlace.place_name}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Section 4: Uber ──────────────────────────────────────────── */}
-            <div className="space-y-1.5">
-              <SectionTitle>
-                Uber ({uberPassengers.length}{' '}
-                {uberPassengers.length === 1 ? 'pasajero' : 'pasajeros'})
-              </SectionTitle>
-              {uberPassengers.length === 0 ? (
-                <p className="text-xs text-muted-foreground">Sin pasajeros Uber</p>
-              ) : (
-                uberGroups.map((group, gi) => (
-                  <div key={gi} className="space-y-0.5">
-                    {uberGroups.length > 1 && (
-                      <p className="text-xs text-muted-foreground">Uber {gi + 1}</p>
-                    )}
-                    {group.map((emp) => (
-                      <NameRow
-                        key={fullName(emp)}
-                        name={fullName(emp)}
-                        role={emp.Profesion}
-                        color="bg-slate-400"
-                      />
-                    ))}
-                  </div>
-                ))
-              )}
-              {/* Warn if a single Uber passenger will ride alone */}
-              {uberPassengers.length === 1 && (
-                <p className="text-xs text-amber-600">
-                  ⚠ Un solo pasajero en Uber. Consultar con el manager.
-                </p>
-              )}
-            </div>
-
-            {/* ── Section 5: Pending employee ──────────────────────────────── */}
-            {/* Only shown when the manager chose "Buscar alternativa" for the   */}
-            {/* sole unassigned employee — that person needs transport arranged   */}
-            {/* outside the normal Uber/car flow.                                 */}
-            {assignments?.pending_employee && (
-              <div className="space-y-1 rounded-md bg-amber-50 border border-amber-200 p-2">
-                <SectionTitle>Pendiente</SectionTitle>
-                <div className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
-                  <span className="text-xs font-medium">
-                    {fullName(assignments.pending_employee)}
-                    {assignments.pending_employee.Profesion
-                      ? ` — ${assignments.pending_employee.Profesion}`
-                      : ''}
-                  </span>
+                  ))}
                 </div>
-                <p className="text-xs text-amber-700">Transporte alternativo a coordinar</p>
+              ))
+            )}
+            {uberPassengers.length === 1 && (
+              <p className="text-xs text-amber-600">
+                ⚠ Un solo pasajero en Uber. Consultar con el manager.
+              </p>
+            )}
+          </div>
+
+          {/* Section 5: Pending */}
+          {assignments?.pending_employee && (
+            <div className="space-y-1 rounded-md bg-amber-50 border border-amber-200 p-2">
+              <SectionTitle>Pendiente</SectionTitle>
+              <div className="flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
+                <span className="text-xs font-medium">
+                  {fullName(assignments.pending_employee)}
+                  {assignments.pending_employee.Profesion
+                    ? ` — ${assignments.pending_employee.Profesion}`
+                    : ''}
+                </span>
               </div>
-            )}
-
-            {/* ── Error ───────────────────────────────────────────────────── */}
-            {state.error && (
-              <p className="text-xs text-destructive">{state.error}</p>
-            )}
-
-            {/* ── Footer buttons ───────────────────────────────────────────── */}
-            <div className="flex gap-2 pt-1 border-t border-border">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={handleEdit}
-                disabled={confirming}
-              >
-                Editar
-              </Button>
-              <Button
-                className="flex-1"
-                onClick={handleConfirm}
-                // Disable after successful confirm to prevent double-submitting
-                // the expensive Routes API calls inside /final-output.
-                disabled={confirming || showOutput}
-              >
-                {confirming ? (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
-                ) : showOutput ? (
-                  'Confirmado ✓'
-                ) : (
-                  'Confirmar'
-                )}
-              </Button>
+              <p className="text-xs text-amber-700">Transporte alternativo a coordinar</p>
             </div>
+          )}
 
-          </CardContent>
-        </Card>
+          {/* Error */}
+          {state.error && (
+            <p className="text-xs text-destructive">{state.error}</p>
+          )}
+        </div>
+
+        {/* Footer buttons */}
+        <div
+          style={{
+            padding:      '14px 24px',
+            borderTop:    '1px solid #e5e7eb',
+            flexShrink:   0,
+            display:      'flex',
+            gap:          10,
+          }}
+        >
+          <button
+            onClick={handleEdit}
+            disabled={confirming}
+            style={{
+              flex:         1,
+              padding:      '10px 16px',
+              background:   '#fff',
+              color:        '#374151',
+              border:       '1px solid #d1d5db',
+              borderRadius: 8,
+              fontSize:     14,
+              fontWeight:   500,
+              cursor:       confirming ? 'default' : 'pointer',
+              transition:   'background 150ms ease',
+            }}
+            onMouseEnter={(e) => { if (!confirming) e.currentTarget.style.background = '#f9fafb' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = '#fff' }}
+          >
+            Editar
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={confirming || showOutput}
+            style={{
+              flex:           2,
+              padding:        '10px 16px',
+              background:     (confirming || showOutput) ? '#374151' : '#111827',
+              color:          '#fff',
+              border:         'none',
+              borderRadius:   8,
+              fontSize:       14,
+              fontWeight:     600,
+              cursor:         (confirming || showOutput) ? 'default' : 'pointer',
+              display:        'flex',
+              alignItems:     'center',
+              justifyContent: 'center',
+              gap:            8,
+              transition:     'background 150ms ease',
+            }}
+            onMouseEnter={(e) => {
+              if (!confirming && !showOutput) e.currentTarget.style.background = '#374151'
+            }}
+            onMouseLeave={(e) => {
+              if (!confirming && !showOutput) e.currentTarget.style.background = '#111827'
+            }}
+          >
+            {confirming ? (
+              <>
+                <span
+                  className="animate-spin"
+                  style={{
+                    display:       'inline-block',
+                    width:         14,
+                    height:        14,
+                    border:        '2px solid rgba(255,255,255,0.4)',
+                    borderTopColor: '#fff',
+                    borderRadius:  '50%',
+                  }}
+                />
+                Confirmando...
+              </>
+            ) : showOutput ? (
+              'Confirmado ✓'
+            ) : (
+              'Confirmar'
+            )}
+          </button>
+        </div>
       </div>
     </>
   )

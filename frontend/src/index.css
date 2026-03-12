@@ -232,3 +232,22 @@
     @apply bg-background text-foreground;
     }
 }
+
+/* ── Panel entry animations ────────────────────────────────────────────────
+   Used by Sidebar, UnassignedPanel, AssignmentSummaryPanel, ConfirmationModal.
+   Defined here so they are globally available without inline <style> tags.  */
+
+@keyframes slideInFromLeft {
+  from { opacity: 0; transform: translateX(-24px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInFromRight {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}

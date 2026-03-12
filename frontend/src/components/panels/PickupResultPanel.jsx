@@ -1,39 +1,19 @@
 /**
  * PickupResultPanel.jsx
- * Floating panel shown when a "Buscar pickup en ruta" call returns.
+ * Pickup search results panel.
  *
- * ── What this panel shows ─────────────────────────────────────────────────────
- * 1. Employee name and transit summary for the found cross-point.
- * 2. Warning flags (transit time or time-saving outside recommended range).
- * 3. Up to 3 venue options (place_options) sorted by distance to cross-point.
- *    Each venue has a "Confirmar este pickup" button.
- * 4. A "Cerrar" button to dismiss without confirming.
+ * Rendered INLINE inside AssignmentSummaryPanel (right panel, step 3) when
+ * activePickupResult is set — no absolute positioning, no Card wrapper.
+ * AssignmentSummaryPanel wraps it in a bordered container.
  *
- * ── What "Confirmar" does ─────────────────────────────────────────────────────
- * - Sets assignments.pickup_employee to the employee object.
- * - Sets assignments.pickup_place to the chosen venue.
- * - Clears activePickupResult from state (closes this panel).
- * The employee's marker turns yellow in StaffMarkers automatically because
- * getMarkerColors() checks assignments.pickup_employee on the next render.
- *
- * ── Position ─────────────────────────────────────────────────────────────────
- * top-4 right-4 — the only quadrant not occupied by another panel.
- * FrescosPanel and AssignmentPanel both occupy the left side.
- * z-20 puts this panel above the z-10 panels to signal it requires attention.
- *
- * ── Why this panel is separate from the context menu ─────────────────────────
- * The find-pickup call is async and may take several seconds.  Blocking the
- * context menu open for that duration would freeze the map interaction.
- * Instead, the context menu fires the call and closes immediately, and this
- * panel appears when the response arrives — a standard "pending result" panel
- * pattern that lets the user continue interacting with the map while waiting.
+ * All logic, handlers, and state dispatches are IDENTICAL to the original.
+ * Only the outermost DOM structure changed: the position:absolute + Card
+ * wrapper is removed.
  */
 
-import { useState }                      from 'react'
-import { useAppState, ACTIONS }          from '../../state/appState'
-import { Card, CardContent, CardHeader,
-         CardTitle }                     from '@/components/ui/card'
-import { Button }                        from '@/components/ui/button'
+import { useState }              from 'react'
+import { useAppState, ACTIONS }  from '../../state/appState'
+import { Button }                from '@/components/ui/button'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -63,13 +43,9 @@ function PlaceOption({ place, onConfirm }) {
           {place.place_address}
         </p>
       </div>
-
-      {/* Distance to driver's cross-point on the route */}
       <p className="text-xs text-muted-foreground">
         {formatMeters(place.dist_to_cross_m ?? 0)} del cruce
       </p>
-
-      {/* Opening hours — collapsed by default; toggled via a small link-style button */}
       {hours.length > 0 && (
         <div>
           <button
@@ -89,12 +65,7 @@ function PlaceOption({ place, onConfirm }) {
           )}
         </div>
       )}
-
-      <Button
-        size="sm"
-        className="w-full text-xs"
-        onClick={() => onConfirm(place)}
-      >
+      <Button size="sm" className="w-full text-xs" onClick={() => onConfirm(place)}>
         Confirmar este pickup
       </Button>
     </div>
@@ -102,7 +73,7 @@ function PlaceOption({ place, onConfirm }) {
 }
 
 // ---------------------------------------------------------------------------
-// Main component
+// Main component — renders flat content (no Card/absolute wrapper)
 // ---------------------------------------------------------------------------
 
 export default function PickupResultPanel() {
@@ -119,112 +90,88 @@ export default function PickupResultPanel() {
   }
 
   function handleConfirm(place) {
-    // Look up the full employee object so the marker can use it directly.
     const employee = state.staffWithCoords?.find(
       (emp) => fullName(emp) === employeeName,
     )
-
     dispatch({
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
         ...(state.assignments ?? {}),
         pickup_employee:        employee ?? null,
         pickup_place:           place,
-        // Store transit time so FinalOutputBlocks can compute the pickup
-        // departure time: departure_from_pe − transit_time_to_pickup_minutes.
-        // The candidate object holds this value; the individual place dict does not.
         pickup_transit_minutes: candidate?.transit_time_to_pickup_minutes ?? null,
       },
     })
-
     dispatch({ type: ACTIONS.SET_ACTIVE_PICKUP_RESULT, payload: null })
   }
 
   return (
-    <div className="absolute top-4 right-4 z-20 w-72 pointer-events-auto">
-      <Card className="shadow-lg">
-        <CardHeader className="pb-2">
-          <div className="flex items-start justify-between gap-2">
-            <CardTitle className="text-base leading-tight">
-              Pickup — {employeeName}
-            </CardTitle>
-            <button
-              onClick={handleClose}
-              className="text-muted-foreground hover:text-foreground transition-colors text-sm shrink-0"
-              aria-label="Cerrar"
-            >
-              ✕
-            </button>
+    <div style={{ padding: '12px 14px' }}>
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <p className="text-sm font-semibold text-gray-800 leading-tight">
+          Pickup — {employeeName}
+        </p>
+        <button
+          onClick={handleClose}
+          className="text-muted-foreground hover:text-foreground transition-colors text-sm shrink-0"
+          aria-label="Cerrar"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* No candidate */}
+      {!candidate && (
+        <p className="text-sm text-muted-foreground">
+          {result?.reason ?? 'No se encontró un punto de pickup viable.'}
+        </p>
+      )}
+
+      {/* Candidate found */}
+      {candidate && (
+        <div className="space-y-3">
+          <div className="space-y-0.5 text-xs">
+            <p>
+              <span className="font-medium">{candidate.transit_time_to_pickup_minutes} min</span>
+              {' '}al punto de cruce
+            </p>
+            <p className="text-muted-foreground">
+              Ahorra {candidate.time_saved_minutes} min vs ir al PE directamente
+            </p>
           </div>
-        </CardHeader>
 
-        <CardContent className="pt-0 space-y-3">
-
-          {/* ── No candidate ────────────────────────────────────────── */}
-          {!candidate && (
-            <p className="text-sm text-muted-foreground">
-              {result?.reason ?? 'No se encontró un punto de pickup viable.'}
+          {candidate.transit_warning && (
+            <p className="text-xs text-amber-600">
+              ⚠ Tiempo de tránsito alto ({candidate.transit_time_to_pickup_minutes} min).
+            </p>
+          )}
+          {candidate.time_saving_warning && (
+            <p className="text-xs text-amber-600">
+              ⚠ Ahorro de tiempo bajo ({candidate.time_saved_minutes} min).
             </p>
           )}
 
-          {/* ── Candidate found ──────────────────────────────────────── */}
-          {candidate && (
-            <>
-              {/* Transit summary */}
-              <div className="space-y-0.5 text-xs">
-                <p>
-                  <span className="font-medium">{candidate.transit_time_to_pickup_minutes} min</span>
-                  {' '}al punto de cruce
-                </p>
-                <p className="text-muted-foreground">
-                  Ahorra {candidate.time_saved_minutes} min vs ir al PE directamente
-                </p>
-              </div>
-
-              {/* Warnings */}
-              {candidate.transit_warning && (
-                <p className="text-xs text-amber-600">
-                  ⚠ Tiempo de tránsito alto ({candidate.transit_time_to_pickup_minutes} min).
-                  Verificar con el empleado.
-                </p>
-              )}
-              {candidate.time_saving_warning && (
-                <p className="text-xs text-amber-600">
-                  ⚠ Ahorro de tiempo bajo ({candidate.time_saved_minutes} min).
-                  El pickup puede no ser conveniente.
-                </p>
-              )}
-
-              {/* Place options */}
-              {candidate.place_options?.length > 0 ? (
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Venues disponibles
-                  </p>
-                  {candidate.place_options.map((place, i) => (
-                    <PlaceOption
-                      key={i}
-                      place={place}
-                      onConfirm={handleConfirm}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  No se encontraron venues sobre la ruta. El cruce existe pero no
-                  hay lugares de referencia cercanos.
-                </p>
-              )}
-            </>
+          {candidate.place_options?.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Venues disponibles
+              </p>
+              {candidate.place_options.map((place, i) => (
+                <PlaceOption key={i} place={place} onConfirm={handleConfirm} />
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No se encontraron venues sobre la ruta.
+            </p>
           )}
+        </div>
+      )}
 
-          {/* Close without confirming */}
-          <Button variant="outline" size="sm" className="w-full text-xs" onClick={handleClose}>
-            Cerrar sin confirmar
-          </Button>
-
-        </CardContent>
-      </Card>
+      <Button variant="outline" size="sm" className="w-full text-xs mt-3" onClick={handleClose}>
+        Cerrar sin confirmar
+      </Button>
     </div>
   )
 }
