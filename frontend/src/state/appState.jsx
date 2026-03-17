@@ -97,6 +97,7 @@ const initialState = {
   showModal:        false,   // true when the step-4 ConfirmationModal is visible
   showOutput:       false,   // true when the two FinalOutputBlocks are visible
   manualPickupMode: false,   // true while the user is clicking the map to select a pickup point
+  manualPeaMode:    false,   // true while the user is clicking the map to manually select a PEA
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,7 @@ export const ACTIONS = {
   CLEAR_ALL_COORDINATE_OVERRIDES: 'CLEAR_ALL_COORDINATE_OVERRIDES',
   SET_EDITING_MARKER:             'SET_EDITING_MARKER',
   SET_MANUAL_PICKUP_MODE:    'SET_MANUAL_PICKUP_MODE',
+  SET_MANUAL_PEA_MODE:       'SET_MANUAL_PEA_MODE',
   ADD_PICKUP_PASSENGER:      'ADD_PICKUP_PASSENGER',
   REMOVE_PICKUP_PASSENGER:   'REMOVE_PICKUP_PASSENGER',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
@@ -195,6 +197,9 @@ function appReducer(state, action) {
     case ACTIONS.SET_MANUAL_PICKUP_MODE:
       return { ...state, manualPickupMode: action.payload }
 
+    case ACTIONS.SET_MANUAL_PEA_MODE:
+      return { ...state, manualPeaMode: action.payload }
+
     case ACTIONS.ADD_PICKUP_PASSENGER: {
       // payload: employee object — appended to assignments.pickup_passengers.
       const current = state.assignments?.pickup_passengers ?? []
@@ -247,7 +252,7 @@ function appReducer(state, action) {
       } else if (state.currentStep >= 2) {
         // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
         // point data so useStepTwo will recompute them if user re-advances.
-        Object.assign(clearing, { meetingPoint: null, driverRoutes: null, peaEvaluation: null, chosenMeetingPoint: null })
+        Object.assign(clearing, { meetingPoint: null, driverRoutes: null, peaEvaluation: null, chosenMeetingPoint: null, manualPeaMode: false })
       } else if (state.currentStep >= 1) {
         // Leaving step 1 → step 0: undo the "van question" (frescos panel).
         // Clears the four slices that were set when the user answered it.

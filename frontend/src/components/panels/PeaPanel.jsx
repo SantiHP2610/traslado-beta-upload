@@ -91,7 +91,7 @@ export default function PeaPanel() {
   const { state, dispatch } = useAppState()
 
   const { loadingStep, driverRoutes, peaEvaluation, chosenMeetingPoint,
-          personalVehicle } = state
+          personalVehicle, manualPeaMode } = state
 
   const isLoading      = loadingStep !== null
   const driver         = personalVehicle?.driver
@@ -158,6 +158,49 @@ export default function PeaPanel() {
               </p>
             )}
           </div>
+
+          {/* ── Manual PEA selection ───────────────────────────────── */}
+          {driverRoutes && !manualPeaMode && (
+            <button
+              onClick={() => dispatch({ type: 'SET_MANUAL_PEA_MODE', payload: true })}
+              className="w-full text-left text-xs text-blue-600 hover:text-blue-800 underline underline-offset-2 transition-colors"
+            >
+              Elegir PEA en mapa manualmente
+            </button>
+          )}
+          {manualPeaMode && (
+            <div
+              style={{
+                background:   '#eff6ff',
+                border:       '1px solid #bfdbfe',
+                borderRadius: 6,
+                padding:      '8px 10px',
+                fontSize:     12,
+                color:        '#1e40af',
+              }}
+            >
+              <p style={{ margin: '0 0 4px', fontWeight: 600 }}>
+                Modo selección manual
+              </p>
+              <p style={{ margin: '0 0 6px', lineHeight: 1.4 }}>
+                Hacé click sobre la ruta alternativa (roja) en el mapa para elegir un PEA.
+              </p>
+              <button
+                onClick={() => dispatch({ type: 'SET_MANUAL_PEA_MODE', payload: false })}
+                style={{
+                  background:   'none',
+                  border:       'none',
+                  padding:      0,
+                  fontSize:     11,
+                  color:        '#2563eb',
+                  cursor:       'pointer',
+                  textDecoration: 'underline',
+                }}
+              >
+                Cancelar
+              </button>
+            </div>
+          )}
         </>
       )}
 

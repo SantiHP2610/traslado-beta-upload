@@ -229,6 +229,31 @@ export async function findPickup(body) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 9b — Manual PEA selection (map click, step 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns place info and per-employee transit metrics for a point the user
+ * clicked on the map during manual PEA mode.
+ * @param {number} lat
+ * @param {number} lng
+ * @param {string[]} assignedRoles  Role strings already committed to frescos.
+ * @param {number} meetingPointLat  Original PE latitude (transit-time baseline).
+ * @param {number} meetingPointLng  Original PE longitude.
+ * @returns {{ lat, lng, name, address, primary_type, opening_hours, staff_metrics }}
+ */
+export async function peaPlaceInfo(lat, lng, assignedRoles, meetingPointLat, meetingPointLng) {
+  const response = await client.post('/pea-place-info', {
+    lat,
+    lng,
+    assigned_roles:    assignedRoles,
+    meeting_point_lat: meetingPointLat,
+    meeting_point_lng: meetingPointLng,
+  })
+  return response.data
+}
+
+// ---------------------------------------------------------------------------
 // Step 10b — Manual pickup selection (map click)
 // ---------------------------------------------------------------------------
 

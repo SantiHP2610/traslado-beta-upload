@@ -40,7 +40,7 @@ import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
 import { useAppState, ACTIONS }                      from '../../state/appState'
-import { pickupPlaceInfo, recalculateRouteWithPickup } from '../../api/endpoints'
+import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo } from '../../api/endpoints'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
 import { useAssignmentLogic }            from '../../hooks/useAssignmentLogic'
 import MapBoundsController               from './MapBoundsController'
@@ -165,6 +165,11 @@ export default function AppMap() {
 
   // Whether we're currently calling /recalculate-route-with-pickup.
   const [recalculating, setRecalculating] = useState(false)
+
+  // Manual PEA mode — InfoWindow state for a point clicked during step 2.
+  // Shape: { lat, lng, name, address, primary_type, opening_hours, staff_metrics, loading, error, tooFar }
+  // null = no InfoWindow shown.
+  const [manualPeaInfo, setManualPeaInfo] = useState(null)
 
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
@@ -310,6 +315,61 @@ export default function AppMap() {
     }
   }, [manualPickupInfo, recalculating, state, dispatch])
 
+  // ── Manual PEA map click ─────────────────────────────────────────────────
+  // When manualPeaMode is true (step 2), every map click is intercepted.
+  // We check proximity to the direct-route polyline (home→event, the red line);
+  // clicks beyond 2000 m from it are silently ignored.
+  const handleMapClickPea = useCallback(async (event) => {
+    if (!state.manualPeaMode || state.currentStep !== 2) return
+    if (!event.detail?.latLng) return
+
+    const { lat, lng } = event.detail.latLng
+    const clickedPoint = { lat, lng }
+
+    const directPolyline = state.driverRoutes?.direct_route?.encoded_polyline
+    let tooFar = false
+    if (directPolyline) {
+      const dist = distanceToPolylineMetres(clickedPoint, directPolyline)
+      if (dist > 2000) return   // silently ignore clicks far from route
+      if (dist > 500)  tooFar = true
+    }
+
+    // Show InfoWindow immediately with loading state, then fetch place info.
+    setManualPeaInfo({ lat, lng, loading: true, tooFar, name: null, address: null, primary_type: null, opening_hours: [], staff_metrics: [] })
+
+    // Derive assigned_roles from the frescos result (same pattern as doValidate).
+    const staff          = state.staffWithCoords ?? []
+    const assignedNames  = state.frescosResult?.assigned_names ?? []
+    const assignedRoles  = assignedNames.map((name) => {
+      const emp = staff.find((e) => `${e.Nombre} ${e.Apellido}` === name)
+      return emp?.Profesion ?? name
+    })
+    const meetingPoint = state.meetingPoint
+
+    try {
+      const info = await peaPlaceInfo(lat, lng, assignedRoles, meetingPoint.lat, meetingPoint.lng)
+      setManualPeaInfo({ ...info, loading: false, tooFar })
+    } catch {
+      setManualPeaInfo({ lat, lng, loading: false, tooFar, name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, primary_type: null, opening_hours: [], staff_metrics: [], error: 'No se pudo obtener info del lugar.' })
+    }
+  }, [state.manualPeaMode, state.currentStep, state.driverRoutes, state.staffWithCoords, state.frescosResult, state.meetingPoint])
+
+  // When the user confirms a manually clicked PEA point.
+  const handleConfirmManualPea = useCallback(() => {
+    if (!manualPeaInfo || manualPeaInfo.loading) return
+    dispatch({
+      type:    ACTIONS.SET_CHOSEN_MEETING_POINT,
+      payload: {
+        name:    manualPeaInfo.name ?? 'PEA seleccionado manualmente',
+        address: manualPeaInfo.address,
+        lat:     manualPeaInfo.lat,
+        lng:     manualPeaInfo.lng,
+      },
+    })
+    dispatch({ type: ACTIONS.SET_MANUAL_PEA_MODE, payload: false })
+    setManualPeaInfo(null)
+  }, [manualPeaInfo, dispatch])
+
   // ── Layout flags ─────────────────────────────────────────────────────────
   // Side panels are hidden while the step-4 modal or output panel is shown so
   // the user's focus stays on the confirmation / final output.
@@ -361,9 +421,15 @@ export default function AppMap() {
           style={{
             width:  '100%',
             height: '100%',
-            cursor: state.manualPickupMode && state.currentStep === 3 ? 'crosshair' : undefined,
+            cursor: (state.manualPickupMode && state.currentStep === 3) ||
+                    (state.manualPeaMode    && state.currentStep === 2)
+              ? 'crosshair' : undefined,
           }}
-          onClick={state.manualPickupMode && state.currentStep === 3 ? handleMapClick : undefined}
+          onClick={
+            (state.manualPickupMode && state.currentStep === 3) ? handleMapClick :
+            (state.manualPeaMode    && state.currentStep === 2) ? handleMapClickPea :
+            undefined
+          }
         >
           <MapBoundsController bounds={bounds} />
 
@@ -448,6 +514,82 @@ export default function AppMap() {
                       }}
                     >
                       {recalculating ? 'Recalculando…' : 'Confirmar como pickup'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </InfoWindow>
+          )}
+          {/* Manual PEA InfoWindow — shown when user clicks during PEA mode */}
+          {manualPeaInfo && (
+            <InfoWindow
+              position={{ lat: manualPeaInfo.lat, lng: manualPeaInfo.lng }}
+              onCloseClick={() => setManualPeaInfo(null)}
+              shouldFocus={false}
+            >
+              <div style={{ minWidth: 200, maxWidth: 280, fontFamily: 'sans-serif' }}>
+                {manualPeaInfo.loading ? (
+                  <p style={{ fontSize: 13, color: '#374151', margin: 0 }}>Cargando…</p>
+                ) : (
+                  <>
+                    {manualPeaInfo.name && (
+                      <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 2px', color: '#111827' }}>
+                        {manualPeaInfo.name}
+                      </p>
+                    )}
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 6px', lineHeight: 1.4 }}>
+                      {manualPeaInfo.address}
+                    </p>
+                    {manualPeaInfo.opening_hours?.length > 0 && (
+                      <p style={{ fontSize: 11, color: '#374151', margin: '0 0 6px' }}>
+                        {manualPeaInfo.opening_hours[0]}
+                      </p>
+                    )}
+                    {manualPeaInfo.tooFar && (
+                      <p style={{ fontSize: 11, color: '#b45309', margin: '0 0 6px', background: '#fffbeb', padding: '4px 6px', borderRadius: 4 }}>
+                        ⚠ Este punto está lejos de la ruta directa.
+                      </p>
+                    )}
+                    {/* Per-employee transit savings */}
+                    {manualPeaInfo.staff_metrics?.length > 0 && (
+                      <div style={{ margin: '0 0 8px' }}>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: '#374151', margin: '0 0 4px' }}>
+                          Ahorro estimado por empleado:
+                        </p>
+                        <table style={{ width: '100%', fontSize: 10, borderCollapse: 'collapse' }}>
+                          <tbody>
+                            {manualPeaInfo.staff_metrics.map((m) => (
+                              <tr key={m.employee_name}>
+                                <td style={{ paddingRight: 6, color: '#374151' }}>{m.employee_name}</td>
+                                <td style={{ color: m.time_saved_min >= 0 ? '#15803d' : '#dc2626', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                  {m.time_saved_min >= 0 ? `−${m.time_saved_min} min` : `+${Math.abs(m.time_saved_min)} min`}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {manualPeaInfo.error && (
+                      <p style={{ fontSize: 11, color: '#dc2626', margin: '0 0 8px' }}>
+                        {manualPeaInfo.error}
+                      </p>
+                    )}
+                    <button
+                      onClick={handleConfirmManualPea}
+                      style={{
+                        width:        '100%',
+                        padding:      '7px 12px',
+                        background:   '#FF6D00',
+                        color:        '#fff',
+                        border:       'none',
+                        borderRadius: 6,
+                        fontSize:     12,
+                        fontWeight:   600,
+                        cursor:       'pointer',
+                      }}
+                    >
+                      Elegir como PEA
                     </button>
                   </>
                 )}

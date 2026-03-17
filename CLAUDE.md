@@ -153,6 +153,8 @@ PEA candidate fields (per candidate): `name`, `address`, `lat`, `lng`, `top4_sav
 
 User sees candidates on map, decides PE or PEA.
 
+**Manual PEA selection:** If the user wants to specify their own PEA that wasn't surfaced by the automatic pipeline, they click "Elegir PEA en mapa manualmente" in PeaPanel. This activates `manualPeaMode` (state), turns the map cursor to crosshair, and listens for clicks on the direct route (red, ≤2000m from polyline). On click, `POST /pea-place-info` is called with `{lat, lng, assigned_roles, meeting_point_lat, meeting_point_lng}`. The response is shown in an InfoWindow: place name/address (from Places searchNearby 300m + reverse geocode), and a per-employee transit-saving table (Distance Matrix transit: homes → candidate vs homes → original PE). "Elegir como PEA" dispatches `SET_CHOSEN_MEETING_POINT` and clears `manualPeaMode`. `pea_place_info()` is in `maps_client.py`. The endpoint loads Excel+geocodes staff, builds remaining pool via `get_remaining_pool`, then calls `pea_place_info`.
+
 ### Step 7 — Pickup points (personal car only, max 1 location, multiple passengers)
 There is at most ONE pickup point per trip. However, multiple passengers can be assigned to that point — up to the remaining car capacity. Total car occupancy = driver + PE passengers (car_passengers) + pickup passengers ≤ 5 (MAX_PASSENGERS_PER_CAR + 1 driver).
 
@@ -204,7 +206,7 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 ## Working endpoints
 
 `GET`: /read-excel, /geocode-staff, /geocode-address, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats, /config
-`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /pickup-place-info, /recalculate-route-with-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
+`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /pickup-place-info, /pea-place-info, /recalculate-route-with-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
 `DELETE`: /cache-clear
 
 ---

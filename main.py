@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, recalculate_route_with_pickup
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, pea_place_info, recalculate_route_with_pickup
 from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, assign_uber_only, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
@@ -2473,3 +2473,57 @@ def endpoint_recalculate_route_with_pickup(body: RecalculateRouteRequest):
         meeting_point={"lat": body.meeting_point.lat, "lng": body.meeting_point.lng},
         event_coords= {"lat": body.event_coords.lat,  "lng": body.event_coords.lng},
     )
+
+
+# =============================================================================
+# Manual PEA selection endpoint (Step 6 — map click flow)
+# =============================================================================
+
+class PeaPlaceInfoRequest(BaseModel):
+    """
+    Body for POST /pea-place-info.
+
+    lat, lng:             Coordinates of the point the user clicked on the map
+                          during manual PEA selection mode (step 2).
+    assigned_roles:       Role strings (Profesion column) already committed to
+                          the frescos/miniflete vehicles — used to derive the
+                          remaining pool so transit times are computed only for
+                          staff who will actually travel to the meeting point.
+    meeting_point_lat/lng: Original PE coordinates — used as the transit-time
+                          baseline so the InfoWindow can show time savings vs
+                          the existing meeting point.
+    """
+    lat:               float
+    lng:               float
+    assigned_roles:    list[str]
+    meeting_point_lat: float
+    meeting_point_lng: float
+
+
+@app.post(
+    "/pea-place-info",
+    summary="Get place info and transit metrics for a manually clicked PEA location",
+    description=(
+        "Called when the user clicks a point on the map during manual PEA mode "
+        "(step 2).  Geocodes staff, builds the remaining pool, performs a Places "
+        "API nearby search (300 m, transit hubs) and a Distance Matrix transit "
+        "call (employee homes → clicked point + original PE) so the frontend "
+        "InfoWindow can show the place name, address, and per-employee time savings."
+    ),
+)
+def endpoint_pea_place_info(body: PeaPlaceInfoRequest):
+    """
+    Workflow:
+      1. Read Excel + geocode all staff so remaining-pool employees have coords.
+      2. Build the remaining pool by removing already-assigned roles.
+      3. Call pea_place_info() with the clicked coordinates, remaining pool,
+         and the original PE coordinates as the comparison baseline.
+    """
+    data = _load_excel()
+    geocode_staff(data["staff"])
+
+    pool_result   = get_remaining_pool(data["staff"], body.assigned_roles)
+    remaining     = pool_result.get("remaining_pool", [])
+    meeting_point = {"lat": body.meeting_point_lat, "lng": body.meeting_point_lng}
+
+    return pea_place_info(body.lat, body.lng, remaining, meeting_point)

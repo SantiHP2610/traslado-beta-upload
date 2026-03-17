@@ -953,6 +953,171 @@ def pickup_place_info(lat: float, lng: float) -> dict:
     return result
 
 
+def pea_place_info(
+    lat: float,
+    lng: float,
+    remaining_pool: list[dict],
+    meeting_point: dict,
+) -> dict:
+    """
+    Returns display info and transit metrics for a point the user manually
+    clicked on the map during PEA selection mode (step 2).
+
+    Used by POST /pea-place-info.  The backend builds the remaining pool and
+    passes it here; this function owns all API calls and metric computation.
+
+    API calls:
+      1. Geocoding reverse geocode — human-readable address for the clicked point.
+      2. Places API searchNearby (300 m, transit hub types) — named place if one
+         is within the search radius; no place is fine, address is enough.
+      3. Distance Matrix transit — N origins (employee homes) × 2 destinations
+         (clicked candidate + original PE) in one call to compute time savings.
+
+    Parameters:
+        lat (float):           Latitude of the clicked point.
+        lng (float):           Longitude of the clicked point.
+        remaining_pool (list): Employees with "coordinates" key that are NOT
+                               already assigned to the frescos vehicle.
+        meeting_point (dict):  {"lat": float, "lng": float} — the original PE
+                               used as the comparison baseline.
+
+    Returns:
+        dict: {
+            "lat":           float,
+            "lng":           float,
+            "name":          str | None,
+            "address":       str,
+            "primary_type":  str | None,
+            "opening_hours": list[str],
+            "staff_metrics": [
+                {
+                    "employee_name":            str,
+                    "transit_to_candidate_min": float,
+                    "transit_to_pe_min":        float,
+                    "time_saved_min":           float,
+                },
+                ...  # one entry per remaining-pool employee with valid coords
+            ]
+        }
+    """
+    result = {
+        "lat":           lat,
+        "lng":           lng,
+        "name":          None,
+        "address":       f"{lat:.6f}, {lng:.6f}",  # fallback if geocoding fails
+        "primary_type":  None,
+        "opening_hours": [],
+        "staff_metrics": [],
+    }
+
+    # ── 1. Reverse geocode ──────────────────────────────────────────────────
+    cache_key_geo = ("reverse_geocode", round(lat, 5), round(lng, 5))
+    geo_cached = cache_get("pea_place_info", cache_key_geo)
+    if geo_cached is not None:
+        geo_data = geo_cached["data"]
+    else:
+        try:
+            geo_resp = httpx.get(
+                _GEOCODING_URL,
+                params={"latlng": f"{lat},{lng}", "key": GOOGLE_MAPS_API_KEY},
+            )
+            geo_resp.raise_for_status()
+            geo_data = geo_resp.json()
+            cache_put("pea_place_info", geo_data, *cache_key_geo)
+        except Exception:
+            geo_data = {}
+
+    if geo_data.get("status") == "OK" and geo_data.get("results"):
+        result["address"] = geo_data["results"][0].get("formatted_address", result["address"])
+
+    # ── 2. Places API searchNearby (300m, transit hubs) ─────────────────────
+    places_body = {
+        "locationRestriction": {
+            "circle": {
+                "center":  {"latitude": lat, "longitude": lng},
+                "radius":  _PLACES_SEARCH_RADIUS,
+            }
+        },
+        "includedTypes":  _PEA_PLACE_TYPES,
+        "maxResultCount": 1,
+    }
+    cache_key_places = ("pea_nearby_click", round(lat, 5), round(lng, 5))
+    places_cached = cache_get("pea_place_info", cache_key_places)
+    if places_cached is not None:
+        places_data = places_cached["data"]
+    else:
+        try:
+            headers = {
+                "X-Goog-Api-Key":   GOOGLE_MAPS_API_KEY,
+                "X-Goog-FieldMask": (
+                    "places.displayName,"
+                    "places.formattedAddress,"
+                    "places.location,"
+                    "places.primaryType,"
+                    "places.currentOpeningHours"
+                ),
+            }
+            places_resp = httpx.post(_PLACES_NEARBY_URL, json=places_body, headers=headers)
+            places_resp.raise_for_status()
+            places_data = places_resp.json()
+            cache_put("pea_place_info", places_data, *cache_key_places)
+        except Exception:
+            places_data = {}
+
+    places = places_data.get("places", [])
+    if places:
+        p = places[0]
+        display_name = p.get("displayName", {})
+        result["name"] = display_name.get("text") if isinstance(display_name, dict) else None
+        result["primary_type"] = p.get("primaryType")
+        # Prefer the place's own formatted address over the reverse-geocode result —
+        # it is usually more precise for a named transit stop.
+        if p.get("formattedAddress"):
+            result["address"] = p["formattedAddress"]
+        hours = p.get("currentOpeningHours", {})
+        result["opening_hours"] = hours.get("weekdayDescriptions", [])
+
+    # ── 3. Distance Matrix transit: employee homes → [candidate, PE] ─────────
+    # Only employees with valid coordinates are included.  Invalid entries are
+    # silently skipped — the InfoWindow still shows the place info.
+    employees_with_coords = [
+        emp for emp in remaining_pool
+        if emp.get("coordinates") and emp["coordinates"].get("lat") is not None
+    ]
+    if employees_with_coords:
+        origins = [emp["coordinates"] for emp in employees_with_coords]
+        destinations = [
+            {"lat": lat,                    "lng": lng},                   # [0] candidate
+            {"lat": meeting_point["lat"],   "lng": meeting_point["lng"]},  # [1] original PE
+        ]
+        try:
+            dm   = calculate_distances(origins, destinations, mode="transit")
+            rows = dm.get("rows", [])
+            for i, emp in enumerate(employees_with_coords):
+                if i >= len(rows):
+                    break
+                elements = rows[i].get("elements", [])
+                if len(elements) < 2:
+                    continue
+                el_cand = elements[0]
+                el_pe   = elements[1]
+                if el_cand.get("status") != "OK" or el_pe.get("status") != "OK":
+                    continue
+                transit_to_cand = el_cand["duration"]["value"] / 60.0
+                transit_to_pe   = el_pe["duration"]["value"] / 60.0
+                result["staff_metrics"].append({
+                    "employee_name":            f"{emp.get('Nombre', '')} {emp.get('Apellido', '')}".strip(),
+                    "transit_to_candidate_min": round(transit_to_cand, 1),
+                    "transit_to_pe_min":        round(transit_to_pe, 1),
+                    "time_saved_min":           round(transit_to_pe - transit_to_cand, 1),
+                })
+        except Exception:
+            # Transit evaluation is best-effort; place info is still useful.
+            pass
+
+    return result
+
+
 def recalculate_route_with_pickup(
     driver_coords:  dict,
     pickup_point:   dict,
