@@ -390,9 +390,10 @@ export default function AppMap() {
               title={`Pickup: ${state.assignments.pickup_place.place_name}`}
             >
               <Pin
-                background="#FFC107"
-                borderColor="#e6a800"
-                glyphColor="#1a1a1a"
+                background="#7B1FA2"
+                borderColor="#ffffff"
+                glyphColor="#ffffff"
+                scale={1.4}
               />
             </AdvancedMarker>
           )}

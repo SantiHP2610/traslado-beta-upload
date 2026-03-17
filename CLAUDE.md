@@ -273,7 +273,8 @@ State in `appState.jsx`: `useReducer` + split contexts (state + dispatch, preven
 | Uber passengers | Blue (unassigned) | Grey #9E9E9E | Grey #9E9E9E |
 | Frescos-assigned employees | #B0C4DE faded blue, opacity 0.6, non-interactive, "Asignado al Vehículo QH" | same | same |
 | Event venue | Red #EA4335 (always) | same | same |
-| Pickup employee/venue | #FFC107 amber (always) | same | same |
+| Pickup passengers | #7B1FA2 purple (always) | same | same |
+| Pickup point marker | #7B1FA2 purple, 1.4× scale, white ring border (always) | same | same |
 
 - **"Vehículo QH"** replaces "camioneta propia" in UI display (backend value unchanged).
 - **Vehicle label**: "{vehicle_description} de {Nombre} {Apellido}" everywhere.

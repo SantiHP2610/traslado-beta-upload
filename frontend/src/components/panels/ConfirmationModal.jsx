@@ -291,7 +291,7 @@ export default function ConfirmationModal() {
                       key={fullName(emp)}
                       name={fullName(emp)}
                       role={emp.Profesion}
-                      color="bg-yellow-400"
+                      color="bg-[#7B1FA2]"
                     />
                   ))}
                   {pickupPlace?.place_address && (

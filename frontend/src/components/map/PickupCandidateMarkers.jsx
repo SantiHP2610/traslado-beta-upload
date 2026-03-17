@@ -10,8 +10,8 @@
  * PickupCandidateMarkers is imported in AppMap and placed inside <Map>.
  *
  * ── Color and scale ──────────────────────────────────────────────────────────
- * Markers use #FFC107 amber at 0.8× scale.  Same colour family as the confirmed
- * pickup star so the user recognises them as "pickup candidates", but visually
+ * Markers use #7B1FA2 purple at 0.8× scale.  Same colour family as the confirmed
+ * pickup point so the user recognises them as "pickup candidates", but visually
  * smaller so they don't compete with staff markers.
  *
  * ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -46,9 +46,9 @@ export default function PickupCandidateMarkers() {
             onClick={() => setOpenIdx(openIdx === i ? null : i)}
           >
             <Pin
-              background="#FFC107"
-              borderColor="#e6a800"
-              glyphColor="#1a1a1a"
+              background="#7B1FA2"
+              borderColor="#4a0072"
+              glyphColor="#ffffff"
               scale={0.8}
             />
           </AdvancedMarker>

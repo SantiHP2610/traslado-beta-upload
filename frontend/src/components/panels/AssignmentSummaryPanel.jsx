@@ -251,7 +251,7 @@ export default function AssignmentSummaryPanel({
                     key={fullName(emp)}
                     name={fullName(emp)}
                     profesion={emp.Profesion}
-                    dotColor="#fbbf24"
+                    dotColor="#7B1FA2"
                   />
                 ))}
                 {pickupPlace?.place_address && (

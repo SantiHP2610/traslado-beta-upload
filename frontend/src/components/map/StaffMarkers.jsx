@@ -13,7 +13,7 @@
  * Blue   (#4285F4)        → unassigned (default, steps 1-2, unassigned in step 3)
  * Green  (#34A853)        → driver or personal car passenger
  * Grey   (#9E9E9E)        → Uber passenger
- * Yellow (#FFC107)        → pickup employee (picked up on the route before the PE)
+ * Purple (#7B1FA2)        → pickup passenger (assigned to the pickup point on the route)
  * Washed blue (#B0C4DE)   → frescos-assigned (step 3+); 0.6 opacity, no actions
  *
  * ── Marker edit mode ─────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ function getMarkerColors(employee, assignments, chosenScenarioColor) {
                   : { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
 
   if (sameEmployee(assignments.driver, employee))                                    return carColors
-  if (assignments.pickup_passengers?.some((p) => sameEmployee(p, employee)))        return { background: '#FFC107', borderColor: '#e6a800', glyphColor: '#1a1a1a' }
+  if (assignments.pickup_passengers?.some((p) => sameEmployee(p, employee)))        return { background: '#7B1FA2', borderColor: '#4a0072', glyphColor: '#ffffff' }
   if (assignments.car_passengers?.some((p) => sameEmployee(p, employee)))           return carColors
   if (assignments.uber_passengers?.some((p) => sameEmployee(p, employee))) return { background: '#9E9E9E', borderColor: '#757575', glyphColor: '#ffffff' }
 

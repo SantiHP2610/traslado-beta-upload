@@ -424,7 +424,7 @@ export default function FinalOutputBlocks() {
                         </p>
                         {assignments.pickup_passengers.map((emp) => (
                           <div key={`${emp.Nombre} ${emp.Apellido}`} className="flex items-center gap-1.5">
-                            <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />
+                            <span className="h-2 w-2 rounded-full bg-[#7B1FA2] shrink-0" />
                             <span className="text-xs">
                               {`${emp.Nombre} ${emp.Apellido}`}
                               {emp.Profesion ? ` — ${emp.Profesion}` : ''}
