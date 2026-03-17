@@ -106,9 +106,10 @@ Independent from Step 1. Triggered when "estacion de fuegos" NOT contracted AND 
 If triggered: assign 1 person by role hierarchy → removed from pool.
 
 ### Step 3 — Departure times from CP
-`calculate_departure_time(event_time_str, travel_seconds, event_duration_hours, picada_guests)`.
+`calculate_departure_time(event_time_str, travel_seconds, event_duration_hours, picada_guests, loading_time_minutes)`.
 CP address/coords are constants in `config.py`.
-Formula: departure = event_time − DEPARTURE_PREP_HOURS − travel_time(ceil) − DEPARTURE_BUFFER_MINUTES − LOADING_TIME_MINUTES.
+Formula: departure = event_time − DEPARTURE_PREP_HOURS − travel_time(ceil) − DEPARTURE_BUFFER_MINUTES − loading_time_minutes.
+`loading_time_minutes` defaults to `LOADING_TIME_MINUTES = 50` from config.py but is manager-adjustable: the confirmation modal shows a number input pre-filled with 50 so the manager can change it before clicking Confirmar. The confirmed value is sent to POST /final-output in the `loading_time_minutes` field and is included in the returned `departure_breakdown`.
 If duration ≥ LONG_EVENT_DURATION_THRESHOLD (8h) OR picada_guests ≥ PICADA_GUEST_THRESHOLD (100) → subtract LONG_EVENT_EXTRA_HOURS (2h).
 Both vehicles always depart at the same time.
 
@@ -158,8 +159,12 @@ User sees candidates on map, decides PE or PEA.
 `find_pickup_candidate(route_polyline, employee, meeting_point)`: ON DEMAND via context menu.
 1. Find closest polyline vertex to employee (cross_point)
 2. Distance Matrix transit: warnings if transit > PICKUP_MAX_TRANSIT_MINUTES (30min) or savings < PICKUP_MIN_TIME_SAVING_MINUTES (20min) — informational only
-3. Places API around cross_point, radius PICKUP_MAX_DETOUR_METERS (300m), filter by proximity to polyline
-4. Return top PICKUP_TOP_CANDIDATES (3)
+3. Two Places API calls around cross_point, radius PICKUP_MAX_DETOUR_METERS (300m):
+   - `searchNearby` with `PICKUP_PLACE_TYPES = ["gas_station"]` — all gas stations included
+   - `searchText` with `PICKUP_KEYWORD = "McDonald's"` — only branches with "24 hours" in opening hours kept
+   Results merged and deduplicated by address. Both cached under namespace "pickup_places".
+4. On-route filter (min distance to any polyline vertex ≤ PICKUP_MAX_DETOUR_METERS)
+5. Return top PICKUP_TOP_CANDIDATES (3)
 
 Uber vehicles do NOT get pickup points.
 

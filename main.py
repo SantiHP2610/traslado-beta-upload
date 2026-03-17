@@ -1361,14 +1361,16 @@ class ConfirmAssignmentsRequest(BaseModel):
     Extends ValidateAssignmentsRequest with the fields that are only known once
     the user has made their final map decisions:
 
-    chosen_meeting_point: the PE or PEA the user confirmed on the map.
-    has_own_van:          whether the company van was available (needed to call
-                          determine_frescos_vehicle() and recover the exact
-                          vehicle name for the summary).
-    event_duration_hours: planned length of the event in hours; required to
-                          compute the CP departure time via calculate_departure_time().
-    picada_guests:        guest count for any picada service; required for the
-                          same calculation.  Pass 0 if none was contracted.
+    chosen_meeting_point:  the PE or PEA the user confirmed on the map.
+    has_own_van:           whether the company van was available (needed to call
+                           determine_frescos_vehicle() and recover the exact
+                           vehicle name for the summary).
+    event_duration_hours:  planned length of the event in hours; required to
+                           compute the CP departure time via calculate_departure_time().
+    picada_guests:         guest count for any picada service; required for the
+                           same calculation.  Pass 0 if none was contracted.
+    loading_time_minutes:  manager-confirmed loading time at the CP (minutes).
+                           Defaults to 50 (the config.py default) when not sent.
     """
     assignments:          AssignmentsInput
     assigned_roles:       list[str]
@@ -1376,6 +1378,7 @@ class ConfirmAssignmentsRequest(BaseModel):
     has_own_van:          bool
     event_duration_hours: float
     picada_guests:        int
+    loading_time_minutes: int = 50
 
 
 @app.post(
@@ -1612,6 +1615,7 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
         travel_seconds=travel_seconds,
         event_duration_hours=body.event_duration_hours,
         picada_guests=body.picada_guests,
+        loading_time_minutes=body.loading_time_minutes,
     )
 
     # -------------------------------------------------------------------------
@@ -1689,11 +1693,14 @@ class FinalOutputRequest(BaseModel):
     assigned_roles:       roles already committed to the frescos vehicle.
     chosen_meeting_point: the PE or PEA the user confirmed on the map.
     has_own_van:          whether the company van was available for this event.
+    loading_time_minutes: manager-confirmed loading time at the CP (minutes).
+                          Defaults to 50 (the config.py default) when not sent.
     """
     assignments:          AssignmentsInput
     assigned_roles:       list[str]
     chosen_meeting_point: MeetingPointInput
     has_own_van:          bool
+    loading_time_minutes: int = 50
 
 
 @app.post(
@@ -1859,6 +1866,7 @@ def endpoint_final_output(body: FinalOutputRequest):
         travel_seconds=cp_element["duration"]["value"],
         event_duration_hours=event_duration_hours,
         picada_guests=picada_guests_cp,
+        loading_time_minutes=body.loading_time_minutes,
     )
 
     # -------------------------------------------------------------------------

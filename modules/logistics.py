@@ -40,6 +40,7 @@ from config import (
     PICKUP_MAX_DETOUR_METERS,
     PICKUP_MAX_TRANSIT_MINUTES,
     PICKUP_MIN_TIME_SAVING_MINUTES,
+    PICKUP_KEYWORD,
     PICKUP_PLACE_TYPES,
     PICKUP_TOP_CANDIDATES,
     SECOND_MINIFLETE_CONDITIONS,
@@ -439,6 +440,7 @@ def calculate_departure_time(
     travel_seconds: int,
     event_duration_hours: float,
     picada_guests: int,
+    loading_time_minutes: int = LOADING_TIME_MINUTES,
 ) -> dict:
     """
     Calculates the departure time from the CP (Centro de Producción) for the
@@ -452,7 +454,7 @@ def calculate_departure_time(
                     − DEPARTURE_PREP_HOURS      (setup time at venue)
                     − travel_minutes            (CP → event, rounded up)
                     − DEPARTURE_BUFFER_MINUTES  (last-minute margin)
-                    − LOADING_TIME_MINUTES      (loading frescos at CP)
+                    − loading_time_minutes      (manager-confirmed loading time at CP)
                     [ − LONG_EVENT_EXTRA_HOURS  (if event is long or has picada) ]
 
     The extra prep block is applied when EITHER of these is true (OR logic):
@@ -463,15 +465,20 @@ def calculate_departure_time(
     only once; both reasons are reported in the returned list.
 
     Parameters:
-        event_time_str      (str):   Event start time as "HH:MM", read from
-                                     the 'hora_inicio' field of the Excel.
-        travel_seconds      (int):   Driving time in seconds from the CP to
-                                     the event venue, as returned by the
-                                     Distance Matrix API.
-        event_duration_hours (float): Total planned duration of the event in
-                                     hours (used to trigger extra prep time).
-        picada_guests       (int):   Number of guests for the picada service;
-                                     pass 0 if no picada is contracted.
+        event_time_str        (str):   Event start time as "HH:MM", read from
+                                       the 'hora_inicio' field of the Excel.
+        travel_seconds        (int):   Driving time in seconds from the CP to
+                                       the event venue, as returned by the
+                                       Distance Matrix API.
+        event_duration_hours  (float): Total planned duration of the event in
+                                       hours (used to trigger extra prep time).
+        picada_guests         (int):   Number of guests for the picada service;
+                                       pass 0 if no picada is contracted.
+        loading_time_minutes  (int):   Manager-confirmed loading time at the CP
+                                       in minutes.  Defaults to LOADING_TIME_MINUTES
+                                       from config.py (50 min) but the confirmation
+                                       modal lets the manager adjust it before
+                                       final output is calculated.
 
     Returns:
         dict: {
@@ -481,6 +488,7 @@ def calculate_departure_time(
                                                      # may contain "long event", "picada", or both;
                                                      # empty list if extra prep was not applied
             "total_minutes_before_event": int,       # total lead time in minutes
+            "loading_time_minutes":      int,        # actual loading time used (as confirmed)
         }
     """
     # Parse the event start time string into a datetime object.
@@ -492,12 +500,13 @@ def calculate_departure_time(
     # always better than arriving late at an event venue.
     travel_minutes = math.ceil(travel_seconds / 60)
 
-    # Sum all fixed deductions that always apply
+    # Sum all fixed deductions that always apply.
+    # loading_time_minutes is manager-confirmed — may differ from the config default.
     total_minutes = (
         DEPARTURE_PREP_HOURS * 60   # hours → minutes
         + travel_minutes
         + DEPARTURE_BUFFER_MINUTES
-        + LOADING_TIME_MINUTES
+        + loading_time_minutes
     )
 
     # -------------------------------------------------------------------------
@@ -531,6 +540,7 @@ def calculate_departure_time(
         "extra_prep_applied":         extra_prep_applied,
         "extra_prep_reason":          extra_prep_reason,
         "total_minutes_before_event": total_minutes,
+        "loading_time_minutes":       loading_time_minutes,
     }
 
 
@@ -1599,50 +1609,90 @@ def find_pickup_candidate(
     # of the cross-point.  The radius is tight so that any found venue is
     # reachable from the road without a significant turn-off by the driver.
 
-    # --- Cache check ---
-    _ck = (cross_point["lat"], cross_point["lng"],
-           PICKUP_MAX_DETOUR_METERS, tuple(PICKUP_PLACE_TYPES))
-    cached_places = cache_get("pickup_places", *_ck)
-    if cached_places is not None:
-        raw_places = cached_places["data"]
-    else:
-        places_body = {
-            "includedTypes": PICKUP_PLACE_TYPES,
-            "locationRestriction": {
-                "circle": {
-                    "center": {
-                        "latitude":  cross_point["lat"],
-                        "longitude": cross_point["lng"],
-                    },
-                    # The API expects a float; cast in case PICKUP_MAX_DETOUR_METERS
-                    # is defined as an int in config.py (float() is a no-op on float).
-                    "radius": float(PICKUP_MAX_DETOUR_METERS),
-                }
-            },
-        }
-        places_headers = {
-            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-            # Request only the fields we use — Places API (New) charges per
-            # field category, so omitting unused fields reduces cost.
-            # currentOpeningHours gives the weekly schedule so the manager can
-            # check whether the venue is open at the event time before confirming.
-            "X-Goog-FieldMask": (
-                "places.displayName,"
-                "places.location,"
-                "places.types,"
-                "places.formattedAddress,"
-                "places.currentOpeningHours"
-            ),
-        }
+    # ── Two-call Places API strategy ──────────────────────────────────────
+    # Call 1: searchNearby for gas stations (all included — open 24hs by nature).
+    # Call 2: searchText for McDonald's — only branches with "24 hours" in their
+    #         opening hours are kept, since not all locations are 24hs.
+    # Results are merged and deduplicated by formatted address before filtering.
 
-        places_response = httpx.post(
+    _FIELD_MASK = (
+        "places.displayName,"
+        "places.location,"
+        "places.types,"
+        "places.formattedAddress,"
+        "places.currentOpeningHours"
+    )
+    _circle = {
+        "center": {
+            "latitude":  cross_point["lat"],
+            "longitude": cross_point["lng"],
+        },
+        # The API expects a float; cast in case PICKUP_MAX_DETOUR_METERS
+        # is defined as an int in config.py (float() is a no-op on float).
+        "radius": float(PICKUP_MAX_DETOUR_METERS),
+    }
+
+    # --- Call 1: gas stations (searchNearby) ---
+    _ck_gas = (cross_point["lat"], cross_point["lng"],
+               PICKUP_MAX_DETOUR_METERS, "gas_station")
+    cached_gas = cache_get("pickup_places", *_ck_gas)
+    if cached_gas is not None:
+        raw_gas = cached_gas["data"]
+    else:
+        gas_response = httpx.post(
             "https://places.googleapis.com/v1/places:searchNearby",
-            json=places_body,
-            headers=places_headers,
+            json={
+                "includedTypes":      PICKUP_PLACE_TYPES,
+                "locationRestriction": {"circle": _circle},
+            },
+            headers={
+                "X-Goog-Api-Key":  GOOGLE_MAPS_API_KEY,
+                "X-Goog-FieldMask": _FIELD_MASK,
+            },
         )
-        places_response.raise_for_status()
-        raw_places = places_response.json().get("places", [])
-        cache_put("pickup_places", raw_places, *_ck)
+        gas_response.raise_for_status()
+        raw_gas = gas_response.json().get("places", [])
+        cache_put("pickup_places", raw_gas, *_ck_gas)
+
+    # --- Call 2: McDonald's (searchText) — 24hs filter applied before caching ---
+    _ck_kw = (cross_point["lat"], cross_point["lng"],
+              PICKUP_MAX_DETOUR_METERS, "keyword", PICKUP_KEYWORD)
+    cached_kw = cache_get("pickup_places", *_ck_kw)
+    if cached_kw is not None:
+        raw_kw = cached_kw["data"]
+    else:
+        kw_response = httpx.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            json={
+                "textQuery":           PICKUP_KEYWORD,
+                "locationRestriction": {"circle": _circle},
+            },
+            headers={
+                "X-Goog-Api-Key":  GOOGLE_MAPS_API_KEY,
+                "X-Goog-FieldMask": _FIELD_MASK,
+            },
+        )
+        kw_response.raise_for_status()
+        # Keep only McDonald's that are open 24 hours — check any weekday
+        # description line for the string "24 hours" (case-insensitive).
+        raw_kw = [
+            p for p in kw_response.json().get("places", [])
+            if any(
+                "24 hours" in desc.lower()
+                for desc in p.get("currentOpeningHours", {})
+                              .get("weekdayDescriptions", [])
+            )
+        ]
+        cache_put("pickup_places", raw_kw, *_ck_kw)
+
+    # --- Merge and deduplicate by formatted address ---
+    _seen_addresses: set[str] = set()
+    raw_places: list[dict] = []
+    for p in raw_gas + raw_kw:
+        addr = p.get("formattedAddress", "")
+        if addr not in _seen_addresses:
+            _seen_addresses.add(addr)
+            raw_places.append(p)
 
     # ── Step 4: on-route filter ───────────────────────────────────────────
     #

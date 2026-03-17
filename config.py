@@ -56,7 +56,9 @@ CHARTER_THRESHOLD = 8
 # PICADA_THRESHOLD_GUESTS: guest count above which a picada is considered
 #   mandatory and the shorter prep window applies.
 DEPARTURE_BUFFER_MINUTES = 10
-LOADING_TIME_MINUTES = 50
+LOADING_TIME_MINUTES = 50  # Default suggested loading time at the CP (minutes).
+                            # Shown as editable in the confirmation modal — the manager
+                            # confirms or adjusts before final output is calculated.
 EVENT_PREP_HOURS = 4
 EVENT_PREP_HOURS_WITH_PICADA = 2
 PICADA_THRESHOLD_GUESTS = 100
@@ -124,11 +126,14 @@ PICKUP_MAX_TRANSIT_MINUTES = 30     # threshold used to populate the "transit_wa
 PICKUP_TOP_CANDIDATES = 3           # number of top place options returned per pickup candidate,
                                     # ordered by distance to cross-point ascending
 
-# Place types searched by Places API for pickup point candidates.
-# "gas_station" targets 24hs service stations on main roads.
-# "restaurant" is used as a proxy for McDonald's 24hs — Places API has no
-# specific type for fast food chains. Refine post-deployment if needed.
+# Place types searched by the first pickup Places API call (searchNearby).
+# Gas stations are included unconditionally — they are open 24hs by nature.
 PICKUP_PLACE_TYPES = ["gas_station"]
+
+# Keyword for the second pickup Places API call (searchText).
+# McDonald's locations open 24hs are included; non-24hr branches are filtered
+# by checking currentOpeningHours.weekdayDescriptions for "24 hours".
+PICKUP_KEYWORD = "McDonald's"
 
 # --- Production Center (CP — Centro de Producción) ---
 # Physical address where frescos and equipment are loaded before each event.
@@ -144,7 +149,9 @@ CP_LNG = -58.56475066030458
 # OR picada guests >= PICADA_GUEST_THRESHOLD: subtract LONG_EVENT_EXTRA_HOURS too.
 DEPARTURE_PREP_HOURS = 4
 DEPARTURE_BUFFER_MINUTES = 10
-LOADING_TIME_MINUTES = 50
+LOADING_TIME_MINUTES = 50  # Default suggested loading time at the CP (minutes).
+                            # Shown as editable in the confirmation modal — the manager
+                            # confirms or adjusts before final output is calculated.
 LONG_EVENT_EXTRA_HOURS = 2
 LONG_EVENT_DURATION_THRESHOLD = 8   # event duration in hours that triggers extra prep
 PICADA_GUEST_THRESHOLD = 100        # guest count that triggers extra prep

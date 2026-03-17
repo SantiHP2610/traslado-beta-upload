@@ -97,6 +97,10 @@ function NameRow({ name, role, color = 'bg-slate-400' }) {
 export default function ConfirmationModal() {
   const { state, dispatch } = useAppState()
   const [confirming, setConfirming] = useState(false)
+  // Loading time is editable by the manager before confirming.
+  // Pre-filled with the config default (50 min); stored locally — only
+  // relevant at confirmation time, not needed in global state.
+  const [loadingTimeMinutes, setLoadingTimeMinutes] = useState(50)
 
   const {
     assignments,
@@ -146,7 +150,10 @@ export default function ConfirmationModal() {
     dispatch({ type: ACTIONS.SET_ERROR, payload: null })
 
     try {
-      const body   = buildBody(assignments, frescosResult, chosenMeetingPoint, staff)
+      const body   = {
+        ...buildBody(assignments, frescosResult, chosenMeetingPoint, staff),
+        loading_time_minutes: loadingTimeMinutes,
+      }
       const result = await finalOutput(body)
       dispatch({ type: ACTIONS.SET_FINAL_OUTPUT, payload: result })
       dispatch({ type: ACTIONS.SET_SHOW_OUTPUT,  payload: true  })
@@ -336,6 +343,39 @@ export default function ConfirmationModal() {
               <p className="text-xs text-amber-700">Transporte alternativo a coordinar</p>
             </div>
           )}
+
+          {/* Section 6: Loading time at CP */}
+          <div className="space-y-1.5">
+            <SectionTitle>Tiempo de carga en CP</SectionTitle>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number"
+                min={0}
+                max={240}
+                step={5}
+                value={loadingTimeMinutes}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10)
+                  if (!isNaN(v) && v >= 0) setLoadingTimeMinutes(v)
+                }}
+                disabled={confirming}
+                style={{
+                  width:        72,
+                  padding:      '5px 8px',
+                  border:       '1px solid #d1d5db',
+                  borderRadius: 6,
+                  fontSize:     13,
+                  textAlign:    'right',
+                  outline:      'none',
+                  opacity:      confirming ? 0.6 : 1,
+                }}
+              />
+              <span style={{ fontSize: 13, color: '#374151' }}>min</span>
+            </div>
+            <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
+              Ajustá según la cantidad de comensales y tipo de evento
+            </p>
+          </div>
 
           {/* Error */}
           {state.error && (
