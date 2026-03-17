@@ -1664,8 +1664,11 @@ def find_pickup_candidate(
         kw_response = httpx.post(
             "https://places.googleapis.com/v1/places:searchText",
             json={
-                "textQuery":           PICKUP_KEYWORD,
-                "locationRestriction": {"circle": _circle},
+                "textQuery":    PICKUP_KEYWORD,
+                # searchText uses locationBias (soft constraint), not
+                # locationRestriction — the latter only supports rectangle
+                # for text search; passing circle there returns HTTP 400.
+                "locationBias": {"circle": _circle},
             },
             headers={
                 "X-Goog-Api-Key":  GOOGLE_MAPS_API_KEY,
@@ -1675,11 +1678,13 @@ def find_pickup_candidate(
         kw_response.raise_for_status()
         # Keep only McDonald's that are open 24 hours — check any weekday
         # description line for the string "24 hours" (case-insensitive).
+        # Use `or {}` so that an explicit null currentOpeningHours value
+        # (instead of a missing key) doesn't raise AttributeError.
         raw_kw = [
             p for p in kw_response.json().get("places", [])
             if any(
                 "24 hours" in desc.lower()
-                for desc in p.get("currentOpeningHours", {})
+                for desc in (p.get("currentOpeningHours") or {})
                               .get("weekdayDescriptions", [])
             )
         ]

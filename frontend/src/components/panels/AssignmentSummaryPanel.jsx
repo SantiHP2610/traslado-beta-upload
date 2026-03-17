@@ -220,6 +220,11 @@ export default function AssignmentSummaryPanel({
                 badge="Chofer"
               />
             )}
+            {pickupEmployee && (
+              <p style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', margin: '6px 0 4px 17px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                → PE
+              </p>
+            )}
             {carPassengers.map((emp) => (
               <EmployeeRow
                 key={fullName(emp)}
@@ -228,7 +233,7 @@ export default function AssignmentSummaryPanel({
                 dotColor="#22c55e"
               />
             ))}
-            {carPassengers.length === 0 && (
+            {carPassengers.length === 0 && !pickupEmployee && (
               <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginBottom: 4 }}>
                 Sin pasajeros asignados
               </p>
@@ -236,6 +241,23 @@ export default function AssignmentSummaryPanel({
             <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginTop: 2 }}>
               {carPassengers.length}/4 pasajeros
             </p>
+            {pickupEmployee && (
+              <>
+                <p style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', margin: '6px 0 4px 17px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  → Pickup{pickupPlace ? `: ${pickupPlace.place_name}` : ''}
+                </p>
+                <EmployeeRow
+                  name={fullName(pickupEmployee)}
+                  profesion={pickupEmployee.Profesion}
+                  dotColor="#fbbf24"
+                />
+                {pickupPlace?.place_address && (
+                  <p style={{ fontSize: 12, color: '#6b7280', marginLeft: 17 }}>
+                    {pickupPlace.place_address}
+                  </p>
+                )}
+              </>
+            )}
           </section>
         )}
 
@@ -293,21 +315,8 @@ export default function AssignmentSummaryPanel({
         </section>
 
         {/* ── Pickup section ───────────────────────────────────────────── */}
-        {pickupEmployee ? (
-          <section style={{ marginBottom: 20 }}>
-            <SectionHeader>Pickup en ruta</SectionHeader>
-            <EmployeeRow
-              name={fullName(pickupEmployee)}
-              profesion={pickupEmployee.Profesion}
-              dotColor="#fbbf24"
-            />
-            {pickupPlace && (
-              <p style={{ fontSize: 12, color: '#6b7280', marginLeft: 17 }}>
-                {pickupPlace.place_name}
-              </p>
-            )}
-          </section>
-        ) : hasVehicle && !showSoloChoice && (
+        {/* Pickup employee is displayed inside the vehicle section above when confirmed. */}
+        {!pickupEmployee && hasVehicle && !showSoloChoice && (
           <section style={{ marginBottom: 20 }}>
             <SectionHeader>Pickup en ruta</SectionHeader>
             <button

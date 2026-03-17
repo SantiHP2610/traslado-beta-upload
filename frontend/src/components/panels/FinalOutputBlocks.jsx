@@ -390,6 +390,9 @@ export default function FinalOutputBlocks() {
                 {tb.personal_vehicle?.driver && (
                   <div className="space-y-1">
                     <SectionTitle>Vehículo personal</SectionTitle>
+                    {assignments?.pickup_employee && (
+                      <p className="text-xs text-muted-foreground">Se dirigen al Punto de Encuentro:</p>
+                    )}
                     <div className="flex items-center gap-1.5">
                       <span className="h-2 w-2 rounded-full bg-green-500 shrink-0" />
                       <span className="text-xs">
@@ -413,6 +416,7 @@ export default function FinalOutputBlocks() {
                     {/* Pickup */}
                     {assignments?.pickup_employee && (
                       <div className="pt-0.5 space-y-0.5">
+                        <p className="text-xs text-muted-foreground">Se encuentra en el punto de pickup:</p>
                         <div className="flex items-center gap-1.5">
                           <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />
                           <span className="text-xs">

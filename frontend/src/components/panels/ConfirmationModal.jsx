@@ -267,6 +267,9 @@ export default function ConfirmationModal() {
                   color="bg-green-500"
                 />
               )}
+              {pickupEmployee && carPassengers.length > 0 && (
+                <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">Pasajeros al PE:</p>
+              )}
               {carPassengers.map((emp) => (
                 <NameRow
                   key={fullName(emp)}
@@ -280,6 +283,7 @@ export default function ConfirmationModal() {
               )}
               {pickupEmployee && (
                 <div className="pl-1 space-y-0.5">
+                  <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">Pasajero al punto de pickup:</p>
                   <NameRow
                     name={fullName(pickupEmployee)}
                     role={pickupEmployee.Profesion}
@@ -287,7 +291,8 @@ export default function ConfirmationModal() {
                   />
                   {pickupPlace && (
                     <p className="text-xs text-muted-foreground pl-3.5">
-                      Pickup en {pickupPlace.place_name}
+                      {pickupPlace.place_name}
+                      {pickupPlace.place_address ? ` — ${pickupPlace.place_address}` : ''}
                     </p>
                   )}
                 </div>

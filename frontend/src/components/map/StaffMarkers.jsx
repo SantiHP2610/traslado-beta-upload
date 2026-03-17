@@ -415,6 +415,9 @@ function AssignmentMenuContent({
   const isPickup = sameEmployee(assignments?.pickup_employee, employee)
   const isAssigned = inCar || inUber
 
+  const pickupConfirmed = !!assignments?.pickup_place
+  const pickupSlotFull  = !!assignments?.pickup_employee
+
   const carCount   = assignments?.car_passengers?.length ?? 0
   const carFull    = carCount >= MAX_CAR_PASSENGERS
   const hasVehicle = personalVehicle?.has_personal_vehicle
@@ -481,6 +484,20 @@ function AssignmentMenuContent({
     }
   }
 
+  function handleAssignPickup() {
+    patch({
+      pickup_employee: employee,
+      car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
+      uber_passengers: assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
+    })
+    onClose()
+  }
+
+  function handleRemovePickup() {
+    patch({ pickup_employee: null })
+    onClose()
+  }
+
   return (
     <Card className="min-w-[200px] shadow-none border-0">
       <CardContent className="p-3 space-y-2">
@@ -498,32 +515,47 @@ function AssignmentMenuContent({
 
         {!isDriver && (
           <div className="space-y-1.5">
-            {hasVehicle && !carFull && !inCar && (
-              <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignCar}>
-                Asignar al {peLabel} ({vLabel})
+            {isPickup ? (
+              // Pickup employee: only option is to remove them from the pickup slot.
+              // Keeps pickup_place — the confirmed venue stays available for reassignment.
+              <Button size="sm" variant="ghost" className="w-full text-xs text-destructive hover:text-destructive" onClick={handleRemovePickup}>
+                Quitar del punto de pickup
               </Button>
-            )}
-            {hasVehicle && carFull && !inCar && (
-              <p className="text-xs text-muted-foreground text-center">
-                Vehículo completo ({MAX_CAR_PASSENGERS}/{MAX_CAR_PASSENGERS})
-              </p>
-            )}
-            {hasVehicle && driverRoutes && (
-              <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleFindPickup} disabled={loadingPickup}>
-                {loadingPickup
-                  ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
-                  : 'Buscar pickup en ruta'}
-              </Button>
-            )}
-            {!inUber && (
-              <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignUber}>
-                Asignar a Uber
-              </Button>
-            )}
-            {isAssigned && (
-              <Button size="sm" variant="ghost" className="w-full text-xs text-destructive hover:text-destructive" onClick={handleRemove}>
-                Quitar asignación
-              </Button>
+            ) : (
+              <>
+                {hasVehicle && !carFull && !inCar && (
+                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignCar}>
+                    Asignar al {peLabel} ({vLabel})
+                  </Button>
+                )}
+                {hasVehicle && carFull && !inCar && (
+                  <p className="text-xs text-muted-foreground text-center">
+                    Vehículo completo ({MAX_CAR_PASSENGERS}/{MAX_CAR_PASSENGERS})
+                  </p>
+                )}
+                {pickupConfirmed && !pickupSlotFull && (
+                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignPickup}>
+                    Asignar al Punto de Pickup
+                  </Button>
+                )}
+                {!inUber && (
+                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignUber}>
+                    Asignar a Uber
+                  </Button>
+                )}
+                {!pickupConfirmed && hasVehicle && driverRoutes && (
+                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleFindPickup} disabled={loadingPickup}>
+                    {loadingPickup
+                      ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+                      : 'Buscar pickup en ruta'}
+                  </Button>
+                )}
+                {isAssigned && (
+                  <Button size="sm" variant="ghost" className="w-full text-xs text-destructive hover:text-destructive" onClick={handleRemove}>
+                    Quitar asignación
+                  </Button>
+                )}
+              </>
             )}
           </div>
         )}
