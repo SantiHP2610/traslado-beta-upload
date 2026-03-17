@@ -94,8 +94,9 @@ const initialState = {
   stepHistory: [],     // stack of previous currentStep values; enables STEP_BACK
   loadingStep: null,   // string key of the in-flight step, or null when idle
   error: null,         // last error message surfaced to the user, or null
-  showModal:  false,   // true when the step-4 ConfirmationModal is visible
-  showOutput: false,   // true when the two FinalOutputBlocks are visible
+  showModal:        false,   // true when the step-4 ConfirmationModal is visible
+  showOutput:       false,   // true when the two FinalOutputBlocks are visible
+  manualPickupMode: false,   // true while the user is clicking the map to select a pickup point
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +124,7 @@ export const ACTIONS = {
   CLEAR_COORDINATE_OVERRIDE:      'CLEAR_COORDINATE_OVERRIDE',
   CLEAR_ALL_COORDINATE_OVERRIDES: 'CLEAR_ALL_COORDINATE_OVERRIDES',
   SET_EDITING_MARKER:             'SET_EDITING_MARKER',
+  SET_MANUAL_PICKUP_MODE:    'SET_MANUAL_PICKUP_MODE',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
   STEP_BACK:                 'STEP_BACK',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
@@ -188,6 +190,9 @@ function appReducer(state, action) {
     case ACTIONS.SET_SHOW_OUTPUT:
       return { ...state, showOutput: action.payload }
 
+    case ACTIONS.SET_MANUAL_PICKUP_MODE:
+      return { ...state, manualPickupMode: action.payload }
+
     case ACTIONS.SET_CURRENT_STEP:
       // Push the current step onto the history stack before advancing.
       // This lets STEP_BACK pop it to undo the transition.
@@ -213,7 +218,7 @@ function appReducer(state, action) {
       } else if (state.currentStep >= 3) {
         // Leaving step 3 → step 2: undo passenger assignments; user must
         // re-select the meeting point on the map before re-entering step 3.
-        Object.assign(clearing, { assignments: null, activePickupResult: null, chosenMeetingPoint: null })
+        Object.assign(clearing, { assignments: null, activePickupResult: null, chosenMeetingPoint: null, manualPickupMode: false })
       } else if (state.currentStep >= 2) {
         // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
         // point data so useStepTwo will recompute them if user re-advances.

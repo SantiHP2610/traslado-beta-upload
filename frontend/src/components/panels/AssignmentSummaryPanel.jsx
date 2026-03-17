@@ -17,8 +17,8 @@
  * venue without leaving the assignment context.
  */
 
-import { useAppState }    from '../../state/appState'
-import PickupResultPanel  from './PickupResultPanel'
+import { useAppState, ACTIONS } from '../../state/appState'
+import PickupResultPanel        from './PickupResultPanel'
 
 function fullName(emp) {
   return `${emp.Nombre} ${emp.Apellido}`
@@ -112,8 +112,8 @@ export default function AssignmentSummaryPanel({
   unassigned  = [],
   assignments = null,
 }) {
-  const { state } = useAppState()
-  const { error, activePickupResult } = state
+  const { state, dispatch } = useAppState()
+  const { error, activePickupResult, manualPickupMode } = state
   const pendingEmployee = assignments?.pending_employee ?? null
 
   return (
@@ -148,6 +148,41 @@ export default function AssignmentSummaryPanel({
 
       {/* ── Scrollable content ──────────────────────────────────────────── */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px' }}>
+
+        {/* ── Manual pickup mode banner ────────────────────────────────── */}
+        {manualPickupMode && (
+          <div
+            style={{
+              marginBottom: 14,
+              background:   '#eff6ff',
+              border:       '1px solid #93c5fd',
+              borderLeft:   '4px solid #3b82f6',
+              borderRadius: 6,
+              padding:      '10px 12px',
+            }}
+          >
+            <p style={{ fontSize: 12, color: '#1d4ed8', margin: '0 0 6px', fontWeight: 600 }}>
+              Modo pickup activo
+            </p>
+            <p style={{ fontSize: 12, color: '#1e40af', margin: '0 0 8px', lineHeight: 1.5 }}>
+              Hacé click en un punto sobre la ruta para elegirlo como pickup.
+            </p>
+            <button
+              onClick={() => dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: false })}
+              style={{
+                fontSize:   12,
+                color:      '#2563eb',
+                background: 'none',
+                border:     'none',
+                padding:    0,
+                cursor:     'pointer',
+                textDecoration: 'underline',
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
 
         {/* ── Inline pickup result panel ──────────────────────────────── */}
         {activePickupResult && (
@@ -258,7 +293,7 @@ export default function AssignmentSummaryPanel({
         </section>
 
         {/* ── Pickup section ───────────────────────────────────────────── */}
-        {pickupEmployee && (
+        {pickupEmployee ? (
           <section style={{ marginBottom: 20 }}>
             <SectionHeader>Pickup en ruta</SectionHeader>
             <EmployeeRow
@@ -271,6 +306,33 @@ export default function AssignmentSummaryPanel({
                 {pickupPlace.place_name}
               </p>
             )}
+          </section>
+        ) : hasVehicle && !showSoloChoice && (
+          <section style={{ marginBottom: 20 }}>
+            <SectionHeader>Pickup en ruta</SectionHeader>
+            <button
+              onClick={() => dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: true })}
+              disabled={manualPickupMode}
+              style={{
+                display:      'flex',
+                alignItems:   'center',
+                gap:          6,
+                fontSize:     12,
+                color:        manualPickupMode ? '#9ca3af' : '#374151',
+                background:   '#f9fafb',
+                border:       '1px solid #e5e7eb',
+                borderRadius: 6,
+                padding:      '7px 12px',
+                cursor:       manualPickupMode ? 'default' : 'pointer',
+                width:        '100%',
+                transition:   'background 150ms ease',
+              }}
+              onMouseEnter={(e) => { if (!manualPickupMode) e.currentTarget.style.background = '#f3f4f6' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#f9fafb' }}
+            >
+              <span style={{ fontSize: 14 }}>📍</span>
+              Elegir pickup en mapa
+            </button>
           </section>
         )}
 

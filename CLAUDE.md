@@ -166,6 +166,21 @@ User sees candidates on map, decides PE or PEA.
 4. On-route filter (min distance to any polyline vertex ≤ PICKUP_MAX_DETOUR_METERS)
 5. Return top PICKUP_TOP_CANDIDATES (3)
 
+**Manual pickup selection (map click):**
+When no pickup is assigned, AssignmentSummaryPanel shows "Elegir pickup en mapa" button (only when hasVehicle && !pickupEmployee && !showSoloChoice). Clicking it sets `state.manualPickupMode = true`.
+
+In manual pickup mode:
+- Map cursor changes to crosshair; every click is intercepted by AppMap's `handleMapClick`.
+- Haversine check against active polyline vertices: > PICKUP_REJECT_M (3000m) → silently ignored; > PICKUP_WARNING_M (500m) → proceeds with "desvío" warning; otherwise proceeds cleanly.
+- `POST /pickup-place-info { lat, lng }` → backend: reverse geocode (Geocoding API) + searchNearby 100m no-type-filter (Places API) → returns `{lat, lng, name, address, types, opening_hours}`.
+- InfoWindow appears at clicked point showing name/address/hours + optional warning + "Confirmar como pickup" button.
+- Confirming calls `POST /recalculate-route-with-pickup { driver_coords, pickup_point, meeting_point, event_coords }` → Routes API: driver home → pickup → meeting point → event. New encoded_polyline replaces the active route in `state.driverRoutes`. `state.assignments.pickup_place` set to `{place_name, place_address, lat, lng}`.
+- Active route: PE chosen → update `base_route.encoded_polyline`; PEA chosen → update `direct_route.encoded_polyline`.
+- Banner in AssignmentSummaryPanel shows "Modo pickup activo" + "Cancelar" link while mode is active.
+- manualPickupMode cleared on: cancel, confirm, STEP_BACK from step 3.
+
+Backend functions in `modules/maps_client.py`: `pickup_place_info(lat, lng)`, `recalculate_route_with_pickup(driver_coords, pickup_point, meeting_point, event_coords)`. Both cache under "pickup_places" namespace.
+
 Uber vehicles do NOT get pickup points.
 
 ### Step 8 — Final output
@@ -187,7 +202,7 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 ## Working endpoints
 
 `GET`: /read-excel, /geocode-staff, /geocode-address, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats, /config
-`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
+`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /pickup-place-info, /recalculate-route-with-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
 `DELETE`: /cache-clear
 
 ---

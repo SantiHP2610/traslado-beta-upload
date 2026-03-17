@@ -35,11 +35,12 @@
  * AssignmentSummaryPanel (right).  Both panels receive the results as props.
  */
 
-import { useMemo, useEffect, useState }  from 'react'
-import { Map, AdvancedMarker, Pin }      from '@vis.gl/react-google-maps'
-import { ChevronLeft }                   from 'lucide-react'
-import polyline                          from '@mapbox/polyline'
-import { useAppState, ACTIONS }          from '../../state/appState'
+import { useMemo, useEffect, useState, useCallback } from 'react'
+import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-maps'
+import { ChevronLeft }                               from 'lucide-react'
+import polyline                                      from '@mapbox/polyline'
+import { useAppState, ACTIONS }                      from '../../state/appState'
+import { pickupPlaceInfo, recalculateRouteWithPickup } from '../../api/endpoints'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
 import { useAssignmentLogic }            from '../../hooks/useAssignmentLogic'
 import MapBoundsController               from './MapBoundsController'
@@ -58,6 +59,44 @@ import ConfigPanel, { GearButton }       from '../panels/ConfigPanel'
 
 const BA_CENTER    = { lat: -34.6037, lng: -58.3816 }
 const DEFAULT_ZOOM = 11
+
+// Distance threshold (metres) beyond which a map click is too far from the
+// route to be considered a valid pickup point.  Clicks within this radius
+// proceed; clicks between PICKUP_WARNING_M and PICKUP_REJECT_M show a
+// warning but still proceed; clicks beyond PICKUP_REJECT_M are ignored.
+const PICKUP_WARNING_M = 500
+const PICKUP_REJECT_M  = 3000
+
+/**
+ * Haversine distance in metres between two {lat, lng} points.
+ * Used to measure how far a clicked point is from the nearest polyline vertex.
+ */
+function haversineMetres(a, b) {
+  const R    = 6_371_000
+  const dLat = (b.lat - a.lat) * (Math.PI / 180)
+  const dLng = (b.lng - a.lng) * (Math.PI / 180)
+  const sinLat = Math.sin(dLat / 2)
+  const sinLng = Math.sin(dLng / 2)
+  const h = sinLat * sinLat +
+    Math.cos(a.lat * (Math.PI / 180)) *
+    Math.cos(b.lat * (Math.PI / 180)) *
+    sinLng * sinLng
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+/**
+ * Returns the minimum distance in metres from `point` to any vertex of the
+ * decoded polyline.  `encodedPolyline` is a Google-encoded polyline string.
+ */
+function distanceToPolylineMetres(point, encodedPolyline) {
+  const vertices = polyline.decode(encodedPolyline)
+  let min = Infinity
+  for (const [lat, lng] of vertices) {
+    const d = haversineMetres(point, { lat, lng })
+    if (d < min) min = d
+  }
+  return min
+}
 
 // ---------------------------------------------------------------------------
 // Bounds computation (unchanged from original)
@@ -119,6 +158,14 @@ export default function AppMap() {
   // Hover state for back button scale effect.
   const [backHover, setBackHover] = useState(false)
 
+  // Manual pickup mode — InfoWindow state for a clicked point.
+  // Shape: { lat, lng, name, address, types, opening_hours, loading, error, tooFar }
+  // null = no InfoWindow shown.
+  const [manualPickupInfo, setManualPickupInfo] = useState(null)
+
+  // Whether we're currently calling /recalculate-route-with-pickup.
+  const [recalculating, setRecalculating] = useState(false)
+
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
 
@@ -153,6 +200,115 @@ export default function AppMap() {
     () => computeBounds(state.staffWithCoords, state.driverRoutes, state.eventCoords),
     [state.staffWithCoords, state.driverRoutes, state.eventCoords],
   )
+
+  // ── Manual pickup map click ───────────────────────────────────────────────
+  // When manualPickupMode is true, every click on the map is intercepted.
+  // We check proximity to the current route polyline; if the click is within
+  // PICKUP_REJECT_M metres we show an InfoWindow with place info.
+  const handleMapClick = useCallback(async (event) => {
+    if (!state.manualPickupMode || state.currentStep !== 3) return
+    if (!event.detail?.latLng) return
+
+    const { lat, lng } = event.detail.latLng
+    const clickedPoint = { lat, lng }
+
+    // Determine which polyline is active (same logic as RoutePolylines).
+    const isPea = state.meetingPoint &&
+      state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+    const activePolyline = isPea
+      ? state.driverRoutes?.direct_route?.encoded_polyline
+      : state.driverRoutes?.base_route?.encoded_polyline
+
+    let tooFar = false
+    let offRoute = false
+    if (activePolyline) {
+      const dist = distanceToPolylineMetres(clickedPoint, activePolyline)
+      if (dist > PICKUP_REJECT_M) {
+        offRoute = true
+      } else if (dist > PICKUP_WARNING_M) {
+        tooFar = true
+      }
+    }
+
+    if (offRoute) return   // silently ignore clicks far from route
+
+    // Show InfoWindow immediately with loading state, then fetch place info.
+    setManualPickupInfo({ lat, lng, loading: true, tooFar, name: null, address: null, types: [], opening_hours: [] })
+
+    try {
+      const info = await pickupPlaceInfo(lat, lng)
+      setManualPickupInfo({ ...info, loading: false, tooFar })
+    } catch {
+      setManualPickupInfo({ lat, lng, loading: false, tooFar, name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, types: [], opening_hours: [], error: 'No se pudo obtener info del lugar.' })
+    }
+  }, [state.manualPickupMode, state.currentStep, state.meetingPoint, state.chosenMeetingPoint, state.driverRoutes])
+
+  // When the user confirms a manually clicked pickup point.
+  const handleConfirmManualPickup = useCallback(async () => {
+    if (!manualPickupInfo || recalculating) return
+    setRecalculating(true)
+
+    const driver     = state.personalVehicle?.driver
+    const driverName = driver ? `${driver.Nombre} ${driver.Apellido}` : null
+    const override   = driverName ? state.coordinateOverrides[driverName] : null
+    // detect-personal-vehicle does not geocode staff, so driver.coordinates is
+    // not populated.  Look up the geocoded entry from staffWithCoords instead
+    // (always populated by the bootstrap's geocodeStaff call).
+    const driverWithCoords = driverName
+      ? state.staffWithCoords?.find((e) => `${e.Nombre} ${e.Apellido}` === driverName)
+      : null
+    const driverCoords = {
+      lat: override?.lat ?? driverWithCoords?.coordinates?.lat,
+      lng: override?.lng ?? driverWithCoords?.coordinates?.lng,
+    }
+    const meetingPt = {
+      lat: state.chosenMeetingPoint.lat,
+      lng: state.chosenMeetingPoint.lng,
+    }
+    const pickupPt = { lat: manualPickupInfo.lat, lng: manualPickupInfo.lng }
+
+    try {
+      const newRoute = await recalculateRouteWithPickup(
+        driverCoords, meetingPt, pickupPt, state.eventCoords,
+      )
+
+      // Update the base route polyline with the new route including pickup stop.
+      // We store it as a modified base_route so RoutePolylines re-renders it.
+      const isPea = state.meetingPoint &&
+        state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+      const updatedRoutes = isPea
+        ? {
+            ...state.driverRoutes,
+            direct_route: { ...state.driverRoutes.direct_route, encoded_polyline: newRoute.encoded_polyline },
+          }
+        : {
+            ...state.driverRoutes,
+            base_route: { ...state.driverRoutes.base_route, encoded_polyline: newRoute.encoded_polyline, legs: [] },
+          }
+      dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: updatedRoutes })
+
+      // Store the pickup place on assignments.
+      dispatch({
+        type:    ACTIONS.SET_ASSIGNMENTS,
+        payload: {
+          ...state.assignments,
+          pickup_place: {
+            place_name:    manualPickupInfo.name ?? manualPickupInfo.address,
+            place_address: manualPickupInfo.address,
+            lat:           manualPickupInfo.lat,
+            lng:           manualPickupInfo.lng,
+          },
+        },
+      })
+
+      dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: false })
+      setManualPickupInfo(null)
+    } catch (err) {
+      setManualPickupInfo((prev) => ({ ...prev, error: 'Error al recalcular la ruta.' }))
+    } finally {
+      setRecalculating(false)
+    }
+  }, [manualPickupInfo, recalculating, state, dispatch])
 
   // ── Layout flags ─────────────────────────────────────────────────────────
   // Side panels are hidden while the step-4 modal or output panel is shown so
@@ -202,7 +358,12 @@ export default function AppMap() {
           mapId={mapId}
           gestureHandling="greedy"
           disableDefaultUI={false}
-          style={{ width: '100%', height: '100%' }}
+          style={{
+            width:  '100%',
+            height: '100%',
+            cursor: state.manualPickupMode && state.currentStep === 3 ? 'crosshair' : undefined,
+          }}
+          onClick={state.manualPickupMode && state.currentStep === 3 ? handleMapClick : undefined}
         >
           <MapBoundsController bounds={bounds} />
 
@@ -234,6 +395,63 @@ export default function AppMap() {
                 glyphColor="#1a1a1a"
               />
             </AdvancedMarker>
+          )}
+
+          {/* Manual pickup InfoWindow — shown when user clicks during pickup mode */}
+          {manualPickupInfo && (
+            <InfoWindow
+              position={{ lat: manualPickupInfo.lat, lng: manualPickupInfo.lng }}
+              onCloseClick={() => setManualPickupInfo(null)}
+            >
+              <div style={{ minWidth: 200, maxWidth: 260, fontFamily: 'sans-serif' }}>
+                {manualPickupInfo.loading ? (
+                  <p style={{ fontSize: 13, color: '#374151', margin: 0 }}>Cargando…</p>
+                ) : (
+                  <>
+                    {manualPickupInfo.name && (
+                      <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 4px', color: '#111827' }}>
+                        {manualPickupInfo.name}
+                      </p>
+                    )}
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 6px', lineHeight: 1.4 }}>
+                      {manualPickupInfo.address}
+                    </p>
+                    {manualPickupInfo.opening_hours?.length > 0 && (
+                      <p style={{ fontSize: 11, color: '#374151', margin: '0 0 6px' }}>
+                        {manualPickupInfo.opening_hours[0]}
+                      </p>
+                    )}
+                    {manualPickupInfo.tooFar && (
+                      <p style={{ fontSize: 11, color: '#b45309', margin: '0 0 8px', background: '#fffbeb', padding: '4px 6px', borderRadius: 4 }}>
+                        ⚠ Este punto está a más de 500m de la ruta — se agregará un desvío.
+                      </p>
+                    )}
+                    {manualPickupInfo.error && (
+                      <p style={{ fontSize: 11, color: '#dc2626', margin: '0 0 8px' }}>
+                        {manualPickupInfo.error}
+                      </p>
+                    )}
+                    <button
+                      onClick={handleConfirmManualPickup}
+                      disabled={recalculating}
+                      style={{
+                        width:        '100%',
+                        padding:      '7px 12px',
+                        background:   recalculating ? '#374151' : '#111827',
+                        color:        '#fff',
+                        border:       'none',
+                        borderRadius: 6,
+                        fontSize:     12,
+                        fontWeight:   600,
+                        cursor:       recalculating ? 'default' : 'pointer',
+                      }}
+                    >
+                      {recalculating ? 'Recalculando…' : 'Confirmar como pickup'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </InfoWindow>
           )}
         </Map>
 

@@ -853,3 +853,153 @@ def find_pea_candidates(direct_route_polyline: str) -> list[dict]:
 
     # Return as a flat list; order reflects first appearance along the route
     return list(seen_addresses.values())
+
+
+def pickup_place_info(lat: float, lng: float) -> dict:
+    """
+    Returns display information about a location the user manually clicked on
+    the map during manual pickup selection.
+
+    Two API calls are made:
+      1. Places API (New) searchNearby — finds the closest named place within
+         100m of the click so the InfoWindow can show a meaningful name and type
+         instead of raw coordinates.  No type filter is applied — the user
+         chose this point deliberately.
+      2. Geocoding API reverse geocode — provides a human-readable address
+         even when no nearby place is found (the name field falls back to it).
+
+    Results are cached so repeated clicks near the same point don't re-hit
+    the quota.
+
+    Parameters:
+        lat (float): Latitude of the clicked point.
+        lng (float): Longitude of the clicked point.
+
+    Returns:
+        dict: {
+            "lat":            float,
+            "lng":            float,
+            "name":           str | None,  # from Places displayName or None
+            "address":        str,          # from Geocoding API
+            "types":          list[str],    # from Places primaryType/types or []
+            "opening_hours":  list[str],    # weekday descriptions or []
+        }
+    """
+    result = {
+        "lat":           lat,
+        "lng":           lng,
+        "name":          None,
+        "address":       f"{lat:.6f}, {lng:.6f}",  # fallback if geocoding fails
+        "types":         [],
+        "opening_hours": [],
+    }
+
+    # ── 1. Reverse geocode ──────────────────────────────────────────────────
+    cache_key_geo = ("reverse_geocode", round(lat, 5), round(lng, 5))
+    geo_cached = cache_get("pickup_places", cache_key_geo)
+    if geo_cached is not None:
+        geo_data = geo_cached["data"]
+    else:
+        geo_resp = httpx.get(
+            _GEOCODING_URL,
+            params={"latlng": f"{lat},{lng}", "key": GOOGLE_MAPS_API_KEY},
+        )
+        geo_resp.raise_for_status()
+        geo_data = geo_resp.json()
+        cache_put("pickup_places", geo_data, *cache_key_geo)
+
+    if geo_data.get("status") == "OK" and geo_data.get("results"):
+        result["address"] = geo_data["results"][0].get("formatted_address", result["address"])
+
+    # ── 2. Places API searchNearby (100m, no type filter) ───────────────────
+    places_body = {
+        "locationRestriction": {
+            "circle": {
+                "center":  {"latitude": lat, "longitude": lng},
+                "radius":  100.0,
+            }
+        },
+        "maxResultCount": 1,
+    }
+    cache_key_places = ("nearby_click", round(lat, 5), round(lng, 5))
+    places_cached = cache_get("pickup_places", cache_key_places)
+    if places_cached is not None:
+        places_data = places_cached["data"]
+    else:
+        headers = {
+            "X-Goog-Api-Key":  GOOGLE_MAPS_API_KEY,
+            "X-Goog-FieldMask": (
+                "places.displayName,"
+                "places.formattedAddress,"
+                "places.location,"
+                "places.primaryType,"
+                "places.currentOpeningHours"
+            ),
+        }
+        places_resp = httpx.post(_PLACES_NEARBY_URL, json=places_body, headers=headers)
+        places_resp.raise_for_status()
+        places_data = places_resp.json()
+        cache_put("pickup_places", places_data, *cache_key_places)
+
+    places = places_data.get("places", [])
+    if places:
+        p = places[0]
+        display_name = p.get("displayName", {})
+        result["name"] = display_name.get("text") if isinstance(display_name, dict) else None
+        result["types"] = [p["primaryType"]] if p.get("primaryType") else []
+        hours = p.get("currentOpeningHours", {})
+        result["opening_hours"] = hours.get("weekdayDescriptions", [])
+
+    return result
+
+
+def recalculate_route_with_pickup(
+    driver_coords:  dict,
+    pickup_point:   dict,
+    meeting_point:  dict,
+    event_coords:   dict,
+) -> dict:
+    """
+    Computes the driving route from the driver's home to the event venue via
+    the pickup point and the confirmed meeting point.
+
+    Route:  driver home → pickup point → meeting point → event venue
+
+    The pickup point comes first (intermediate[0]) so the driver collects the
+    employee before reaching the meeting point where the rest of the team boards.
+    This matches the operational sequence: individual pickup en route to PE/PEA.
+
+    Uses the same _call_routes_api / _extract_route helpers as calculate_driver_route()
+    so caching and field-mask handling are consistent.
+
+    Parameters:
+        driver_coords  (dict): {"lat": float, "lng": float} — driver's home.
+        pickup_point   (dict): {"lat": float, "lng": float} — where driver picks up employee.
+        meeting_point  (dict): {"lat": float, "lng": float} — PE or PEA.
+        event_coords   (dict): {"lat": float, "lng": float} — event venue.
+
+    Returns:
+        dict: {
+            "duration_seconds": int,
+            "distance_meters":  int,
+            "encoded_polyline": str,
+        }
+    """
+    body = {
+        "origin":      _latLng(driver_coords),
+        "destination": _latLng(event_coords),
+        "intermediates": [
+            _latLng(pickup_point),
+            _latLng(meeting_point),
+        ],
+        "travelMode":        "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE",
+    }
+    response_json = _call_routes_api(body)
+    route = _extract_route(response_json)
+    # Return only the fields needed by the frontend — legs are not used here
+    return {
+        "duration_seconds": route["duration_seconds"],
+        "distance_meters":  route["distance_meters"],
+        "encoded_polyline": route["encoded_polyline"],
+    }

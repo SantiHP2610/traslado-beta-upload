@@ -229,6 +229,42 @@ export async function findPickup(body) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 10b — Manual pickup selection (map click)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns display info (name, address, types, opening hours) for a point the
+ * user clicked on the map during manual pickup mode.
+ * @param {number} lat
+ * @param {number} lng
+ * @returns {{ lat: number, lng: number, name: string|null, address: string,
+ *             types: string[], opening_hours: string[] }}
+ */
+export async function pickupPlaceInfo(lat, lng) {
+  const response = await client.post('/pickup-place-info', { lat, lng })
+  return response.data
+}
+
+/**
+ * Recalculates the driver's route to include a manually selected pickup stop.
+ * Route: driver home → pickup point → meeting point → event venue.
+ * @param {{ lat: number, lng: number }} driverCoords
+ * @param {{ lat: number, lng: number }} meetingPoint
+ * @param {{ lat: number, lng: number }} pickupPoint
+ * @param {{ lat: number, lng: number }} eventCoords
+ * @returns {{ encoded_polyline: string, duration_seconds: number, distance_meters: number }}
+ */
+export async function recalculateRouteWithPickup(driverCoords, meetingPoint, pickupPoint, eventCoords) {
+  const response = await client.post('/recalculate-route-with-pickup', {
+    driver_coords:  driverCoords,
+    meeting_point:  meetingPoint,
+    pickup_point:   pickupPoint,
+    event_coords:   eventCoords,
+  })
+  return response.data
+}
+
+// ---------------------------------------------------------------------------
 // Step 11 — Passenger assignment
 // ---------------------------------------------------------------------------
 

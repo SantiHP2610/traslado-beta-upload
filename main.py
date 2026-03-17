@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, recalculate_route_with_pickup
 from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, assign_uber_only, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
@@ -2394,3 +2394,81 @@ def endpoint_config_reset() -> dict:
                 _sync_runtime(name, getattr(_config_module, name))
 
     return _build_config_response()
+
+
+# =============================================================================
+# Manual pickup selection endpoints (Step 7 — map click flow)
+# =============================================================================
+
+class PickupPlaceInfoRequest(BaseModel):
+    """
+    Body for POST /pickup-place-info.
+
+    lat, lng: coordinates of the point the user clicked on the map.
+    The backend does a reverse geocode + nearby Places search to return
+    human-readable info for the InfoWindow the frontend displays.
+    """
+    lat: float
+    lng: float
+
+
+@app.post(
+    "/pickup-place-info",
+    summary="Get place info at a map-click location for manual pickup selection",
+    description=(
+        "Called when the user clicks a point on the map during manual pickup mode "
+        "(step 3).  Performs a reverse geocode to get an address and a Places API "
+        "nearby search (100m radius, no type filter) to find a named place.  "
+        "Returns combined info for the InfoWindow so the manager can decide whether "
+        "to confirm the clicked point as the pickup location."
+    ),
+)
+def endpoint_pickup_place_info(body: PickupPlaceInfoRequest):
+    return pickup_place_info(body.lat, body.lng)
+
+
+class LatLngInput(BaseModel):
+    """
+    A simple latitude/longitude pair.  Used wherever only coordinates are
+    needed (no name), so Pydantic validates presence and type before any
+    downstream function can attempt dict access.
+    """
+    lat: float
+    lng: float
+
+
+class RecalculateRouteRequest(BaseModel):
+    """
+    Body for POST /recalculate-route-with-pickup.
+
+    Route computed: driver home → pickup point → meeting point → event venue.
+    All four coordinate pairs are typed as LatLngInput (not plain dict) so
+    Pydantic raises a 422 with a clear error message if any field is missing
+    or has the wrong type, rather than letting _latLng() crash with a KeyError.
+    """
+    driver_coords: LatLngInput
+    pickup_point:  LatLngInput
+    meeting_point: LatLngInput
+    event_coords:  LatLngInput
+
+
+@app.post(
+    "/recalculate-route-with-pickup",
+    summary="Recalculate driver route including a manual pickup stop",
+    description=(
+        "Computes the driving route driver home → pickup point → meeting point → "
+        "event venue using the Routes API.  Called after the user confirms a "
+        "manually selected pickup location on the map.  Returns the new encoded "
+        "polyline so the frontend can update the route overlay."
+    ),
+)
+def endpoint_recalculate_route_with_pickup(body: RecalculateRouteRequest):
+    # Convert typed Pydantic models to plain {"lat": float, "lng": float} dicts
+    # that _latLng() expects.  Never pass .model_dump() — that produces a nested
+    # dict; we want the flat two-key form the Routes API helper requires.
+    return recalculate_route_with_pickup(
+        driver_coords={"lat": body.driver_coords.lat, "lng": body.driver_coords.lng},
+        pickup_point= {"lat": body.pickup_point.lat,  "lng": body.pickup_point.lng},
+        meeting_point={"lat": body.meeting_point.lat, "lng": body.meeting_point.lng},
+        event_coords= {"lat": body.event_coords.lat,  "lng": body.event_coords.lng},
+    )
