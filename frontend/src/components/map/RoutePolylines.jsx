@@ -110,16 +110,44 @@ export default function RoutePolylines() {
       polylinesRef.current = [baseLine, directLine]
 
     } else if (!isPea) {
-      // ── PE chosen: yellow base route only ───────────────────────────────
-      // The direct route disappears — the user has committed to the PE path.
-      const baseLine = new google.maps.Polyline({
-        path:          decodePath(base_route.encoded_polyline),
-        strokeColor:   '#FBBC04',
-        strokeWeight:  STROKE_WEIGHT,
-        strokeOpacity: 1.0,
-        map,
-      })
-      polylinesRef.current = [baseLine]
+      // ── PE chosen: two-color base route (home→PE in dark yellow-orange,
+      //               PE→event in yellow) when per-leg polylines are available.
+      // Falls back to a single yellow line when leg data is absent.
+      const legs = base_route.legs
+      if (
+        Array.isArray(legs) &&
+        legs.length >= 2 &&
+        legs[0]?.encoded_polyline &&
+        legs[1]?.encoded_polyline
+      ) {
+        // Leg 0: driver home → PE (#F5A623 darker yellow-orange)
+        const leg0 = new google.maps.Polyline({
+          path:          decodePath(legs[0].encoded_polyline),
+          strokeColor:   '#F5A623',
+          strokeWeight:  STROKE_WEIGHT,
+          strokeOpacity: 1.0,
+          map,
+        })
+        // Leg 1: PE → event (#FBBC04 yellow — matches PE marker + staff marker color)
+        const leg1 = new google.maps.Polyline({
+          path:          decodePath(legs[1].encoded_polyline),
+          strokeColor:   '#FBBC04',
+          strokeWeight:  STROKE_WEIGHT,
+          strokeOpacity: 1.0,
+          map,
+        })
+        polylinesRef.current = [leg0, leg1]
+      } else {
+        // Fallback: single yellow polyline when leg data is not available.
+        const baseLine = new google.maps.Polyline({
+          path:          decodePath(base_route.encoded_polyline),
+          strokeColor:   '#FBBC04',
+          strokeWeight:  STROKE_WEIGHT,
+          strokeOpacity: 1.0,
+          map,
+        })
+        polylinesRef.current = [baseLine]
+      }
 
     } else {
       // ── PEA chosen: orange direct route only ────────────────────────────

@@ -94,27 +94,27 @@ function SectionHeader({ children }) {
 // ---------------------------------------------------------------------------
 
 export default function AssignmentSummaryPanel({
-  driver,
-  carPassengers,
-  uberPassengers,
-  pickupEmployee,
-  pickupPlace,
-  uberGroups,
-  hasVehicle,
-  vehicleLabel,
-  showSoloChoice,
-  validating,
-  assignedCount,
-  totalToAssign,
+  driver         = null,
+  carPassengers  = [],
+  uberPassengers = [],
+  uberGroups     = [],
+  pickupEmployee = null,
+  pickupPlace    = null,
+  hasVehicle     = false,
+  vehicleLabel   = 'Vehículo',
+  showSoloChoice = false,
+  validating     = false,
+  assignedCount  = 0,
+  totalToAssign  = 0,
   onValidate,
   onPendiente,
   onContinueWithSolo,
-  unassigned,
-  assignments,
+  unassigned  = [],
+  assignments = null,
 }) {
   const { state } = useAppState()
   const { error, activePickupResult } = state
-  const pendingEmployee = assignments?.pending_employee
+  const pendingEmployee = assignments?.pending_employee ?? null
 
   return (
     <div

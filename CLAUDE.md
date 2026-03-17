@@ -191,6 +191,7 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 
 - **Final output redesign (step 4 post-confirm)**: Replace the current two small draggable blocks (`FinalOutputBlocks`) with a single large modal/panel that occupies most of the screen. Map stays running and visible behind it (semi-transparent backdrop). Must include a "Volver a editar" button that returns to step 3 with full state preserved (same behavior as current "Editar"). Consolidate both blocks (frescos + transport) into sections within this single panel. The current ConfirmationModal should transition into this final view, not coexist with separate blocks.
 - **Pickup map highlight**: Visual circle overlay around cross-points and candidates for CEO/manager review
+- **Employee phone numbers**: Once the final Excel format is implemented, request a phone number field for each employee (Equipo sheet). Display it in the InfoWindow and in the sidebar whenever employee info is shown (steps 1-2 info panel, step 3 assignment context menu, assignment summary panel).
 
 ---
 

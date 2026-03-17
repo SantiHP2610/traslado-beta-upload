@@ -213,7 +213,6 @@ export default function FrescosPanel() {
   const [editSaving,   setEditSaving]   = useState(false)
   const [editError,    setEditError]    = useState(null)
 
-  const event = state.excelData?.event
   const staff = state.excelData?.staff ?? []
   const done  = state.currentStep > 1
 
@@ -275,19 +274,10 @@ export default function FrescosPanel() {
   function openEdit()   { setEditing(true);  setEditError(null) }
   function cancelEdit() { setEditing(false); setEditError(null) }
 
-  // ── Event context bar ──────────────────────────────────────────────────
-  const eventBar = event && (
-    <div className="space-y-0.5 text-xs text-muted-foreground mb-3">
-      <p>{event.tipo} · {event.comensales} comensales</p>
-      <p>{event.fecha} · {event.hora_inicio}</p>
-    </div>
-  )
-
   return (
     <div className="space-y-3">
       {done ? (
         <>
-          {eventBar}
           <FrescosSummary
             frescosResult={state.frescosResult}
             secondMiniflete={state.secondMinifleteResult}
@@ -315,10 +305,7 @@ export default function FrescosPanel() {
           )}
         </>
       ) : (
-        <>
-          {eventBar}
-          <VanQuestion onAnswer={handleAnswer} loading={activeButton} />
-        </>
+        <VanQuestion onAnswer={handleAnswer} loading={activeButton} />
       )}
 
       {state.error && !done && (

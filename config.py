@@ -114,7 +114,7 @@ PICKUP_MIN_TIME_SAVING_MINUTES = 20 # threshold used to populate the "time_savin
                                     # in the pickup result; if the employee saves fewer minutes
                                     # than this by going to the cross-point instead of the PE,
                                     # the flag is True so the manager can weigh the trade-off
-PICKUP_MAX_DETOUR_METERS = 300      # Places API search radius (m) around the cross-point AND
+PICKUP_MAX_DETOUR_METERS = 500      # Places API search radius (m) around the cross-point AND
                                     # max straight-line distance (m) from a place to any polyline
                                     # point to count as "on the route" (not on a side street)
 PICKUP_MAX_TRANSIT_MINUTES = 30     # threshold used to populate the "transit_warning" flag
@@ -128,7 +128,7 @@ PICKUP_TOP_CANDIDATES = 3           # number of top place options returned per p
 # "gas_station" targets 24hs service stations on main roads.
 # "restaurant" is used as a proxy for McDonald's 24hs — Places API has no
 # specific type for fast food chains. Refine post-deployment if needed.
-PICKUP_PLACE_TYPES = ["gas_station", "restaurant"]
+PICKUP_PLACE_TYPES = ["gas_station"]
 
 # --- Production Center (CP — Centro de Producción) ---
 # Physical address where frescos and equipment are loaded before each event.

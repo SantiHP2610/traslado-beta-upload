@@ -18,7 +18,7 @@ function fullName(emp) {
   return `${emp.Nombre} ${emp.Apellido}`
 }
 
-export default function UnassignedPanel({ unassigned, hasAnyAssigned, onReset, totalToAssign }) {
+export default function UnassignedPanel({ unassigned = [], hasAnyAssigned = false, onReset, totalToAssign = 0 }) {
   return (
     <div
       style={{

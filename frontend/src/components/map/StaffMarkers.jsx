@@ -419,6 +419,10 @@ function AssignmentMenuContent({
   const carFull    = carCount >= MAX_CAR_PASSENGERS
   const hasVehicle = personalVehicle?.has_personal_vehicle
 
+  // "PE" when the user chose the original meeting point; "PEA" for any alternative.
+  const isPea = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
+  const peLabel = isPea ? 'PEA' : 'PE'
+
   const vLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
     ? `${personalVehicle.vehicle_description} de ${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
     : 'vehículo'
@@ -496,7 +500,7 @@ function AssignmentMenuContent({
           <div className="space-y-1.5">
             {hasVehicle && !carFull && !inCar && (
               <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignCar}>
-                Asignar al {vLabel}
+                Asignar al {peLabel} ({vLabel})
               </Button>
             )}
             {hasVehicle && carFull && !inCar && (

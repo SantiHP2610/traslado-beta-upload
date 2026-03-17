@@ -311,6 +311,8 @@ export default function AppMap() {
           validating={assignLogic.validating}
           showSoloChoice={assignLogic.showSoloChoice}
           pendingSolo={assignLogic.pendingSolo}
+          unassigned={assignLogic.unassigned}
+          assignments={assignLogic.assignments}
           onValidate={assignLogic.handleValidate}
           onPendiente={assignLogic.handlePendiente}
           onContinueWithSolo={assignLogic.handleContinueWithSolo}
