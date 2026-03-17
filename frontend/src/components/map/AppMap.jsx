@@ -35,7 +35,7 @@
  * AssignmentSummaryPanel (right).  Both panels receive the results as props.
  */
 
-import { useMemo, useEffect, useState, useCallback } from 'react'
+import { useMemo, useEffect, useState, useRef, useCallback } from 'react'
 import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-maps'
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
@@ -170,6 +170,100 @@ export default function AppMap() {
   // Shape: { lat, lng, name, address, primary_type, opening_hours, staff_metrics, loading, error, tooFar }
   // null = no InfoWindow shown.
   const [manualPeaInfo, setManualPeaInfo] = useState(null)
+
+  // Ref that tracks the current drag position of the Uber PE drag pin so we
+  // can read the final position in onDragEnd regardless of event shape.
+  const uberDragPosRef = useRef(null)
+
+  // ── Uber PE edit marker animation ────────────────────────────────────────
+  // The animated black marker that appears whenever uberPeEditMode is set.
+  // Reuses the same ease-out-cubic logic as StaffMarkers.useAnimatedPosition.
+  //   uberEditSnappedPos — React-known position (position prop on AdvancedMarker).
+  //                        Only updated once per animation (at completion) so
+  //                        React's position-binding stays dormant during frames.
+  //   uberEditMarkerRef  — ref to the AdvancedMarkerElement; mutated each frame.
+  //   uberEditPosRef     — current interpolated position (avoids reading state).
+  //   uberEditRafRef     — active rAF handle so we can cancel on re-trigger.
+  //   uberDragJustDoneRef — set true in onDragEnd to suppress animation when the
+  //                         position change is caused by a drag (not geocode).
+  //   uberPrevGroupRef   — detects group switches (instant jump, not animate).
+  const uberEditMarkerRef   = useRef(null)
+  const uberEditPosRef      = useRef(null)
+  const uberEditRafRef      = useRef(null)
+  const uberDragJustDoneRef = useRef(false)
+  const uberPrevGroupRef    = useRef(null)
+  const [uberEditSnappedPos, setUberEditSnappedPos] = useState(null)
+  // InfoWindow open for a static (non-edit) Uber PE override marker.
+  const [staticUberIw, setStaticUberIw] = useState(null)
+
+  // Derive the target position for the active edit-mode marker.
+  const uberEditGroupNumber = state.uberPeEditMode
+  const uberEditTarget = uberEditGroupNumber != null
+    ? (state.uberMeetingPointOverrides[uberEditGroupNumber] ?? state.chosenMeetingPoint)
+    : null
+
+  // Animation effect — runs when the target position or active group changes.
+  useEffect(() => {
+    if (uberEditRafRef.current) {
+      cancelAnimationFrame(uberEditRafRef.current)
+      uberEditRafRef.current = null
+    }
+
+    if (!uberEditTarget) {
+      uberEditPosRef.current = null
+      setUberEditSnappedPos(null)
+      return
+    }
+
+    const target       = { lat: uberEditTarget.lat, lng: uberEditTarget.lng }
+    const groupChanged = uberPrevGroupRef.current !== uberEditGroupNumber
+    uberPrevGroupRef.current = uberEditGroupNumber
+
+    // Skip animation for: first appearance, group switch, or after a drag.
+    const instant = !uberEditPosRef.current || groupChanged || uberDragJustDoneRef.current
+    uberDragJustDoneRef.current = false
+
+    if (instant ||
+        (uberEditPosRef.current?.lat === target.lat &&
+         uberEditPosRef.current?.lng === target.lng)) {
+      uberEditPosRef.current = target
+      setUberEditSnappedPos(target)
+      return
+    }
+
+    // Ease-out-cubic over 1500 ms — same parameters as StaffMarkers.
+    const start    = { ...uberEditPosRef.current }
+    const t0       = performance.now()
+    const DURATION = 1500
+    const ease     = (t) => 1 - Math.pow(1 - t, 3)
+
+    function step(now) {
+      const progress = Math.min((now - t0) / DURATION, 1)
+      const e        = ease(progress)
+      const current  = {
+        lat: start.lat + (target.lat - start.lat) * e,
+        lng: start.lng + (target.lng - start.lng) * e,
+      }
+      uberEditPosRef.current = current
+      if (uberEditMarkerRef.current) {
+        uberEditMarkerRef.current.position = current
+      }
+      if (progress < 1) {
+        uberEditRafRef.current = requestAnimationFrame(step)
+      } else {
+        uberEditRafRef.current = null
+        setUberEditSnappedPos({ ...current })
+      }
+    }
+
+    uberEditRafRef.current = requestAnimationFrame(step)
+    return () => {
+      if (uberEditRafRef.current) {
+        cancelAnimationFrame(uberEditRafRef.current)
+        uberEditRafRef.current = null
+      }
+    }
+  }, [uberEditTarget?.lat, uberEditTarget?.lng, uberEditGroupNumber]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
@@ -596,6 +690,105 @@ export default function AppMap() {
               </div>
             </InfoWindow>
           )}
+
+          {/* ── Uber PE edit marker (draggable, appears when uberPeEditMode set) ── */}
+          {/* Animated ease-out-cubic via uberEditSnappedPos + direct position     */}
+          {/* mutations on uberEditMarkerRef.  After drag, animation is suppressed. */}
+          {uberEditGroupNumber !== null && (uberEditSnappedPos ?? uberEditTarget) && (
+            <AdvancedMarker
+              ref={uberEditMarkerRef}
+              position={uberEditSnappedPos ?? uberEditTarget}
+              draggable={true}
+              title={`PE personalizado — Uber ${uberEditGroupNumber}`}
+              onDrag={(e) => {
+                const p = e?.target?.position ?? e?.latLng
+                if (p) {
+                  uberDragPosRef.current = {
+                    lat: typeof p.lat === 'function' ? p.lat() : p.lat,
+                    lng: typeof p.lng === 'function' ? p.lng() : p.lng,
+                  }
+                }
+              }}
+              onDragEnd={(e) => {
+                const p = e?.target?.position ?? e?.latLng ?? uberDragPosRef.current
+                if (p) {
+                  const lat = typeof p.lat === 'function' ? p.lat() : p.lat
+                  const lng = typeof p.lng === 'function' ? p.lng() : p.lng
+                  // Suppress animation for drag-caused position changes — the
+                  // marker is already at the drag destination.
+                  uberDragJustDoneRef.current = true
+                  dispatch({
+                    type:    ACTIONS.SET_UBER_MEETING_POINT,
+                    payload: {
+                      groupNumber: uberEditGroupNumber,
+                      meetingPoint: {
+                        name:    'PE personalizado',
+                        address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+                        lat,
+                        lng,
+                      },
+                    },
+                  })
+                }
+                // Do NOT clear uberPeEditMode — the marker stays draggable and
+                // the edit form stays open until the user clicks "Listo" / "Cancelar".
+                uberDragPosRef.current = null
+              }}
+            >
+              <Pin
+                background="#111827"
+                borderColor="#ffffff"
+                glyphColor="#ffffff"
+                scale={1.2}
+              />
+            </AdvancedMarker>
+          )}
+
+          {/* ── Static Uber PE override markers (always visible, non-draggable) ── */}
+          {/* One marker per group that has a custom meeting point, except for the  */}
+          {/* group currently being edited (covered by the draggable marker above). */}
+          {Object.entries(state.uberMeetingPointOverrides).map(([groupNumStr, pos]) => {
+            const groupNum = Number(groupNumStr)
+            if (groupNum === uberEditGroupNumber) return null
+            return (
+              <AdvancedMarker
+                key={`uber-pe-static-${groupNum}`}
+                position={{ lat: pos.lat, lng: pos.lng }}
+                draggable={false}
+                title={`PE — Uber ${groupNum}: ${pos.name || pos.address}`}
+                onClick={() => setStaticUberIw(groupNum)}
+              >
+                <Pin
+                  background="#111827"
+                  borderColor="#ffffff"
+                  glyphColor="#ffffff"
+                />
+              </AdvancedMarker>
+            )
+          })}
+
+          {/* InfoWindow for a clicked static Uber PE marker */}
+          {staticUberIw !== null && state.uberMeetingPointOverrides[staticUberIw] && (
+            <InfoWindow
+              position={{
+                lat: state.uberMeetingPointOverrides[staticUberIw].lat,
+                lng: state.uberMeetingPointOverrides[staticUberIw].lng,
+              }}
+              onCloseClick={() => setStaticUberIw(null)}
+            >
+              <div style={{ minWidth: 160, maxWidth: 220, fontFamily: 'sans-serif' }}>
+                <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 2px', color: '#111827' }}>
+                  PE — Uber {staticUberIw}
+                </p>
+                <p style={{ fontSize: 11, color: '#6b7280', margin: 0, lineHeight: 1.4 }}>
+                  {state.uberMeetingPointOverrides[staticUberIw].name || ''}
+                </p>
+                <p style={{ fontSize: 11, color: '#6b7280', margin: 0, lineHeight: 1.4 }}>
+                  {state.uberMeetingPointOverrides[staticUberIw].address}
+                </p>
+              </div>
+            </InfoWindow>
+          )}
         </Map>
 
         {/* Center-bottom card showing the chosen meeting point (step 3) */}
@@ -674,6 +867,8 @@ export default function AppMap() {
           pendingSolo={assignLogic.pendingSolo}
           unassigned={assignLogic.unassigned}
           assignments={assignLogic.assignments}
+          uberAutoFilled={assignLogic.uberAutoFilled}
+          onAutoFill={assignLogic.handleAutoFill}
           onValidate={assignLogic.handleValidate}
           onPendiente={assignLogic.handlePendiente}
           onContinueWithSolo={assignLogic.handleContinueWithSolo}

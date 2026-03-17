@@ -44,19 +44,24 @@ function deriveProfesiones(assignedNames, staff) {
     .filter(Boolean)
 }
 
-function buildBody(assignments, frescosResult, chosenMeetingPoint, staff) {
+function buildBody(assignments, frescosResult, chosenMeetingPoint, staff, uberMeetingPointOverrides) {
   const hasOwnVan     = frescosResult?.vehicle === 'camioneta propia'
   const assignedRoles = deriveProfesiones(frescosResult?.assigned_names ?? [], staff)
 
+  // Serialize uber_meeting_points: only include if there is at least one override.
+  const uberMpEntries = Object.keys(uberMeetingPointOverrides ?? {})
+  const uberMp = uberMpEntries.length > 0 ? uberMeetingPointOverrides : null
+
   return {
     assignments: {
-      driver:          assignments.driver ? fullName(assignments.driver) : '',
-      car_passengers:  (assignments.car_passengers ?? []).map(fullName),
-      uber_groups:     chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
-                         .map((g) => g.map(fullName)),
-      pickup_passengers: (assignments.pickup_passengers ?? []).map(fullName),
-      pending_employee: assignments.pending_employee
+      driver:             assignments.driver ? fullName(assignments.driver) : '',
+      car_passengers:     (assignments.car_passengers ?? []).map(fullName),
+      uber_groups:        chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
+                            .map((g) => g.map(fullName)),
+      pickup_passengers:  (assignments.pickup_passengers ?? []).map(fullName),
+      pending_employee:   assignments.pending_employee
         ? fullName(assignments.pending_employee) : null,
+      uber_meeting_points: uberMp,
     },
     assigned_roles:       assignedRoles,
     chosen_meeting_point: {
@@ -111,6 +116,7 @@ export default function ConfirmationModal() {
     personalVehicle,
     excelData,
     showOutput,
+    uberMeetingPointOverrides,
   } = state
 
   const staff = excelData?.staff ?? []
@@ -150,7 +156,7 @@ export default function ConfirmationModal() {
 
     try {
       const body   = {
-        ...buildBody(assignments, frescosResult, chosenMeetingPoint, staff),
+        ...buildBody(assignments, frescosResult, chosenMeetingPoint, staff, uberMeetingPointOverrides),
         loading_time_minutes: loadingTimeMinutes,
       }
       const result = await finalOutput(body)
@@ -313,21 +319,33 @@ export default function ConfirmationModal() {
             {uberPassengers.length === 0 ? (
               <p className="text-xs text-muted-foreground">Sin pasajeros Uber</p>
             ) : (
-              uberGroups.map((group, gi) => (
-                <div key={gi} className="space-y-0.5">
-                  {uberGroups.length > 1 && (
-                    <p className="text-xs text-muted-foreground">Uber {gi + 1}</p>
-                  )}
-                  {group.map((emp) => (
-                    <NameRow
-                      key={fullName(emp)}
-                      name={fullName(emp)}
-                      role={emp.Profesion}
-                      color="bg-slate-400"
-                    />
-                  ))}
-                </div>
-              ))
+              uberGroups.map((group, gi) => {
+                const groupNumber = gi + 1
+                const customPe    = uberMeetingPointOverrides?.[groupNumber]
+                return (
+                  <div key={gi} className="space-y-0.5">
+                    {uberGroups.length > 1 && (
+                      <p className="text-xs text-muted-foreground">
+                        Uber {gi + 1}
+                        {customPe ? ` — PE: ${customPe.name || customPe.address}` : ''}
+                      </p>
+                    )}
+                    {uberGroups.length === 1 && customPe && (
+                      <p className="text-xs text-blue-600">
+                        PE: {customPe.name || customPe.address}
+                      </p>
+                    )}
+                    {group.map((emp) => (
+                      <NameRow
+                        key={fullName(emp)}
+                        name={fullName(emp)}
+                        role={emp.Profesion}
+                        color="bg-slate-400"
+                      />
+                    ))}
+                  </div>
+                )
+              })
             )}
             {uberPassengers.length === 1 && (
               <p className="text-xs text-amber-600">

@@ -89,7 +89,7 @@ function frescosText(fb, event) {
   return lines.join('\n')
 }
 
-function transportText(tb, assignments) {
+function transportText(tb, assignments, uberMeetingPointOverrides) {
   const lines = [
     `TRASLADO — PE: ${tb.meeting_point?.name ?? ''}`,
     `Salida PE: ${tb.departure_from_pe}`,
@@ -108,7 +108,9 @@ function transportText(tb, assignments) {
     lines.push(`Pickup (${assignments.pickup_place?.place_name ?? ''}): ${names}`)
   }
   ;(tb.uber_groups ?? []).forEach((g) => {
-    lines.push(`Uber ${g.group_number}: ${(g.passengers ?? []).join(', ')}`)
+    const customPe = uberMeetingPointOverrides?.[g.group_number] ?? g.meeting_point
+    const peName   = customPe?.name || customPe?.address || tb.meeting_point?.name || ''
+    lines.push(`Uber ${g.group_number} (PE: ${peName}): ${(g.passengers ?? []).join(', ')}`)
   })
   if (assignments?.pending_employee) {
     const pendName = `${assignments.pending_employee.Nombre} ${assignments.pending_employee.Apellido}`
@@ -199,11 +201,12 @@ export default function FinalOutputBlocks() {
   const finalOut = state.finalOutput
   if (!finalOut?.frescos_block || !finalOut?.transport_block) return null
 
-  const fb          = finalOut.frescos_block
-  const tb          = finalOut.transport_block
-  const staff       = state.excelData?.staff ?? []
-  const event       = state.excelData?.event ?? {}
-  const assignments = state.assignments
+  const fb                      = finalOut.frescos_block
+  const tb                      = finalOut.transport_block
+  const staff                   = state.excelData?.staff ?? []
+  const event                   = state.excelData?.event ?? {}
+  const assignments             = state.assignments
+  const uberMeetingPointOverrides = state.uberMeetingPointOverrides ?? {}
 
   // ── Frescos breakdown ────────────────────────────────────────────────────
   const cpBd     = fb.departure_breakdown
@@ -450,19 +453,22 @@ export default function FinalOutputBlocks() {
                 {(tb.uber_groups ?? []).length > 0 && (
                   <div className="space-y-1.5">
                     <SectionTitle>Uber</SectionTitle>
-                    {tb.uber_groups.map((group) => (
+                    {tb.uber_groups.map((group) => {
+                      const customPe = uberMeetingPointOverrides[group.group_number] ?? group.meeting_point
+                      const peName   = customPe?.name || customPe?.address || tb.meeting_point?.name
+                      return (
                       <div key={group.group_number} className="space-y-0.5">
                         {tb.uber_groups.length > 1 ? (
                           <p className="text-xs text-muted-foreground">
                             Uber {group.group_number} ({group.passengers?.length}{' '}
                             {group.passengers?.length === 1 ? 'pasajero' : 'pasajeros'})
-                            {' '}→ {tb.meeting_point?.name}
+                            {' '}→ {peName}
                           </p>
                         ) : (
                           <p className="text-xs text-muted-foreground">
                             {group.passengers?.length}{' '}
                             {group.passengers?.length === 1 ? 'pasajero' : 'pasajeros'}
-                            {' '}→ {tb.meeting_point?.name}
+                            {' '}→ {peName}
                           </p>
                         )}
                         {(group.passengers ?? []).map((name) => (
@@ -475,7 +481,7 @@ export default function FinalOutputBlocks() {
                           </div>
                         ))}
                       </div>
-                    ))}
+                    )})}
                   </div>
                 )}
 
@@ -496,7 +502,7 @@ export default function FinalOutputBlocks() {
                   </div>
                 )}
 
-                <CopyButton text={transportText(tb, assignments)} />
+                <CopyButton text={transportText(tb, assignments, uberMeetingPointOverrides)} />
               </div>
             </div>
 

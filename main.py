@@ -1338,8 +1338,9 @@ class AssignmentsInput(BaseModel):
     driver:             str
     car_passengers:     list[str]
     uber_groups:        list[list[str]]
-    pickup_passengers:  list[str] = []
-    pending_employee:   str | None = None
+    pickup_passengers:    list[str] = []
+    pending_employee:     str | None = None
+    uber_meeting_points:  dict | None = None   # { "1": {name,lat,lng,address}, … }
 
 
 class ValidateAssignmentsRequest(BaseModel):

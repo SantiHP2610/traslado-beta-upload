@@ -17,7 +17,7 @@
  * The only change is that they now live in a hook instead of a component.
  */
 
-import { useState, useEffect }    from 'react'
+import { useState }               from 'react'
 import { useAppState, ACTIONS }   from '../state/appState'
 import { validateAssignments }    from '../api/endpoints'
 
@@ -63,10 +63,10 @@ function buildAssignmentsInput(assignments) {
 export function useAssignmentLogic() {
   const { state, dispatch } = useAppState()
 
-  const [validating, setValidating]                     = useState(false)
-  const [showSoloChoice, setShowSoloChoice]             = useState(false)
-  const [pendingSolo, setPendingSolo]                   = useState(null)
-  const [pendingAutoFillCheck, setPendingAutoFillCheck] = useState(false)
+  const [validating, setValidating]         = useState(false)
+  const [showSoloChoice, setShowSoloChoice] = useState(false)
+  const [pendingSolo, setPendingSolo]       = useState(null)
+  const [uberAutoFilled, setUberAutoFilled] = useState(false)
 
   const {
     assignments,
@@ -102,22 +102,6 @@ export function useAssignmentLogic() {
   const unassigned    = pool.filter((emp) => !assignedNames.has(fullName(emp)))
   const uberGroups    = chunkArray(uberPassengers, MAX_UBER)
 
-  // ── Phase 2: solo-group check after auto-fill re-render ─────────────────
-  // Identical to the useEffect in AssignmentPanel.
-  useEffect(() => {
-    if (!pendingAutoFillCheck || !assignments) return
-    setPendingAutoFillCheck(false)
-
-    const groups    = chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
-    const soloGroup = groups.find((g) => g.length === 1)
-    if (soloGroup) {
-      setPendingSolo(soloGroup[0])
-      setShowSoloChoice(true)
-    } else {
-      doValidate(assignments)
-    }
-  }, [pendingAutoFillCheck, assignments]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // ── API call: POST /validate-assignments ─────────────────────────────────
   async function doValidate(assignmentsSnapshot) {
     const assignedRoles    = deriveProfesiones(frescosResult?.assigned_names ?? [], staff)
@@ -144,14 +128,31 @@ export function useAssignmentLogic() {
     }
   }
 
-  // ── Phase 1: auto-fill + trigger Phase 2 ────────────────────────────────
-  function handleValidate() {
+  // ── Phase 1: fill unassigned into Uber groups ────────────────────────────
+  // After this, assignments.uber_passengers is fully populated and the user
+  // can review / edit Uber meeting points before proceeding to validation.
+  function handleAutoFill() {
     const filled = [...uberPassengers, ...unassigned]
     dispatch({
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: { ...assignments, uber_passengers: filled },
     })
-    setPendingAutoFillCheck(true)
+    setUberAutoFilled(true)
+  }
+
+  // ── Phase 2: solo-group check + validate ─────────────────────────────────
+  // By the time this is called, assignments.uber_passengers is already
+  // populated (Phase 1 ran earlier), so we can read them directly — no need
+  // for the pendingAutoFillCheck useEffect trick.
+  function handleValidate() {
+    const groups    = chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
+    const soloGroup = groups.find((g) => g.length === 1)
+    if (soloGroup) {
+      setPendingSolo(soloGroup[0])
+      setShowSoloChoice(true)
+    } else {
+      doValidate(assignments)
+    }
   }
 
   // "Buscar alternativa y dejar pendiente"
@@ -175,7 +176,7 @@ export function useAssignmentLogic() {
 
   // "Reiniciar asignaciones"
   function handleReset() {
-    setPendingAutoFillCheck(false)
+    setUberAutoFilled(false)
     setShowSoloChoice(false)
     setPendingSolo(null)
     dispatch({
@@ -196,6 +197,7 @@ export function useAssignmentLogic() {
     validating,
     showSoloChoice,
     pendingSolo,
+    uberAutoFilled,
     // Derived data
     driver,
     carPassengers,
@@ -210,6 +212,7 @@ export function useAssignmentLogic() {
     totalToAssign,
     assignments,
     // Handlers
+    handleAutoFill,
     handleValidate,
     handlePendiente,
     handleContinueWithSolo,

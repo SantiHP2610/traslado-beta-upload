@@ -17,7 +17,9 @@
  * venue without leaving the assignment context.
  */
 
+import { useState }             from 'react'
 import { useAppState, ACTIONS } from '../../state/appState'
+import { geocodeAddress }       from '../../api/endpoints'
 import PickupResultPanel        from './PickupResultPanel'
 
 function fullName(emp) {
@@ -106,6 +108,8 @@ export default function AssignmentSummaryPanel({
   validating     = false,
   assignedCount  = 0,
   totalToAssign  = 0,
+  uberAutoFilled = false,
+  onAutoFill,
   onValidate,
   onPendiente,
   onContinueWithSolo,
@@ -113,8 +117,42 @@ export default function AssignmentSummaryPanel({
   assignments = null,
 }) {
   const { state, dispatch } = useAppState()
-  const { error, activePickupResult, manualPickupMode } = state
+  const { error, activePickupResult, manualPickupMode,
+          uberMeetingPointOverrides, uberPeEditMode, uberPeDragMode, chosenMeetingPoint } = state
   const pendingEmployee = assignments?.pending_employee ?? null
+
+  // Local state for the address form (keyed by group number) and geocoding spinner.
+  const [uberAddressInputs, setUberAddressInputs] = useState({})
+  const [uberGeocoding, setUberGeocoding] = useState(null)
+  const [uberGeoError, setUberGeoError]   = useState(null)
+
+  async function handleUberGeocode(groupNumber) {
+    const address = uberAddressInputs[groupNumber] ?? ''
+    if (!address.trim()) return
+    setUberGeocoding(groupNumber)
+    setUberGeoError(null)
+    try {
+      const result = await geocodeAddress(address.trim())
+      dispatch({
+        type:    ACTIONS.SET_UBER_MEETING_POINT,
+        payload: {
+          groupNumber,
+          meetingPoint: {
+            name:    address.trim(),
+            address: result.formatted_address ?? address.trim(),
+            lat:     result.lat,
+            lng:     result.lng,
+          },
+        },
+      })
+      // Keep edit mode open so the user sees the marker animate to the new
+      // position before clicking "Listo".
+    } catch {
+      setUberGeoError('No se pudo geocodificar la dirección.')
+    } finally {
+      setUberGeocoding(null)
+    }
+  }
 
   return (
     <div
@@ -275,7 +313,11 @@ export default function AssignmentSummaryPanel({
             <p style={{ fontSize: 13, color: '#9ca3af' }}>Sin pasajeros asignados</p>
           ) : (
             uberGroups.map((group, gi) => {
+              const groupNumber   = gi + 1
               const isSoloWarning = showSoloChoice && group.length === 1
+              const override      = uberMeetingPointOverrides[groupNumber]
+              const isEditing     = uberPeEditMode === groupNumber
+
               return (
                 <div
                   key={gi}
@@ -311,6 +353,144 @@ export default function AssignmentSummaryPanel({
                       dotColor={isSoloWarning ? '#f59e0b' : '#9ca3af'}
                     />
                   ))}
+
+                  {/* ── Custom PE display ─────────────────────────────── */}
+                  {override && !isEditing && (
+                    <p style={{ fontSize: 11, color: '#2563eb', marginLeft: 17, marginTop: 2, lineHeight: 1.4 }}>
+                      📍 {override.name || override.address}
+                    </p>
+                  )}
+
+                  {/* ── PE edit controls ──────────────────────────────── */}
+                  {!isEditing ? (
+                    <button
+                      onClick={() => {
+                        setUberAddressInputs((prev) => ({
+                          ...prev,
+                          [groupNumber]: override?.address ?? chosenMeetingPoint?.address ?? '',
+                        }))
+                        setUberGeoError(null)
+                        dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: groupNumber })
+                      }}
+                      style={{
+                        fontSize:   11,
+                        color:      '#6b7280',
+                        background: 'none',
+                        border:     'none',
+                        padding:    '2px 0 0 17px',
+                        cursor:     'pointer',
+                        textDecoration: 'underline',
+                      }}
+                    >
+                      Cambiar PE de Uber {groupNumber}
+                    </button>
+                  ) : (
+                    <div style={{ marginTop: 8, paddingLeft: 0 }}>
+                      <input
+                        value={uberAddressInputs[groupNumber] ?? ''}
+                        onChange={(e) => {
+                          setUberAddressInputs((prev) => ({ ...prev, [groupNumber]: e.target.value }))
+                          setUberGeoError(null)
+                        }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleUberGeocode(groupNumber) }}
+                        placeholder="Dirección del punto de encuentro"
+                        style={{
+                          width:        '100%',
+                          fontSize:     12,
+                          padding:      '5px 8px',
+                          border:       '1px solid #d1d5db',
+                          borderRadius: 6,
+                          outline:      'none',
+                          boxSizing:    'border-box',
+                        }}
+                      />
+                      {uberGeoError && uberGeocoding === null && (
+                        <p style={{ fontSize: 11, color: '#dc2626', margin: '2px 0 0' }}>{uberGeoError}</p>
+                      )}
+                      {/* Geocodify row */}
+                      <div style={{ display: 'flex', gap: 6, marginTop: 5 }}>
+                        <button
+                          onClick={() => handleUberGeocode(groupNumber)}
+                          disabled={uberGeocoding === groupNumber}
+                          style={{
+                            flex:         1,
+                            fontSize:     11,
+                            padding:      '5px 0',
+                            background:   uberGeocoding === groupNumber ? '#e5e7eb' : '#111827',
+                            color:        uberGeocoding === groupNumber ? '#9ca3af' : '#fff',
+                            border:       'none',
+                            borderRadius: 6,
+                            cursor:       uberGeocoding === groupNumber ? 'default' : 'pointer',
+                          }}
+                        >
+                          {uberGeocoding === groupNumber ? 'Geocodificando...' : 'Geocodificar'}
+                        </button>
+                      </div>
+                      {/* Actions row — Listo / Volver al PE / Cancelar */}
+                      <div style={{ display: 'flex', gap: 6, marginTop: 5 }}>
+                        <button
+                          onClick={() => {
+                            dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: null })
+                            setUberGeoError(null)
+                          }}
+                          style={{
+                            flex:         1,
+                            fontSize:     11,
+                            padding:      '5px 0',
+                            background:   '#fff',
+                            color:        '#374151',
+                            border:       '1px solid #d1d5db',
+                            borderRadius: 6,
+                            cursor:       'pointer',
+                          }}
+                        >
+                          Listo
+                        </button>
+                        {override && (
+                          <button
+                            onClick={() => {
+                              dispatch({ type: ACTIONS.CLEAR_UBER_MEETING_POINT, payload: { groupNumber } })
+                              dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: null })
+                              setUberGeoError(null)
+                            }}
+                            style={{
+                              flex:         1,
+                              fontSize:     11,
+                              padding:      '5px 0',
+                              background:   '#fff',
+                              color:        '#374151',
+                              border:       '1px solid #d1d5db',
+                              borderRadius: 6,
+                              cursor:       'pointer',
+                            }}
+                          >
+                            Volver al PE original
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => {
+                          dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: null })
+                          setUberGeoError(null)
+                        }}
+                        style={{
+                          display:        'block',
+                          width:          '100%',
+                          marginTop:      4,
+                          fontSize:       11,
+                          padding:        '3px 0',
+                          background:     'none',
+                          color:          '#9ca3af',
+                          border:         'none',
+                          cursor:         'pointer',
+                          textDecoration: 'underline',
+                          textAlign:      'center',
+                        }}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  )}
                 </div>
               )
             })
@@ -464,50 +644,74 @@ export default function AssignmentSummaryPanel({
             </button>
           </div>
         ) : (
-          <button
-            onClick={onValidate}
-            disabled={validating}
-            style={{
-              width:          '100%',
-              padding:        '11px 16px',
-              background:     '#111827',
-              color:          '#fff',
-              border:         'none',
-              borderRadius:   8,
-              fontSize:       14,
-              fontWeight:     500,
-              cursor:         validating ? 'default' : 'pointer',
-              display:        'flex',
-              alignItems:     'center',
-              justifyContent: 'center',
-              gap:            8,
-              transition:     'background 150ms ease',
-              opacity:        validating ? 0.85 : 1,
-            }}
-            onMouseEnter={(e) => { if (!validating) e.currentTarget.style.background = '#374151' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
-          >
-            {validating ? (
-              <>
-                <span
-                  className="animate-spin"
-                  style={{
-                    display:       'inline-block',
-                    width:         14,
-                    height:        14,
-                    border:        '2px solid rgba(255,255,255,0.4)',
-                    borderTopColor: '#fff',
-                    borderRadius:  '50%',
-                  }}
-                />
-                Validando...
-              </>
-            ) : unassigned.length > 0 ? (
-              `Asignar ${unassigned.length} restantes a Uber y validar`
-            ) : (
-              'Validar asignaciones'
-            )}
-          </button>
+          unassigned.length > 0 && !uberAutoFilled ? (
+            <button
+              onClick={onAutoFill}
+              style={{
+                width:          '100%',
+                padding:        '11px 16px',
+                background:     '#111827',
+                color:          '#fff',
+                border:         'none',
+                borderRadius:   8,
+                fontSize:       14,
+                fontWeight:     500,
+                cursor:         'pointer',
+                display:        'flex',
+                alignItems:     'center',
+                justifyContent: 'center',
+                transition:     'background 150ms ease',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#374151' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
+            >
+              Asignar {unassigned.length} restantes a Uber
+            </button>
+          ) : (
+            /* Phase 2: uber groups are shown — user can review/edit, then validate */
+            <button
+              onClick={onValidate}
+              disabled={validating}
+              style={{
+                width:          '100%',
+                padding:        '11px 16px',
+                background:     '#111827',
+                color:          '#fff',
+                border:         'none',
+                borderRadius:   8,
+                fontSize:       14,
+                fontWeight:     500,
+                cursor:         validating ? 'default' : 'pointer',
+                display:        'flex',
+                alignItems:     'center',
+                justifyContent: 'center',
+                gap:            8,
+                transition:     'background 150ms ease',
+                opacity:        validating ? 0.85 : 1,
+              }}
+              onMouseEnter={(e) => { if (!validating) e.currentTarget.style.background = '#374151' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
+            >
+              {validating ? (
+                <>
+                  <span
+                    className="animate-spin"
+                    style={{
+                      display:       'inline-block',
+                      width:         14,
+                      height:        14,
+                      border:        '2px solid rgba(255,255,255,0.4)',
+                      borderTopColor: '#fff',
+                      borderRadius:  '50%',
+                    }}
+                  />
+                  Validando...
+                </>
+              ) : (
+                'Validar asignaciones'
+              )}
+            </button>
+          )
         )}
       </div>
     </div>

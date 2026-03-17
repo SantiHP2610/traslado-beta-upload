@@ -2440,11 +2440,19 @@ def build_assignment_summary(
     # Uber groups — convert from list[list[str]] to list[dict] with group numbers.
     # The frontend needs group_number to label each separate Uber booking.
     # enumerate starts at 0, so we add 1 to get 1-based group numbers.
+    #
+    # If the frontend supplied per-group meeting-point overrides in
+    # uber_meeting_points (a dict keyed by string group number), we embed them
+    # in each group dict so the final output can display the custom address.
     # -------------------------------------------------------------------------
-    uber_groups = [
-        {"group_number": i + 1, "passengers": group}
-        for i, group in enumerate(assignments.get("uber_groups", []))
-    ]
+    uber_mp_overrides = assignments.get("uber_meeting_points") or {}
+    uber_groups = []
+    for i, group in enumerate(assignments.get("uber_groups", [])):
+        entry = {"group_number": i + 1, "passengers": group}
+        custom_mp = uber_mp_overrides.get(str(i + 1))
+        if custom_mp:
+            entry["meeting_point"] = custom_mp
+        uber_groups.append(entry)
 
     # -------------------------------------------------------------------------
     # Departure from CP — only available once calculate_departure_time() has

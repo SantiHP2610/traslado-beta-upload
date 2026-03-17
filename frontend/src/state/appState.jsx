@@ -98,6 +98,17 @@ const initialState = {
   showOutput:       false,   // true when the two FinalOutputBlocks are visible
   manualPickupMode: false,   // true while the user is clicking the map to select a pickup point
   manualPeaMode:    false,   // true while the user is clicking the map to manually select a PEA
+
+  // Per-Uber-group meeting-point overrides (step 3).
+  // Keys are group numbers (1, 2, 3…); values are { name, lat, lng, address }.
+  // When absent for a group, that group uses state.chosenMeetingPoint.
+  uberMeetingPointOverrides: {},
+
+  // Which Uber group's address input form is currently open (int) or null.
+  uberPeEditMode: null,
+
+  // Which Uber group's draggable map pin is visible (int) or null.
+  uberPeDragMode: null,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +138,10 @@ export const ACTIONS = {
   SET_EDITING_MARKER:             'SET_EDITING_MARKER',
   SET_MANUAL_PICKUP_MODE:    'SET_MANUAL_PICKUP_MODE',
   SET_MANUAL_PEA_MODE:       'SET_MANUAL_PEA_MODE',
+  SET_UBER_MEETING_POINT:    'SET_UBER_MEETING_POINT',
+  CLEAR_UBER_MEETING_POINT:  'CLEAR_UBER_MEETING_POINT',
+  SET_UBER_PE_EDIT_MODE:     'SET_UBER_PE_EDIT_MODE',
+  SET_UBER_PE_DRAG_MODE:     'SET_UBER_PE_DRAG_MODE',
   ADD_PICKUP_PASSENGER:      'ADD_PICKUP_PASSENGER',
   REMOVE_PICKUP_PASSENGER:   'REMOVE_PICKUP_PASSENGER',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
@@ -200,6 +215,30 @@ function appReducer(state, action) {
     case ACTIONS.SET_MANUAL_PEA_MODE:
       return { ...state, manualPeaMode: action.payload }
 
+    case ACTIONS.SET_UBER_MEETING_POINT: {
+      // payload: { groupNumber, meetingPoint: { name, lat, lng, address } }
+      const { groupNumber, meetingPoint } = action.payload
+      return {
+        ...state,
+        uberMeetingPointOverrides: { ...state.uberMeetingPointOverrides, [groupNumber]: meetingPoint },
+      }
+    }
+
+    case ACTIONS.CLEAR_UBER_MEETING_POINT: {
+      // payload: { groupNumber } — removes the override so the group reverts to the shared PE.
+      const next = { ...state.uberMeetingPointOverrides }
+      delete next[action.payload.groupNumber]
+      return { ...state, uberMeetingPointOverrides: next }
+    }
+
+    case ACTIONS.SET_UBER_PE_EDIT_MODE:
+      // payload: int | null — opens/closes the address form for a specific group.
+      return { ...state, uberPeEditMode: action.payload }
+
+    case ACTIONS.SET_UBER_PE_DRAG_MODE:
+      // payload: int | null — shows/hides the draggable map pin for a specific group.
+      return { ...state, uberPeDragMode: action.payload }
+
     case ACTIONS.ADD_PICKUP_PASSENGER: {
       // payload: employee object — appended to assignments.pickup_passengers.
       const current = state.assignments?.pickup_passengers ?? []
@@ -248,7 +287,7 @@ function appReducer(state, action) {
       } else if (state.currentStep >= 3) {
         // Leaving step 3 → step 2: undo passenger assignments; user must
         // re-select the meeting point on the map before re-entering step 3.
-        Object.assign(clearing, { assignments: null, activePickupResult: null, chosenMeetingPoint: null, manualPickupMode: false })
+        Object.assign(clearing, { assignments: null, activePickupResult: null, chosenMeetingPoint: null, manualPickupMode: false, uberMeetingPointOverrides: {}, uberPeEditMode: null, uberPeDragMode: null })
       } else if (state.currentStep >= 2) {
         // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
         // point data so useStepTwo will recompute them if user re-advances.
