@@ -265,6 +265,15 @@ export default function MeetingPointMarkers() {
   // Before a choice: all markers are rendered at 1.0× (existing behaviour).
   const isPostChoice = chosen !== null
 
+  // isManualPea: the confirmed meeting point was set via manual map click and
+  // does not appear in either the original PE or the auto-generated candidates.
+  // In this case the candidates loop and PE block render nothing, so we need a
+  // dedicated marker block below.
+  const isManualPea =
+    chosen !== null &&
+    !isChosen(meetingPoint) &&
+    !candidates.some((c) => isChosen(c))
+
   return (
     <>
       {/* ── Original PE marker ──────────────────────────────────────────── */}
@@ -347,6 +356,51 @@ export default function MeetingPointMarkers() {
           </span>
         )
       })}
+
+      {/* ── Manually selected PEA marker ─────────────────────────────────── */}
+      {/* Rendered when the confirmed meeting point came from a manual map    */}
+      {/* click and does not appear in the automatic candidate list.          */}
+      {isManualPea && (
+        <>
+          <AdvancedMarker
+            position={{ lat: chosen.lat, lng: chosen.lng }}
+            title={chosen.name ?? 'PEA Manual'}
+            onClick={() => setOpenKey(openKey === 'manual-pea' ? null : 'manual-pea')}
+          >
+            <Pin
+              background={PEA_COLORS.selected.background}
+              borderColor="#ffffff"
+              glyphColor={PEA_COLORS.selected.glyph}
+              glyph="✓"
+              scale={1.4}
+            />
+          </AdvancedMarker>
+
+          {openKey === 'manual-pea' && (
+            <InfoWindow
+              position={{ lat: chosen.lat, lng: chosen.lng }}
+              pixelOffset={[0, -40]}
+              onCloseClick={() => setOpenKey(null)}
+              shouldFocus={false}
+            >
+              <Card className="min-w-[220px] shadow-none border-0">
+                <CardContent className="p-3 space-y-1">
+                  <p className="font-semibold text-sm leading-tight">
+                    Punto de encuentro alternativo
+                  </p>
+                  <p className="text-xs text-orange-600 font-medium">
+                    Seleccionado manualmente
+                  </p>
+                  {chosen.name && (
+                    <p className="text-sm font-medium">{chosen.name}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground">{chosen.address}</p>
+                </CardContent>
+              </Card>
+            </InfoWindow>
+          )}
+        </>
+      )}
     </>
   )
 }
