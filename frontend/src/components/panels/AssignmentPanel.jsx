@@ -87,9 +87,7 @@ function buildAssignmentsInput(assignments) {
     uber_groups:    chunkArray(assignments.uber_passengers ?? [], MAX_UBER).map(
       (group) => group.map(fullName),
     ),
-    pickup_employee: assignments.pickup_employee
-      ? fullName(assignments.pickup_employee)
-      : null,
+    pickup_passengers: (assignments.pickup_passengers ?? []).map(fullName),
   }
 }
 
@@ -128,8 +126,8 @@ export default function AssignmentPanel() {
   const driver         = assignments?.driver
   const carPassengers  = assignments?.car_passengers ?? []
   const uberPassengers = assignments?.uber_passengers ?? []
-  const pickupEmployee = assignments?.pickup_employee
-  const pickupPlace    = assignments?.pickup_place
+  const pickupPassengers = assignments?.pickup_passengers ?? []
+  const pickupPlace      = assignments?.pickup_place
   const hasVehicle     = personalVehicle?.has_personal_vehicle
 
   const vehicleLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
@@ -140,7 +138,7 @@ export default function AssignmentPanel() {
     ...(driver         ? [fullName(driver)]         : []),
     ...carPassengers.map(fullName),
     ...uberPassengers.map(fullName),
-    ...(pickupEmployee ? [fullName(pickupEmployee)] : []),
+    ...pickupPassengers.map(fullName),
   ])
 
   const assignedCount = assignedNames.size
@@ -249,11 +247,11 @@ export default function AssignmentPanel() {
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
         ...assignments,
-        car_passengers:  [],
-        uber_passengers: [],
-        pickup_employee: null,
-        pickup_place:    null,
-        pending_employee: null,
+        car_passengers:    [],
+        uber_passengers:   [],
+        pickup_passengers: [],
+        pickup_place:      null,
+        pending_employee:  null,
       },
     })
   }
@@ -325,26 +323,26 @@ export default function AssignmentPanel() {
               )}
 
               <p className="text-xs text-muted-foreground pl-3.5">
-                {carPassengers.length}/{4} pasajeros
+                {1 + carPassengers.length + pickupPassengers.length}/5 ocupantes
               </p>
             </div>
           )}
 
           {/* ── Pickup section ───────────────────────────────────────── */}
-          {pickupEmployee && (
+          {pickupPassengers.length > 0 && (
             <div className="space-y-1">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Pickup en ruta
+                Pickup en ruta ({pickupPassengers.length})
               </p>
-              <div className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />
-                <span className="text-xs font-medium">{fullName(pickupEmployee)} — {pickupEmployee.Profesion}</span>
-              </div>
               {pickupPlace && (
-                <p className="text-xs text-muted-foreground pl-3.5">
-                  {pickupPlace.place_name}
-                </p>
+                <p className="text-xs text-muted-foreground">{pickupPlace.place_name}</p>
               )}
+              {pickupPassengers.map((emp) => (
+                <div key={fullName(emp)} className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />
+                  <span className="text-xs">{fullName(emp)} — {emp.Profesion}</span>
+                </div>
+              ))}
             </div>
           )}
 

@@ -52,9 +52,7 @@ function buildAssignmentsInput(assignments) {
     uber_groups:    chunkArray(assignments.uber_passengers ?? [], MAX_UBER).map(
       (group) => group.map(fullName),
     ),
-    pickup_employee: assignments.pickup_employee
-      ? fullName(assignments.pickup_employee)
-      : null,
+    pickup_passengers: (assignments.pickup_passengers ?? []).map(fullName),
   }
 }
 
@@ -85,8 +83,8 @@ export function useAssignmentLogic() {
   const driver         = assignments?.driver
   const carPassengers  = assignments?.car_passengers ?? []
   const uberPassengers = assignments?.uber_passengers ?? []
-  const pickupEmployee = assignments?.pickup_employee
-  const pickupPlace    = assignments?.pickup_place
+  const pickupPassengers = assignments?.pickup_passengers ?? []
+  const pickupPlace      = assignments?.pickup_place
   const hasVehicle     = personalVehicle?.has_personal_vehicle
 
   const vehicleLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
@@ -97,7 +95,7 @@ export function useAssignmentLogic() {
     ...(driver         ? [fullName(driver)]         : []),
     ...carPassengers.map(fullName),
     ...uberPassengers.map(fullName),
-    ...(pickupEmployee ? [fullName(pickupEmployee)] : []),
+    ...pickupPassengers.map(fullName),
   ])
 
   const assignedCount = assignedNames.size
@@ -184,11 +182,11 @@ export function useAssignmentLogic() {
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
         ...assignments,
-        car_passengers:   [],
-        uber_passengers:  [],
-        pickup_employee:  null,
-        pickup_place:     null,
-        pending_employee: null,
+        car_passengers:    [],
+        uber_passengers:   [],
+        pickup_passengers: [],
+        pickup_place:      null,
+        pending_employee:  null,
       },
     })
   }
@@ -202,7 +200,7 @@ export function useAssignmentLogic() {
     driver,
     carPassengers,
     uberPassengers,
-    pickupEmployee,
+    pickupPassengers,
     pickupPlace,
     hasVehicle,
     vehicleLabel,

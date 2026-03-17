@@ -2080,10 +2080,10 @@ def validate_assignments(remaining_pool: list[dict], assignments: dict) -> dict:
             if name:
                 assigned_names.add(name.strip())
 
-    # pickup_employee is optional; only add when present
-    pickup_name = assignments.get("pickup_employee")
-    if pickup_name:
-        assigned_names.add(pickup_name.strip())
+    # pickup_passengers is a list of names (multiple employees can share one pickup point)
+    for name in assignments.get("pickup_passengers", []):
+        if name:
+            assigned_names.add(name.strip())
 
     # pending_employee is set when the manager chose "Buscar alternativa y dejar
     # pendiente" for the single remaining employee — they will travel by an
@@ -2428,11 +2428,12 @@ def build_assignment_summary(
     # pickup_place is explicitly None until the frontend wires it through.
     # -------------------------------------------------------------------------
     personal_vehicle = {
-        "driver":          assignments.get("driver"),
-        "passengers":      assignments.get("car_passengers", []),
-        "pickup_employee": assignments.get("pickup_employee"),
-        # TODO: add pickup_place parameter once frontend sends confirmed venue name
-        "pickup_place":    None,
+        "driver":             assignments.get("driver"),
+        "passengers":         assignments.get("car_passengers", []),
+        "pickup_passengers":  assignments.get("pickup_passengers", []),
+        # pickup_place is managed by the frontend (map interaction state);
+        # it is not sent to the backend and is read from state.assignments on the frontend.
+        "pickup_place":       None,
     }
 
     # -------------------------------------------------------------------------

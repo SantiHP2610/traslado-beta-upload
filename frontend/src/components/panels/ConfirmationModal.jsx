@@ -54,8 +54,7 @@ function buildBody(assignments, frescosResult, chosenMeetingPoint, staff) {
       car_passengers:  (assignments.car_passengers ?? []).map(fullName),
       uber_groups:     chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
                          .map((g) => g.map(fullName)),
-      pickup_employee: assignments.pickup_employee
-        ? fullName(assignments.pickup_employee) : null,
+      pickup_passengers: (assignments.pickup_passengers ?? []).map(fullName),
       pending_employee: assignments.pending_employee
         ? fullName(assignments.pending_employee) : null,
     },
@@ -126,8 +125,8 @@ export default function ConfirmationModal() {
   const driver         = assignments?.driver
   const carPassengers  = assignments?.car_passengers ?? []
   const uberPassengers = assignments?.uber_passengers ?? []
-  const pickupEmployee = assignments?.pickup_employee
-  const pickupPlace    = assignments?.pickup_place
+  const pickupPassengers = assignments?.pickup_passengers ?? []
+  const pickupPlace      = assignments?.pickup_place
   const hasVehicle     = personalVehicle?.has_personal_vehicle
   const vehicleDesc    = personalVehicle?.vehicle_description
 
@@ -267,8 +266,8 @@ export default function ConfirmationModal() {
                   color="bg-green-500"
                 />
               )}
-              {pickupEmployee && carPassengers.length > 0 && (
-                <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">Pasajeros al PE:</p>
+              {pickupPassengers.length > 0 && carPassengers.length > 0 && (
+                <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">Se encuentran en el PE:</p>
               )}
               {carPassengers.map((emp) => (
                 <NameRow
@@ -278,21 +277,26 @@ export default function ConfirmationModal() {
                   color="bg-green-500"
                 />
               ))}
-              {carPassengers.length === 0 && !pickupEmployee && (
+              {carPassengers.length === 0 && pickupPassengers.length === 0 && (
                 <p className="text-xs text-muted-foreground pl-3.5">Sin pasajeros</p>
               )}
-              {pickupEmployee && (
+              {pickupPassengers.length > 0 && (
                 <div className="pl-1 space-y-0.5">
-                  <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">Pasajero al punto de pickup:</p>
-                  <NameRow
-                    name={fullName(pickupEmployee)}
-                    role={pickupEmployee.Profesion}
-                    color="bg-yellow-400"
-                  />
-                  {pickupPlace && (
+                  <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">
+                    Se encuentran en el punto de pickup
+                    {pickupPlace ? ` (${pickupPlace.place_name})` : ''}:
+                  </p>
+                  {pickupPassengers.map((emp) => (
+                    <NameRow
+                      key={fullName(emp)}
+                      name={fullName(emp)}
+                      role={emp.Profesion}
+                      color="bg-yellow-400"
+                    />
+                  ))}
+                  {pickupPlace?.place_address && (
                     <p className="text-xs text-muted-foreground pl-3.5">
-                      {pickupPlace.place_name}
-                      {pickupPlace.place_address ? ` — ${pickupPlace.place_address}` : ''}
+                      {pickupPlace.place_address}
                     </p>
                   )}
                 </div>

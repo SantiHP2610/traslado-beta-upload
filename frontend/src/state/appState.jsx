@@ -125,6 +125,8 @@ export const ACTIONS = {
   CLEAR_ALL_COORDINATE_OVERRIDES: 'CLEAR_ALL_COORDINATE_OVERRIDES',
   SET_EDITING_MARKER:             'SET_EDITING_MARKER',
   SET_MANUAL_PICKUP_MODE:    'SET_MANUAL_PICKUP_MODE',
+  ADD_PICKUP_PASSENGER:      'ADD_PICKUP_PASSENGER',
+  REMOVE_PICKUP_PASSENGER:   'REMOVE_PICKUP_PASSENGER',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
   STEP_BACK:                 'STEP_BACK',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
@@ -192,6 +194,29 @@ function appReducer(state, action) {
 
     case ACTIONS.SET_MANUAL_PICKUP_MODE:
       return { ...state, manualPickupMode: action.payload }
+
+    case ACTIONS.ADD_PICKUP_PASSENGER: {
+      // payload: employee object — appended to assignments.pickup_passengers.
+      const current = state.assignments?.pickup_passengers ?? []
+      return {
+        ...state,
+        assignments: { ...state.assignments, pickup_passengers: [...current, action.payload] },
+      }
+    }
+
+    case ACTIONS.REMOVE_PICKUP_PASSENGER: {
+      // payload: "Nombre Apellido" string — filtered out of assignments.pickup_passengers.
+      const name = action.payload
+      return {
+        ...state,
+        assignments: {
+          ...state.assignments,
+          pickup_passengers: (state.assignments?.pickup_passengers ?? []).filter(
+            (emp) => `${emp.Nombre} ${emp.Apellido}` !== name,
+          ),
+        },
+      }
+    }
 
     case ACTIONS.SET_CURRENT_STEP:
       // Push the current step onto the history stack before advancing.

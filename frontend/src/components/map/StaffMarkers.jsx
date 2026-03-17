@@ -99,9 +99,9 @@ function getMarkerColors(employee, assignments, chosenScenarioColor) {
                   : chosenScenarioColor === 'pea' ? SCENARIO_PEA
                   : { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
 
-  if (sameEmployee(assignments.driver, employee))          return carColors
-  if (sameEmployee(assignments.pickup_employee, employee)) return { background: '#FFC107', borderColor: '#e6a800', glyphColor: '#1a1a1a' }
-  if (assignments.car_passengers?.some((p) => sameEmployee(p, employee))) return carColors
+  if (sameEmployee(assignments.driver, employee))                                    return carColors
+  if (assignments.pickup_passengers?.some((p) => sameEmployee(p, employee)))        return { background: '#FFC107', borderColor: '#e6a800', glyphColor: '#1a1a1a' }
+  if (assignments.car_passengers?.some((p) => sameEmployee(p, employee)))           return carColors
   if (assignments.uber_passengers?.some((p) => sameEmployee(p, employee))) return { background: '#9E9E9E', borderColor: '#757575', glyphColor: '#ffffff' }
 
   return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
@@ -412,13 +412,14 @@ function AssignmentMenuContent({
 
   const inCar    = assignments?.car_passengers?.some((p) => sameEmployee(p, employee))
   const inUber   = assignments?.uber_passengers?.some((p) => sameEmployee(p, employee))
-  const isPickup = sameEmployee(assignments?.pickup_employee, employee)
+  const pickupPassengers = assignments?.pickup_passengers ?? []
+  const isPickup = pickupPassengers.some((p) => sameEmployee(p, employee))
   const isAssigned = inCar || inUber
 
   const pickupConfirmed = !!assignments?.pickup_place
-  const pickupSlotFull  = !!assignments?.pickup_employee
-
-  const carCount   = assignments?.car_passengers?.length ?? 0
+  // Car is full when driver + car_passengers + pickup_passengers = 5
+  const carCount        = assignments?.car_passengers?.length ?? 0
+  const pickupFull      = (1 + carCount + pickupPassengers.length) >= 5
   const carFull    = carCount >= MAX_CAR_PASSENGERS
   const hasVehicle = personalVehicle?.has_personal_vehicle
 
@@ -446,7 +447,7 @@ function AssignmentMenuContent({
     patch({
       uber_passengers: [...(assignments?.uber_passengers ?? []), employee],
       car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-      ...(isPickup ? { pickup_employee: null, pickup_place: null } : {}),
+      ...(isPickup ? { pickup_passengers: pickupPassengers.filter((p) => !sameEmployee(p, employee)) } : {}),
     })
     onClose()
   }
@@ -455,7 +456,7 @@ function AssignmentMenuContent({
     patch({
       car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
       uber_passengers: assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-      ...(isPickup ? { pickup_employee: null, pickup_place: null } : {}),
+      ...(isPickup ? { pickup_passengers: pickupPassengers.filter((p) => !sameEmployee(p, employee)) } : {}),
     })
     onClose()
   }
@@ -486,15 +487,15 @@ function AssignmentMenuContent({
 
   function handleAssignPickup() {
     patch({
-      pickup_employee: employee,
-      car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-      uber_passengers: assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
+      pickup_passengers: [...pickupPassengers, employee],
+      car_passengers:    assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
+      uber_passengers:   assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
     })
     onClose()
   }
 
   function handleRemovePickup() {
-    patch({ pickup_employee: null })
+    dispatch({ type: ACTIONS.REMOVE_PICKUP_PASSENGER, payload: name })
     onClose()
   }
 
@@ -533,7 +534,7 @@ function AssignmentMenuContent({
                     Vehículo completo ({MAX_CAR_PASSENGERS}/{MAX_CAR_PASSENGERS})
                   </p>
                 )}
-                {pickupConfirmed && !pickupSlotFull && (
+                {pickupConfirmed && !pickupFull && (
                   <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignPickup}>
                     Asignar al Punto de Pickup
                   </Button>

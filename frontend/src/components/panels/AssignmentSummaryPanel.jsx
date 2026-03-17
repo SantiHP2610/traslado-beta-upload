@@ -94,12 +94,12 @@ function SectionHeader({ children }) {
 // ---------------------------------------------------------------------------
 
 export default function AssignmentSummaryPanel({
-  driver         = null,
-  carPassengers  = [],
-  uberPassengers = [],
-  uberGroups     = [],
-  pickupEmployee = null,
-  pickupPlace    = null,
+  driver            = null,
+  carPassengers     = [],
+  uberPassengers    = [],
+  uberGroups        = [],
+  pickupPassengers  = [],
+  pickupPlace       = null,
   hasVehicle     = false,
   vehicleLabel   = 'Vehículo',
   showSoloChoice = false,
@@ -220,7 +220,7 @@ export default function AssignmentSummaryPanel({
                 badge="Chofer"
               />
             )}
-            {pickupEmployee && (
+            {pickupPassengers.length > 0 && (
               <p style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', margin: '6px 0 4px 17px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 → PE
               </p>
@@ -233,24 +233,27 @@ export default function AssignmentSummaryPanel({
                 dotColor="#22c55e"
               />
             ))}
-            {carPassengers.length === 0 && !pickupEmployee && (
+            {carPassengers.length === 0 && pickupPassengers.length === 0 && (
               <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginBottom: 4 }}>
                 Sin pasajeros asignados
               </p>
             )}
             <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginTop: 2 }}>
-              {carPassengers.length}/4 pasajeros
+              {1 + carPassengers.length + pickupPassengers.length}/5 ocupantes
             </p>
-            {pickupEmployee && (
+            {pickupPassengers.length > 0 && (
               <>
                 <p style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', margin: '6px 0 4px 17px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   → Pickup{pickupPlace ? `: ${pickupPlace.place_name}` : ''}
                 </p>
-                <EmployeeRow
-                  name={fullName(pickupEmployee)}
-                  profesion={pickupEmployee.Profesion}
-                  dotColor="#fbbf24"
-                />
+                {pickupPassengers.map((emp) => (
+                  <EmployeeRow
+                    key={fullName(emp)}
+                    name={fullName(emp)}
+                    profesion={emp.Profesion}
+                    dotColor="#fbbf24"
+                  />
+                ))}
                 {pickupPlace?.place_address && (
                   <p style={{ fontSize: 12, color: '#6b7280', marginLeft: 17 }}>
                     {pickupPlace.place_address}
@@ -316,7 +319,7 @@ export default function AssignmentSummaryPanel({
 
         {/* ── Pickup section ───────────────────────────────────────────── */}
         {/* Pickup employee is displayed inside the vehicle section above when confirmed. */}
-        {!pickupEmployee && hasVehicle && !showSoloChoice && (
+        {pickupPassengers.length === 0 && hasVehicle && !showSoloChoice && (
           <section style={{ marginBottom: 20 }}>
             <SectionHeader>Pickup en ruta</SectionHeader>
             <button

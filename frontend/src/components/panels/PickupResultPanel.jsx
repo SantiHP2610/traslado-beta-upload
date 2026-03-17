@@ -97,7 +97,7 @@ export default function PickupResultPanel() {
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
         ...(state.assignments ?? {}),
-        pickup_employee:        employee ?? null,
+        pickup_passengers:      [...(state.assignments?.pickup_passengers ?? []), employee],
         pickup_place:           place,
         pickup_transit_minutes: candidate?.transit_time_to_pickup_minutes ?? null,
       },

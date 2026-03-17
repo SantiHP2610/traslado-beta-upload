@@ -101,9 +101,11 @@ function transportText(tb, assignments) {
       lines.push(`Pasajeros: ${pv.passengers.join(', ')}`)
     }
   }
-  if (assignments?.pickup_employee) {
-    const peName = `${assignments.pickup_employee.Nombre} ${assignments.pickup_employee.Apellido}`
-    lines.push(`Pickup: ${peName} en ${assignments.pickup_place?.place_name ?? ''}`)
+  if ((assignments?.pickup_passengers ?? []).length > 0) {
+    const names = assignments.pickup_passengers.map(
+      (e) => `${e.Nombre} ${e.Apellido}`,
+    ).join(', ')
+    lines.push(`Pickup (${assignments.pickup_place?.place_name ?? ''}): ${names}`)
   }
   ;(tb.uber_groups ?? []).forEach((g) => {
     lines.push(`Uber ${g.group_number}: ${(g.passengers ?? []).join(', ')}`)
@@ -390,7 +392,7 @@ export default function FinalOutputBlocks() {
                 {tb.personal_vehicle?.driver && (
                   <div className="space-y-1">
                     <SectionTitle>Vehículo personal</SectionTitle>
-                    {assignments?.pickup_employee && (
+                    {(assignments?.pickup_passengers ?? []).length > 0 && (
                       <p className="text-xs text-muted-foreground">Se dirigen al Punto de Encuentro:</p>
                     )}
                     <div className="flex items-center gap-1.5">
@@ -414,25 +416,24 @@ export default function FinalOutputBlocks() {
                     ))}
 
                     {/* Pickup */}
-                    {assignments?.pickup_employee && (
+                    {(assignments?.pickup_passengers ?? []).length > 0 && (
                       <div className="pt-0.5 space-y-0.5">
-                        <p className="text-xs text-muted-foreground">Se encuentra en el punto de pickup:</p>
-                        <div className="flex items-center gap-1.5">
-                          <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />
-                          <span className="text-xs">
-                            {`${assignments.pickup_employee.Nombre} ${assignments.pickup_employee.Apellido}`}
-                            {assignments.pickup_employee.Profesion
-                              ? ` — ${assignments.pickup_employee.Profesion}`
-                              : ''}
-                            <span className="text-muted-foreground"> (pickup)</span>
-                          </span>
-                        </div>
-                        {assignments.pickup_place && (
+                        <p className="text-xs text-muted-foreground">
+                          Se encuentran en el punto de pickup
+                          {assignments.pickup_place ? ` (${assignments.pickup_place.place_name})` : ''}:
+                        </p>
+                        {assignments.pickup_passengers.map((emp) => (
+                          <div key={`${emp.Nombre} ${emp.Apellido}`} className="flex items-center gap-1.5">
+                            <span className="h-2 w-2 rounded-full bg-yellow-400 shrink-0" />
+                            <span className="text-xs">
+                              {`${emp.Nombre} ${emp.Apellido}`}
+                              {emp.Profesion ? ` — ${emp.Profesion}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                        {assignments.pickup_place?.place_address && (
                           <p className="text-xs text-muted-foreground pl-3.5">
-                            {assignments.pickup_place.place_name}
-                            {assignments.pickup_place.place_address
-                              ? ` — ${assignments.pickup_place.place_address}`
-                              : ''}
+                            {assignments.pickup_place.place_address}
                           </p>
                         )}
                         {pickupTime && (

@@ -153,7 +153,9 @@ PEA candidate fields (per candidate): `name`, `address`, `lat`, `lng`, `top4_sav
 
 User sees candidates on map, decides PE or PEA.
 
-### Step 7 — Pickup points (personal car only, max 1)
+### Step 7 — Pickup points (personal car only, max 1 location, multiple passengers)
+There is at most ONE pickup point per trip. However, multiple passengers can be assigned to that point — up to the remaining car capacity. Total car occupancy = driver + PE passengers (car_passengers) + pickup passengers ≤ 5 (MAX_PASSENGERS_PER_CAR + 1 driver).
+
 `get_pickup_highlight(remaining_pool, route_polyline, meeting_point)`: pure geometry, farthest employee from meeting point → cross_point on polyline. Auto-shown on map load.
 
 `find_pickup_candidate(route_polyline, employee, meeting_point)`: ON DEMAND via context menu.

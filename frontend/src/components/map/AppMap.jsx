@@ -188,10 +188,10 @@ export default function AppMap() {
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
         driver,
-        car_passengers:  [],
-        uber_passengers: [],
-        pickup_employee: null,
-        pickup_place:    null,
+        car_passengers:    [],
+        uber_passengers:   [],
+        pickup_passengers: [],
+        pickup_place:      null,
       },
     })
   }, [state.currentStep, state.assignments, state.personalVehicle, dispatch])
@@ -520,7 +520,7 @@ export default function AppMap() {
           carPassengers={assignLogic.carPassengers}
           uberPassengers={assignLogic.uberPassengers}
           uberGroups={assignLogic.uberGroups}
-          pickupEmployee={assignLogic.pickupEmployee}
+          pickupPassengers={assignLogic.pickupPassengers}
           pickupPlace={assignLogic.pickupPlace}
           hasVehicle={assignLogic.hasVehicle}
           vehicleLabel={assignLogic.vehicleLabel}
