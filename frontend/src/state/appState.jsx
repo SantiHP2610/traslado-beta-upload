@@ -104,6 +104,13 @@ const initialState = {
   // When absent for a group, that group uses state.chosenMeetingPoint.
   uberMeetingPointOverrides: {},
 
+  // Snapshot of driverRoutes taken before the first pickup confirmation.
+  // When a pickup is confirmed (automatic or manual), the active route polyline
+  // is updated to include the pickup stop.  This snapshot lets us restore the
+  // original routes if the manager resets assignments or goes back to step 2.
+  // null = routes have not been modified by a pickup confirmation.
+  originalDriverRoutes: null,
+
   // Which Uber group's address input form is currently open (int) or null.
   uberPeEditMode: null,
 
@@ -140,8 +147,10 @@ export const ACTIONS = {
   SET_MANUAL_PEA_MODE:       'SET_MANUAL_PEA_MODE',
   SET_UBER_MEETING_POINT:    'SET_UBER_MEETING_POINT',
   CLEAR_UBER_MEETING_POINT:  'CLEAR_UBER_MEETING_POINT',
-  SET_UBER_PE_EDIT_MODE:     'SET_UBER_PE_EDIT_MODE',
-  SET_UBER_PE_DRAG_MODE:     'SET_UBER_PE_DRAG_MODE',
+  SET_UBER_PE_EDIT_MODE:          'SET_UBER_PE_EDIT_MODE',
+  SET_UBER_PE_DRAG_MODE:          'SET_UBER_PE_DRAG_MODE',
+  SET_ORIGINAL_DRIVER_ROUTES:     'SET_ORIGINAL_DRIVER_ROUTES',
+  RESTORE_ORIGINAL_DRIVER_ROUTES: 'RESTORE_ORIGINAL_DRIVER_ROUTES',
   ADD_PICKUP_PASSENGER:      'ADD_PICKUP_PASSENGER',
   REMOVE_PICKUP_PASSENGER:   'REMOVE_PICKUP_PASSENGER',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
@@ -239,6 +248,19 @@ function appReducer(state, action) {
       // payload: int | null — shows/hides the draggable map pin for a specific group.
       return { ...state, uberPeDragMode: action.payload }
 
+    case ACTIONS.SET_ORIGINAL_DRIVER_ROUTES:
+      // Snapshot the pre-pickup routes — only saved once (first call wins).
+      // Subsequent pickup confirmations build on the same modified route, so
+      // we never overwrite the true original with an already-modified version.
+      if (state.originalDriverRoutes !== null) return state
+      return { ...state, originalDriverRoutes: action.payload }
+
+    case ACTIONS.RESTORE_ORIGINAL_DRIVER_ROUTES:
+      // Revert driverRoutes to the pre-pickup snapshot and clear the snapshot.
+      // No-op if no snapshot exists (nothing to restore).
+      if (!state.originalDriverRoutes) return state
+      return { ...state, driverRoutes: state.originalDriverRoutes, originalDriverRoutes: null }
+
     case ACTIONS.ADD_PICKUP_PASSENGER: {
       // payload: employee object — appended to assignments.pickup_passengers.
       const current = state.assignments?.pickup_passengers ?? []
@@ -287,7 +309,14 @@ function appReducer(state, action) {
       } else if (state.currentStep >= 3) {
         // Leaving step 3 → step 2: undo passenger assignments; user must
         // re-select the meeting point on the map before re-entering step 3.
-        Object.assign(clearing, { assignments: null, activePickupResult: null, chosenMeetingPoint: null, manualPickupMode: false, uberMeetingPointOverrides: {}, uberPeEditMode: null, uberPeDragMode: null })
+        // Also restore the original driver routes if a pickup confirmation had
+        // modified the active polyline (restores the unmodified home→PE→event route).
+        const routesToRestore = state.originalDriverRoutes ?? state.driverRoutes
+        Object.assign(clearing, {
+          assignments: null, activePickupResult: null, chosenMeetingPoint: null,
+          manualPickupMode: false, uberMeetingPointOverrides: {}, uberPeEditMode: null,
+          uberPeDragMode: null, originalDriverRoutes: null, driverRoutes: routesToRestore,
+        })
       } else if (state.currentStep >= 2) {
         // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
         // point data so useStepTwo will recompute them if user re-advances.

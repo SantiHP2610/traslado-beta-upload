@@ -11,9 +11,10 @@
  * wrapper is removed.
  */
 
-import { useState }              from 'react'
-import { useAppState, ACTIONS }  from '../../state/appState'
-import { Button }                from '@/components/ui/button'
+import { useState }                    from 'react'
+import { useAppState, ACTIONS }        from '../../state/appState'
+import { recalculateRouteWithPickup }  from '../../api/endpoints'
+import { Button }                      from '@/components/ui/button'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -31,7 +32,7 @@ function formatMeters(m) {
 // Sub-component: single venue option
 // ---------------------------------------------------------------------------
 
-function PlaceOption({ place, onConfirm }) {
+function PlaceOption({ place, onConfirm, confirming }) {
   const [showHours, setShowHours] = useState(false)
   const hours = place.opening_hours ?? []
 
@@ -65,8 +66,13 @@ function PlaceOption({ place, onConfirm }) {
           )}
         </div>
       )}
-      <Button size="sm" className="w-full text-xs" onClick={() => onConfirm(place)}>
-        Confirmar este pickup
+      <Button
+        size="sm"
+        className="w-full text-xs"
+        disabled={confirming}
+        onClick={() => onConfirm(place)}
+      >
+        {confirming ? 'Confirmando…' : 'Confirmar este pickup'}
       </Button>
     </div>
   )
@@ -78,6 +84,7 @@ function PlaceOption({ place, onConfirm }) {
 
 export default function PickupResultPanel() {
   const { state, dispatch } = useAppState()
+  const [confirming, setConfirming] = useState(false)
 
   const activePickupResult = state.activePickupResult
   if (!activePickupResult) return null
@@ -89,10 +96,53 @@ export default function PickupResultPanel() {
     dispatch({ type: ACTIONS.SET_ACTIVE_PICKUP_RESULT, payload: null })
   }
 
-  function handleConfirm(place) {
-    const employee = state.staffWithCoords?.find(
-      (emp) => fullName(emp) === employeeName,
-    )
+  async function handleConfirm(place) {
+    if (confirming) return
+    setConfirming(true)
+
+    const employee = state.staffWithCoords?.find((emp) => fullName(emp) === employeeName)
+
+    // ── Recalculate route to include the pickup stop ─────────────────────────
+    // Derive driver coordinates the same way AppMap does for manual pickup:
+    //   1. Check coordinateOverrides for a user-repositioned driver marker.
+    //   2. Fall back to staffWithCoords (geocoded by useBootstrap at startup).
+    //   detect-personal-vehicle does not geocode staff, so driver.coordinates
+    //   is not populated; staffWithCoords is the authoritative geocoded source.
+    const driver         = state.personalVehicle?.driver
+    const driverName     = driver ? `${driver.Nombre} ${driver.Apellido}` : null
+    const override       = driverName ? state.coordinateOverrides[driverName] : null
+    const driverWithCoords = driverName
+      ? state.staffWithCoords?.find((e) => `${e.Nombre} ${e.Apellido}` === driverName)
+      : null
+    const driverCoords = {
+      lat: override?.lat ?? driverWithCoords?.coordinates?.lat,
+      lng: override?.lng ?? driverWithCoords?.coordinates?.lng,
+    }
+
+    // Snapshot original routes before any modification (idempotent — only saves once).
+    dispatch({ type: ACTIONS.SET_ORIGINAL_DRIVER_ROUTES, payload: state.driverRoutes })
+
+    try {
+      const newRoute = await recalculateRouteWithPickup(
+        driverCoords,
+        { lat: state.chosenMeetingPoint.lat, lng: state.chosenMeetingPoint.lng },
+        { lat: place.lat, lng: place.lng },
+        state.eventCoords,
+      )
+
+      // Update the route that is currently active (base = PE chosen, direct = PEA chosen).
+      const isPea = state.meetingPoint &&
+        state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+      const updatedRoutes = isPea
+        ? { ...state.driverRoutes, direct_route: { ...state.driverRoutes.direct_route, encoded_polyline: newRoute.encoded_polyline } }
+        : { ...state.driverRoutes, base_route:   { ...state.driverRoutes.base_route,   encoded_polyline: newRoute.encoded_polyline, legs: [] } }
+      dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: updatedRoutes })
+    } catch (err) {
+      // Route recalculation failed — store the pickup assignment anyway.
+      // The route simply stays unmodified; the manager sees the correct PE route.
+      console.warn('[PickupResultPanel] Route recalculation failed:', err?.message)
+    }
+
     dispatch({
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
@@ -103,6 +153,7 @@ export default function PickupResultPanel() {
       },
     })
     dispatch({ type: ACTIONS.SET_ACTIVE_PICKUP_RESULT, payload: null })
+    setConfirming(false)
   }
 
   return (
@@ -158,7 +209,7 @@ export default function PickupResultPanel() {
                 Venues disponibles
               </p>
               {candidate.place_options.map((place, i) => (
-                <PlaceOption key={i} place={place} onConfirm={handleConfirm} />
+                <PlaceOption key={i} place={place} onConfirm={handleConfirm} confirming={confirming} />
               ))}
             </div>
           ) : (

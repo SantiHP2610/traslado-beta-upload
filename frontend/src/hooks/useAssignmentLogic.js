@@ -196,6 +196,8 @@ export function useAssignmentLogic() {
     setUberAutoFilled(false)
     setShowSoloChoice(false)
     setPendingSolo(null)
+    // Restore the original driver route if a pickup confirmation had modified it.
+    dispatch({ type: ACTIONS.RESTORE_ORIGINAL_DRIVER_ROUTES })
     dispatch({
       type:    ACTIONS.SET_ASSIGNMENTS,
       payload: {
