@@ -118,7 +118,7 @@ export default function AssignmentSummaryPanel({
 }) {
   const { state, dispatch } = useAppState()
   const { error, activePickupResult, manualPickupMode,
-          uberMeetingPointOverrides, uberPeEditMode, uberPeDragMode, chosenMeetingPoint } = state
+          uberMeetingPointOverrides, uberPeEditMode, chosenMeetingPoint } = state
   const pendingEmployee = assignments?.pending_employee ?? null
 
   // Local state for the address form (keyed by group number) and geocoding spinner.
