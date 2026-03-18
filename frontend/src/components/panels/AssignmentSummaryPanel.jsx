@@ -646,6 +646,7 @@ export default function AssignmentSummaryPanel({
         ) : (
           unassigned.length > 0 && !uberAutoFilled ? (
             <button
+              key="autofill"
               onClick={onAutoFill}
               style={{
                 width:          '100%',
@@ -670,6 +671,7 @@ export default function AssignmentSummaryPanel({
           ) : (
             /* Phase 2: uber groups are shown — user can review/edit, then validate */
             <button
+              key="validate"
               onClick={onValidate}
               disabled={validating}
               style={{

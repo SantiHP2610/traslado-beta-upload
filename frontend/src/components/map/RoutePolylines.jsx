@@ -65,6 +65,47 @@ function decodePath(encoded) {
   return polyline.decode(encoded).map(([lat, lng]) => ({ lat, lng }))
 }
 
+/**
+ * Haversine distance in metres between two {lat, lng} points.
+ * Used to locate the closest polyline vertex to the meeting point.
+ */
+function haversineM(a, b) {
+  const R    = 6_371_000
+  const dLat = (b.lat - a.lat) * (Math.PI / 180)
+  const dLng = (b.lng - a.lng) * (Math.PI / 180)
+  const s    = Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * (Math.PI / 180)) *
+    Math.cos(b.lat * (Math.PI / 180)) *
+    Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(s))
+}
+
+/**
+ * Splits a decoded polyline at the vertex closest to `peCoords`.
+ * Returns [leg0Points, leg1Points] where leg0 = home→PE, leg1 = PE→event.
+ * Returns null if a valid split index cannot be found.
+ *
+ * @param {{ lat: number, lng: number }[]} points  Decoded polyline vertices
+ * @param {{ lat: number, lng: number }}   peCoords Meeting-point coordinates
+ * @returns {[Array, Array] | null}
+ */
+function splitAtPE(points, peCoords) {
+  if (!peCoords || points.length < 3) return null
+
+  let minDist = Infinity
+  let splitIdx = 0
+  for (let i = 0; i < points.length; i++) {
+    const d = haversineM(points[i], peCoords)
+    if (d < minDist) { minDist = d; splitIdx = i }
+  }
+
+  // Reject degenerate splits (split at very start or very end of route).
+  if (splitIdx === 0 || splitIdx >= points.length - 1) return null
+
+  // Both legs share the split vertex so the two polylines connect cleanly.
+  return [points.slice(0, splitIdx + 1), points.slice(splitIdx)]
+}
+
 export default function RoutePolylines() {
   const map          = useMap()
   const { state }    = useAppState()
@@ -110,37 +151,37 @@ export default function RoutePolylines() {
       polylinesRef.current = [baseLine, directLine]
 
     } else if (!isPea) {
-      // ── PE chosen: two-color base route (home→PE in dark yellow-orange,
-      //               PE→event in yellow) when per-leg polylines are available.
-      // Falls back to a single yellow line when leg data is absent.
-      const legs = base_route.legs
-      if (
-        Array.isArray(legs) &&
-        legs.length >= 2 &&
-        legs[0]?.encoded_polyline &&
-        legs[1]?.encoded_polyline
-      ) {
-        // Leg 0: driver home → PE (#F5A623 darker yellow-orange)
+      // ── PE chosen: two-color base route ─────────────────────────────────
+      // The Routes API puts the encoded polyline on the route, not per-leg,
+      // so we split the full decoded path at the vertex closest to the PE.
+      //   Leg 0 (home → PE):    #F9D976  light warm yellow
+      //   Leg 1 (PE  → event):  #E8A317  deeper golden yellow
+      // Falls back to single #FBBC04 when the split can't be determined.
+      const peCoords = chosen   // chosen is state.chosenMeetingPoint (set above)
+      const points   = decodePath(base_route.encoded_polyline)
+      const split    = splitAtPE(points, peCoords)
+
+      if (split) {
+        const [leg0Points, leg1Points] = split
         const leg0 = new google.maps.Polyline({
-          path:          decodePath(legs[0].encoded_polyline),
-          strokeColor:   '#F5A623',
+          path:          leg0Points,
+          strokeColor:   '#F9D976',   // light warm yellow: home → PE
           strokeWeight:  STROKE_WEIGHT,
           strokeOpacity: 1.0,
           map,
         })
-        // Leg 1: PE → event (#FBBC04 yellow — matches PE marker + staff marker color)
         const leg1 = new google.maps.Polyline({
-          path:          decodePath(legs[1].encoded_polyline),
-          strokeColor:   '#FBBC04',
+          path:          leg1Points,
+          strokeColor:   '#E8A317',   // deeper golden yellow: PE → event
           strokeWeight:  STROKE_WEIGHT,
           strokeOpacity: 1.0,
           map,
         })
         polylinesRef.current = [leg0, leg1]
       } else {
-        // Fallback: single yellow polyline when leg data is not available.
+        // Fallback: single yellow polyline when split is not possible.
         const baseLine = new google.maps.Polyline({
-          path:          decodePath(base_route.encoded_polyline),
+          path:          points,
           strokeColor:   '#FBBC04',
           strokeWeight:  STROKE_WEIGHT,
           strokeOpacity: 1.0,

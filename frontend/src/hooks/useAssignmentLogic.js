@@ -17,7 +17,7 @@
  * The only change is that they now live in a hook instead of a component.
  */
 
-import { useState }               from 'react'
+import { useState, useEffect }    from 'react'
 import { useAppState, ACTIONS }   from '../state/appState'
 import { validateAssignments }    from '../api/endpoints'
 
@@ -101,6 +101,23 @@ export function useAssignmentLogic() {
   const assignedCount = assignedNames.size
   const unassigned    = pool.filter((emp) => !assignedNames.has(fullName(emp)))
   const uberGroups    = chunkArray(uberPassengers, MAX_UBER)
+
+  // ── Reset local UI state when assignments become empty ───────────────────
+  // useAssignmentLogic lives inside AppMap which stays mounted across all step
+  // transitions.  When the user goes back from step 3 (STEP_BACK sets
+  // assignments: null) and re-enters step 3, uberAutoFilled / showSoloChoice /
+  // pendingSolo still hold their values from the previous pass.  The effect
+  // below detects an empty-or-null assignments object and resets all three so
+  // the panel starts fresh each time step 3 is entered.
+  useEffect(() => {
+    const hasCar  = (assignments?.car_passengers?.length  ?? 0) > 0
+    const hasUber = (assignments?.uber_passengers?.length ?? 0) > 0
+    if (!hasCar && !hasUber) {
+      setUberAutoFilled(false)
+      setShowSoloChoice(false)
+      setPendingSolo(null)
+    }
+  }, [assignments]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── API call: POST /validate-assignments ─────────────────────────────────
   async function doValidate(assignmentsSnapshot) {
