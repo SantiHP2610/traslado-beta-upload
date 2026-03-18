@@ -106,10 +106,17 @@ function splitAtPE(points, peCoords) {
   return [points.slice(0, splitIdx + 1), points.slice(splitIdx)]
 }
 
-export default function RoutePolylines() {
+/**
+ * @param {{ [groupNumber: string]: string }} uberRoutes
+ *   Encoded polylines for each Uber group's custom PE → event route,
+ *   keyed by group number string.  Passed from AppMap where DirectionsService
+ *   is called when uberMeetingPointOverrides change.
+ */
+export default function RoutePolylines({ uberRoutes = {} }) {
   const map          = useMap()
   const { state }    = useAppState()
   const polylinesRef = useRef([])   // holds the live google.maps.Polyline objects
+  const uberPolylinesRef = useRef([]) // separate ref for Uber custom-PE route overlays
 
   useEffect(() => {
     // Nothing to draw without a map instance or route data.
@@ -210,6 +217,34 @@ export default function RoutePolylines() {
       polylinesRef.current = []
     }
   }, [map, state.driverRoutes, state.chosenMeetingPoint, state.meetingPoint])
+
+  // ── Uber custom-PE → event route polylines ─────────────────────────────
+  // Drawn as a separate set of overlays so their lifecycle is independent of
+  // the main driver-route useEffect.  Near-black, slightly thinner than the
+  // main route, so they read as secondary "branch" routes on the map.
+  useEffect(() => {
+    uberPolylinesRef.current.forEach((p) => p.setMap(null))
+    uberPolylinesRef.current = []
+
+    if (!map) return
+
+    for (const encoded of Object.values(uberRoutes)) {
+      if (!encoded) continue
+      const line = new google.maps.Polyline({
+        path:          decodePath(encoded),
+        strokeColor:   '#1a1a1a',
+        strokeWeight:  3,
+        strokeOpacity: 0.7,
+        map,
+      })
+      uberPolylinesRef.current.push(line)
+    }
+
+    return () => {
+      uberPolylinesRef.current.forEach((p) => p.setMap(null))
+      uberPolylinesRef.current = []
+    }
+  }, [map, uberRoutes])
 
   // Renderless — all output is via the imperative Maps JS API.
   return null

@@ -35,7 +35,7 @@
  * AssignmentSummaryPanel (right).  Both panels receive the results as props.
  */
 
-import { useMemo, useEffect, useState, useRef, useCallback } from 'react'
+import { useMemo, useEffect, useRef, useState, useCallback } from 'react'
 import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-maps'
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
@@ -96,6 +96,41 @@ function distanceToPolylineMetres(point, encodedPolyline) {
     if (d < min) min = d
   }
   return min
+}
+
+// ---------------------------------------------------------------------------
+// Uber custom-PE route helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Requests a driving route from `origin` to `destination` via the Maps JS API
+ * DirectionsService and returns the overview encoded polyline string.
+ * Returns null if the request fails or no route is found.
+ *
+ * Using DirectionsService (client-side) instead of a backend call keeps this
+ * zero-latency for the user and avoids adding a new backend endpoint.
+ *
+ * @param {{ lat: number, lng: number }} origin
+ * @param {{ lat: number, lng: number }} destination
+ * @returns {Promise<string | null>}
+ */
+function getDirectionsRoute(origin, destination) {
+  return new Promise((resolve) => {
+    if (typeof google === 'undefined' || !google.maps?.DirectionsService) {
+      resolve(null)
+      return
+    }
+    new google.maps.DirectionsService().route(
+      { origin, destination, travelMode: google.maps.TravelMode.DRIVING },
+      (result, status) => {
+        if (status === 'OK') {
+          resolve(result.routes[0]?.overview_polyline?.points ?? null)
+        } else {
+          resolve(null)
+        }
+      },
+    )
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +231,14 @@ export default function AppMap() {
   // InfoWindow open for a static (non-edit) Uber PE override marker.
   const [staticUberIw, setStaticUberIw] = useState(null)
 
+  // Encoded polylines for Uber group custom-PE → event routes.
+  // Populated by a useEffect below whenever uberMeetingPointOverrides changes.
+  // Keyed by group number as a string (matches uberMeetingPointOverrides keys).
+  const [uberRoutes, setUberRoutes] = useState({})
+  // Tracks the {lat,lng} of the last DirectionsService call per group so we
+  // skip redundant API requests when the override position hasn't changed.
+  const uberDirPrevRef = useRef({})
+
   // Derive the target position for the active edit-mode marker.
   const uberEditGroupNumber = state.uberPeEditMode
   const uberEditTarget = uberEditGroupNumber != null
@@ -264,6 +307,47 @@ export default function AppMap() {
       }
     }
   }, [uberEditTarget?.lat, uberEditTarget?.lng, uberEditGroupNumber]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Uber custom-PE → event route computation ─────────────────────────────
+  // Whenever uberMeetingPointOverrides changes (override added, moved, or
+  // cleared), rebuild the uberRoutes map via DirectionsService.
+  //   • Only calls the API for groups whose position actually changed — the
+  //     `uberDirPrevRef` tracks the last lat/lng per group.
+  //   • Cleared groups are removed immediately from state.
+  //   • API calls are fire-and-forget; each resolves into a functional setState
+  //     so concurrent calls compose correctly without race-condition overwrites.
+  useEffect(() => {
+    if (!state.eventCoords) return
+
+    const overrides   = state.uberMeetingPointOverrides
+    const activeGroups = new Set(Object.keys(overrides))
+
+    // Remove routes and prev-position tracking for cleared overrides.
+    const removed = Object.keys(uberDirPrevRef.current).filter((k) => !activeGroups.has(k))
+    if (removed.length > 0) {
+      removed.forEach((k) => delete uberDirPrevRef.current[k])
+      setUberRoutes((prev) => {
+        const next = { ...prev }
+        removed.forEach((k) => delete next[k])
+        return next
+      })
+    }
+
+    // Request a route for each override whose position has changed.
+    for (const [key, pos] of Object.entries(overrides)) {
+      const prev = uberDirPrevRef.current[key]
+      if (prev && prev.lat === pos.lat && prev.lng === pos.lng) continue   // unchanged
+
+      uberDirPrevRef.current[key] = { lat: pos.lat, lng: pos.lng }
+
+      getDirectionsRoute(
+        { lat: pos.lat, lng: pos.lng },
+        { lat: state.eventCoords.lat, lng: state.eventCoords.lng },
+      ).then((encoded) => {
+        if (encoded) setUberRoutes((prev) => ({ ...prev, [key]: encoded }))
+      })
+    }
+  }, [state.uberMeetingPointOverrides, state.eventCoords]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
@@ -531,7 +615,7 @@ export default function AppMap() {
             <StaffMarkers staff={state.staffWithCoords} />
           )}
 
-          {state.driverRoutes && <RoutePolylines />}
+          {state.driverRoutes && <RoutePolylines uberRoutes={uberRoutes} />}
 
           {state.meetingPoint && state.currentStep >= 2 && (
             <MeetingPointMarkers />

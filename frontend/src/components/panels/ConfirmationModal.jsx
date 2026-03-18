@@ -232,7 +232,7 @@ export default function ConfirmationModal() {
           style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}
           className="space-y-4"
         >
-          {/* Section 1: Frescos */}
+          {/* Section 1: Frescos + loading time */}
           <div className="space-y-1.5">
             <SectionTitle>Frescos</SectionTitle>
             <p className="text-xs font-medium">
@@ -252,6 +252,42 @@ export default function ConfirmationModal() {
                 <p className="text-xs text-muted-foreground">{secondMinifleteResult.reason}</p>
               </div>
             )}
+
+            {/* Loading time — grouped here because it directly affects the CP
+                departure calculation for the frescos vehicle. */}
+            <div className="pt-1 space-y-1">
+              <p className="text-xs text-muted-foreground font-medium">
+                Tiempo estimado de carga (minutos)
+              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="number"
+                  min={0}
+                  max={240}
+                  step={5}
+                  value={loadingTimeMinutes}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10)
+                    if (!isNaN(v) && v >= 0) setLoadingTimeMinutes(v)
+                  }}
+                  disabled={confirming}
+                  style={{
+                    width:        72,
+                    padding:      '5px 8px',
+                    border:       '1px solid #d1d5db',
+                    borderRadius: 6,
+                    fontSize:     13,
+                    textAlign:    'right',
+                    outline:      'none',
+                    opacity:      confirming ? 0.6 : 1,
+                  }}
+                />
+                <span style={{ fontSize: 13, color: '#374151' }}>min</span>
+              </div>
+              <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
+                Ajustá según la cantidad de comensales y tipo de evento
+              </p>
+            </div>
           </div>
 
           {/* Section 2: Punto de encuentro */}
@@ -370,39 +406,6 @@ export default function ConfirmationModal() {
               <p className="text-xs text-amber-700">Transporte alternativo a coordinar</p>
             </div>
           )}
-
-          {/* Section 6: Loading time at CP */}
-          <div className="space-y-1.5">
-            <SectionTitle>Tiempo de carga en CP</SectionTitle>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="number"
-                min={0}
-                max={240}
-                step={5}
-                value={loadingTimeMinutes}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10)
-                  if (!isNaN(v) && v >= 0) setLoadingTimeMinutes(v)
-                }}
-                disabled={confirming}
-                style={{
-                  width:        72,
-                  padding:      '5px 8px',
-                  border:       '1px solid #d1d5db',
-                  borderRadius: 6,
-                  fontSize:     13,
-                  textAlign:    'right',
-                  outline:      'none',
-                  opacity:      confirming ? 0.6 : 1,
-                }}
-              />
-              <span style={{ fontSize: 13, color: '#374151' }}>min</span>
-            </div>
-            <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
-              Ajustá según la cantidad de comensales y tipo de evento
-            </p>
-          </div>
 
           {/* Error */}
           {state.error && (
