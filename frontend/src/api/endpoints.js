@@ -361,6 +361,27 @@ export async function finalOutput(body) {
 }
 
 // ---------------------------------------------------------------------------
+// Uber custom-PE route
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes a single DRIVE TRAFFIC_AWARE route from origin to destination.
+ * Used to draw the secondary polyline from a custom Uber group meeting point
+ * to the event venue whenever uberMeetingPointOverrides has an entry.
+ * @param {number} originLat
+ * @param {number} originLng
+ * @param {number} destLat
+ * @param {number} destLng
+ * @returns {{ encoded_polyline: string, duration_seconds: number, distance_meters: number }}
+ */
+export async function simpleRoute(originLat, originLng, destLat, destLng) {
+  const response = await client.get('/simple-route', {
+    params: { origin_lat: originLat, origin_lng: originLng, dest_lat: destLat, dest_lng: destLng },
+  })
+  return response.data
+}
+
+// ---------------------------------------------------------------------------
 // Config panel
 // ---------------------------------------------------------------------------
 

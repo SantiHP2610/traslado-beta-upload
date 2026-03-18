@@ -1118,6 +1118,42 @@ def pea_place_info(
     return result
 
 
+def simple_route(origin: dict, destination: dict) -> dict:
+    """
+    Computes a single driving route from origin to destination using the
+    Google Routes API.
+
+    Lighter-weight than calculate_driver_route() — no intermediates, no
+    arrivalTime, no parallel direct-route computation.  Used by the frontend
+    to draw a small secondary polyline from a custom Uber group meeting point
+    to the event venue, without the overhead of the full driver-route pipeline.
+
+    Parameters:
+        origin      (dict): {"lat": float, "lng": float}
+        destination (dict): {"lat": float, "lng": float}
+
+    Returns:
+        dict: {
+            "encoded_polyline": str,
+            "duration_seconds": int,
+            "distance_meters":  int,
+        }
+    """
+    body = {
+        "origin":            _latLng(origin),
+        "destination":       _latLng(destination),
+        "travelMode":        "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE",
+    }
+    response_json = _call_routes_api(body)
+    route = _extract_route(response_json)
+    return {
+        "encoded_polyline": route["encoded_polyline"],
+        "duration_seconds": route["duration_seconds"],
+        "distance_meters":  route["distance_meters"],
+    }
+
+
 def recalculate_route_with_pickup(
     driver_coords:  dict,
     pickup_point:   dict,

@@ -40,7 +40,7 @@ import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
 import { useAppState, ACTIONS }                      from '../../state/appState'
-import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo } from '../../api/endpoints'
+import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo, simpleRoute } from '../../api/endpoints'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
 import { useAssignmentLogic }            from '../../hooks/useAssignmentLogic'
 import MapBoundsController               from './MapBoundsController'
@@ -96,41 +96,6 @@ function distanceToPolylineMetres(point, encodedPolyline) {
     if (d < min) min = d
   }
   return min
-}
-
-// ---------------------------------------------------------------------------
-// Uber custom-PE route helper
-// ---------------------------------------------------------------------------
-
-/**
- * Requests a driving route from `origin` to `destination` via the Maps JS API
- * DirectionsService and returns the overview encoded polyline string.
- * Returns null if the request fails or no route is found.
- *
- * Using DirectionsService (client-side) instead of a backend call keeps this
- * zero-latency for the user and avoids adding a new backend endpoint.
- *
- * @param {{ lat: number, lng: number }} origin
- * @param {{ lat: number, lng: number }} destination
- * @returns {Promise<string | null>}
- */
-function getDirectionsRoute(origin, destination) {
-  return new Promise((resolve) => {
-    if (typeof google === 'undefined' || !google.maps?.DirectionsService) {
-      resolve(null)
-      return
-    }
-    new google.maps.DirectionsService().route(
-      { origin, destination, travelMode: google.maps.TravelMode.DRIVING },
-      (result, status) => {
-        if (status === 'OK') {
-          resolve(result.routes[0]?.overview_polyline?.points ?? null)
-        } else {
-          resolve(null)
-        }
-      },
-    )
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -340,12 +305,13 @@ export default function AppMap() {
 
       uberDirPrevRef.current[key] = { lat: pos.lat, lng: pos.lng }
 
-      getDirectionsRoute(
-        { lat: pos.lat, lng: pos.lng },
-        { lat: state.eventCoords.lat, lng: state.eventCoords.lng },
-      ).then((encoded) => {
-        if (encoded) setUberRoutes((prev) => ({ ...prev, [key]: encoded }))
-      })
+      simpleRoute(pos.lat, pos.lng, state.eventCoords.lat, state.eventCoords.lng)
+        .then((result) => {
+          if (result?.encoded_polyline) {
+            setUberRoutes((prev) => ({ ...prev, [key]: result.encoded_polyline }))
+          }
+        })
+        .catch(() => {})
     }
   }, [state.uberMeetingPointOverrides, state.eventCoords]) // eslint-disable-line react-hooks/exhaustive-deps
 

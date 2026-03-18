@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, pea_place_info, recalculate_route_with_pickup
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, pea_place_info, recalculate_route_with_pickup, simple_route
 from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, assign_uber_only, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
@@ -2528,3 +2528,34 @@ def endpoint_pea_place_info(body: PeaPlaceInfoRequest):
     meeting_point = {"lat": body.meeting_point_lat, "lng": body.meeting_point_lng}
 
     return pea_place_info(body.lat, body.lng, remaining, meeting_point)
+
+
+# =============================================================================
+# Simple point-to-event route (Uber custom PE → event)
+# =============================================================================
+
+@app.get(
+    "/simple-route",
+    summary="Compute a single driving route between two points",
+    description=(
+        "Returns an encoded polyline, duration, and distance for a DRIVE "
+        "TRAFFIC_AWARE route from origin to destination.  Used by the frontend "
+        "to draw the secondary route polyline from a custom Uber group meeting "
+        "point to the event venue."
+    ),
+)
+def endpoint_simple_route(
+    origin_lat: float = Query(..., description="Origin latitude"),
+    origin_lng: float = Query(..., description="Origin longitude"),
+    dest_lat:   float = Query(..., description="Destination latitude"),
+    dest_lng:   float = Query(..., description="Destination longitude"),
+):
+    import traceback
+    try:
+        return simple_route(
+            origin=      {"lat": origin_lat, "lng": origin_lng},
+            destination= {"lat": dest_lat,   "lng": dest_lng},
+        )
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Route calculation failed")
