@@ -53,11 +53,11 @@ const LONG_EVENT_EXTRA_HOURS   = 2
 // Helpers
 // ---------------------------------------------------------------------------
 
-function cpTravelMinutes(totalMinutes, extraPrepApplied) {
+function cpTravelMinutes(totalMinutes, extraPrepApplied, loadingTimeMinutes) {
   return totalMinutes
     - DEPARTURE_PREP_HOURS * 60
     - DEPARTURE_BUFFER_MINUTES
-    - LOADING_TIME_MINUTES
+    - loadingTimeMinutes
     - (extraPrepApplied ? LONG_EVENT_EXTRA_HOURS * 60 : 0)
 }
 
@@ -101,8 +101,9 @@ function frescosText(fb, event) {
   const lines = [
     `FRESCOS — ${fb.vehicle === 'camioneta propia' ? 'Vehículo QH' : 'Miniflete contratado'}`,
     `Equipo: ${(fb.assigned_names ?? []).join(', ')}`,
+    fb.loading_start_time ? `Inicio de carga CP: ${fb.loading_start_time}` : null,
     `Salida CP: ${fb.departure_from_cp}`,
-  ]
+  ].filter(Boolean)
   if (fb.second_miniflete?.needs_second_miniflete) {
     lines.push(`Segundo miniflete: Sí (${fb.second_miniflete.reason})`)
     lines.push('Sale junto con el vehículo principal')
@@ -170,7 +171,7 @@ function DepartureSection({ departureTime, children }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-medium">Salida: {departureTime}</p>
+        <p className="text-xs font-semibold">Salida: {departureTime}</p>
         <button
           onClick={() => setOpen((v) => !v)}
           className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -233,7 +234,11 @@ export default function FinalOutputBlocks() {
   // ── Frescos breakdown ────────────────────────────────────────────────────
   const cpBd     = fb.departure_breakdown
   const cpTravel = cpBd
-    ? cpTravelMinutes(cpBd.total_minutes_before_event, cpBd.extra_prep_applied)
+    ? cpTravelMinutes(
+        cpBd.total_minutes_before_event,
+        cpBd.extra_prep_applied,
+        cpBd.loading_time_minutes ?? LOADING_TIME_MINUTES,
+      )
     : null
 
   // ── Transport breakdown ──────────────────────────────────────────────────
@@ -326,6 +331,14 @@ export default function FinalOutputBlocks() {
                 {/* CP departure + breakdown */}
                 <div className="space-y-1">
                   <SectionTitle>Salida del CP</SectionTitle>
+                  {/* Loading start — when crew must arrive at CP */}
+                  {fb.loading_start_time && (
+                    <p className="text-xs text-muted-foreground">
+                      Inicio de carga:{' '}
+                      <span className="font-medium text-foreground">{fb.loading_start_time}</span>
+                    </p>
+                  )}
+                  {/* Actual departure — when vehicle leaves CP after loading */}
                   <DepartureSection departureTime={fb.departure_from_cp}>
                     {cpBd && (
                       <>
@@ -337,7 +350,10 @@ export default function FinalOutputBlocks() {
                           note="calculado con tráfico real al arribo"
                         />
                         <BreakdownRow label="Buffer"         value={`${DEPARTURE_BUFFER_MINUTES} min`} />
-                        <BreakdownRow label="Carga en CP"    value={`${LOADING_TIME_MINUTES} min`} />
+                        <BreakdownRow
+                          label="Carga en CP"
+                          value={`${cpBd.loading_time_minutes ?? LOADING_TIME_MINUTES} min`}
+                        />
                         {cpBd.extra_prep_applied && (
                           <BreakdownRow
                             label={`Extra prep (${(cpBd.extra_prep_reason ?? []).join(', ')})`}
@@ -345,10 +361,18 @@ export default function FinalOutputBlocks() {
                             amber
                           />
                         )}
-                        <div className="border-t border-border pt-1">
+                        <div className="border-t border-border pt-1 space-y-1">
                           <BreakdownRow
                             label="Total antes del evento"
                             value={`${cpBd.total_minutes_before_event} min`}
+                          />
+                          <BreakdownRow
+                            label="Inicio de carga"
+                            value={fb.loading_start_time ?? '—'}
+                          />
+                          <BreakdownRow
+                            label="Salida del CP"
+                            value={fb.departure_from_cp ?? '—'}
                           />
                         </div>
                       </>

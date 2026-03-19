@@ -529,14 +529,21 @@ def calculate_departure_time(
     if extra_prep_applied:
         total_minutes += LONG_EVENT_EXTRA_HOURS * 60   # hours → minutes
 
-    # Subtract the total lead time from the event start to get the departure time.
+    # Subtract the total lead time from the event start to get the loading start
+    # time — this is when the crew must ARRIVE at the CP and begin loading.
     # timedelta handles midnight roll-overs correctly (e.g. a 01:00 event with
     # a 6-hour lead time will produce 19:00 the previous day — only the HH:MM
     # part is returned, so callers should be aware this is a wall-clock time).
-    departure_time = event_time - timedelta(minutes=total_minutes)
+    loading_start_time = event_time - timedelta(minutes=total_minutes)
+
+    # The actual departure from the CP happens after loading is complete.
+    # The manager may adjust loading_time_minutes in the confirmation modal,
+    # so we use the confirmed value here rather than the config default.
+    actual_departure = loading_start_time + timedelta(minutes=loading_time_minutes)
 
     return {
-        "departure_time":             departure_time.strftime("%H:%M"),
+        "loading_start_time":         loading_start_time.strftime("%H:%M"),
+        "departure_time":             actual_departure.strftime("%H:%M"),
         "extra_prep_applied":         extra_prep_applied,
         "extra_prep_reason":          extra_prep_reason,
         "total_minutes_before_event": total_minutes,
@@ -2322,6 +2329,9 @@ def build_final_output(
         # into the draggable output block so the dispatcher sees real names,
         # not abstract role strings.
         "assigned_names":      frescos_vehicle.get("assigned_names", []),
+        # loading_start_time = when the crew must arrive and start loading at CP.
+        # departure_from_cp  = when the vehicle actually LEAVES (after loading).
+        "loading_start_time":  cp_departure["loading_start_time"],
         "departure_from_cp":   cp_departure["departure_time"],
         # The full breakdown lets the frontend explain every subtracted minute,
         # making it easy for the manager to verify the formula at a glance.
