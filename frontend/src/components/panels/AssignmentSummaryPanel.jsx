@@ -297,6 +297,12 @@ export default function AssignmentSummaryPanel({
                     {pickupPlace.place_address}
                   </p>
                 )}
+                {/* Relative pickup timing — HH:MM is shown later in FinalOutputBlocks */}
+                <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginTop: 2 }}>
+                  {assignments?.leg_seconds != null
+                    ? `${Math.ceil(assignments.leg_seconds / 60)} min ${assignments.pickup_before_pe ? 'antes' : 'después'} del PE`
+                    : 'Horario a confirmar'}
+                </p>
               </>
             )}
           </section>

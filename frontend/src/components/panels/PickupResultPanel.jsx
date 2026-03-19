@@ -122,13 +122,23 @@ export default function PickupResultPanel() {
     // Snapshot original routes before any modification (idempotent — only saves once).
     dispatch({ type: ACTIONS.SET_ORIGINAL_DRIVER_ROUTES, payload: state.driverRoutes })
 
+    // Timing fields populated from the route response; null on failure (shows
+    // "Horario a confirmar" in the summary panels).
+    let pickupBeforePe = null
+    let legSeconds     = null
+
     try {
+      const baseRoutePolyline = state.driverRoutes?.base_route?.encoded_polyline ?? ''
       const newRoute = await recalculateRouteWithPickup(
         driverCoords,
         { lat: state.chosenMeetingPoint.lat, lng: state.chosenMeetingPoint.lng },
         { lat: place.lat, lng: place.lng },
         state.eventCoords,
+        baseRoutePolyline,
       )
+
+      pickupBeforePe = newRoute.pickup_before_pe ?? null
+      legSeconds     = newRoute.leg_seconds ?? null
 
       // Update the route that is currently active (base = PE chosen, direct = PEA chosen).
       const isPea = state.meetingPoint &&
@@ -150,6 +160,8 @@ export default function PickupResultPanel() {
         pickup_passengers:      [...(state.assignments?.pickup_passengers ?? []), employee],
         pickup_place:           place,
         pickup_transit_minutes: candidate?.transit_time_to_pickup_minutes ?? null,
+        pickup_before_pe:       pickupBeforePe,
+        leg_seconds:            legSeconds,
       },
     })
     dispatch({ type: ACTIONS.SET_ACTIVE_PICKUP_RESULT, payload: null })

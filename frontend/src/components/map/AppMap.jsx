@@ -416,13 +416,14 @@ export default function AppMap() {
     }
     const pickupPt = { lat: manualPickupInfo.lat, lng: manualPickupInfo.lng }
 
+    const baseRoutePolyline = state.driverRoutes?.base_route?.encoded_polyline ?? ''
+
     try {
       const newRoute = await recalculateRouteWithPickup(
-        driverCoords, meetingPt, pickupPt, state.eventCoords,
+        driverCoords, meetingPt, pickupPt, state.eventCoords, baseRoutePolyline,
       )
 
-      // Update the base route polyline with the new route including pickup stop.
-      // We store it as a modified base_route so RoutePolylines re-renders it.
+      // Update the active route polyline to include the pickup stop.
       const isPea = state.meetingPoint &&
         state.chosenMeetingPoint?.name !== state.meetingPoint?.name
       const updatedRoutes = isPea
@@ -436,7 +437,8 @@ export default function AppMap() {
           }
       dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: updatedRoutes })
 
-      // Store the pickup place on assignments.
+      // Store pickup place + timing metadata so panels can compute the
+      // pickup arrival time as PE departure ± leg_seconds.
       dispatch({
         type:    ACTIONS.SET_ASSIGNMENTS,
         payload: {
@@ -447,6 +449,8 @@ export default function AppMap() {
             lat:           manualPickupInfo.lat,
             lng:           manualPickupInfo.lng,
           },
+          pickup_before_pe: newRoute.pickup_before_pe ?? null,
+          leg_seconds:      newRoute.leg_seconds ?? null,
         },
       })
 

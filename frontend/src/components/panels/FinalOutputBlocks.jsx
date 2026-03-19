@@ -61,14 +61,36 @@ function cpTravelMinutes(totalMinutes, extraPrepApplied) {
     - (extraPrepApplied ? LONG_EVENT_EXTRA_HOURS * 60 : 0)
 }
 
-function computePickupTime(departureFromPe, transitMinutes) {
-  if (!departureFromPe || transitMinutes == null) return null
-  const [h, m]  = departureFromPe.split(':').map(Number)
-  const total   = h * 60 + m - transitMinutes
+/**
+ * Computes the pickup point arrival time and a human-readable relative label.
+ *
+ * pickup_before_pe = true  → driver passes pickup BEFORE reaching the PE
+ *   → pickup time = PE departure − legMinutes
+ *   → label: "N min antes del PE"
+ *
+ * pickup_before_pe = false → driver passes pickup AFTER leaving the PE
+ *   → pickup time = PE departure + legMinutes
+ *   → label: "N min después del PE"
+ *
+ * Returns { time: "HH:MM"|null, label: string }.
+ * If legSeconds is null, returns { time: null, label: "Horario a confirmar" }.
+ */
+function computePickupInfo(departureFromPe, legSeconds, pickupBeforePe) {
+  if (legSeconds == null) return { time: null, label: 'Horario a confirmar' }
+
+  const legMinutes = Math.ceil(legSeconds / 60)
+  const label = pickupBeforePe
+    ? `${legMinutes} min antes del PE`
+    : `${legMinutes} min después del PE`
+
+  if (!departureFromPe) return { time: null, label }
+
+  const [h, m] = departureFromPe.split(':').map(Number)
+  const total  = h * 60 + m + (pickupBeforePe ? -legMinutes : +legMinutes)
   const wrapped = ((total % 1440) + 1440) % 1440
-  const hOut    = Math.floor(wrapped / 60)
-  const mOut    = wrapped % 60
-  return `${String(hOut).padStart(2, '0')}:${String(mOut).padStart(2, '0')}`
+  const time = `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`
+
+  return { time, label }
 }
 
 function getProfesion(nameStr, staff) {
@@ -218,10 +240,11 @@ export default function FinalOutputBlocks() {
   const peBd       = tb.departure_breakdown
   const peBdDetail = peBd?.breakdown
 
-  // ── Pickup departure time ────────────────────────────────────────────────
-  const pickupTime = computePickupTime(
+  // ── Pickup arrival time ──────────────────────────────────────────────────
+  const pickupInfo = computePickupInfo(
     tb.departure_from_pe,
-    assignments?.pickup_transit_minutes,
+    assignments?.leg_seconds,
+    assignments?.pickup_before_pe,
   )
 
   // ── "Volver a editar": close panel, clear modal, return to step 3 ────────
@@ -439,11 +462,18 @@ export default function FinalOutputBlocks() {
                             {assignments.pickup_place.place_address}
                           </p>
                         )}
-                        {pickupTime && (
+                        {pickupInfo.time ? (
+                          <p className="text-xs font-medium pl-3.5">
+                            Hora en punto de pickup: {pickupInfo.time}
+                          </p>
+                        ) : (
                           <p className="text-xs text-muted-foreground pl-3.5">
-                            Horario pickup estimado: {pickupTime}
+                            Horario a confirmar
                           </p>
                         )}
+                        <p className="text-xs text-muted-foreground pl-3.5">
+                          {pickupInfo.label}
+                        </p>
                       </div>
                     )}
                   </div>

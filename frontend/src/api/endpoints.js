@@ -279,12 +279,13 @@ export async function pickupPlaceInfo(lat, lng) {
  * @param {{ lat: number, lng: number }} eventCoords
  * @returns {{ encoded_polyline: string, duration_seconds: number, distance_meters: number }}
  */
-export async function recalculateRouteWithPickup(driverCoords, meetingPoint, pickupPoint, eventCoords) {
+export async function recalculateRouteWithPickup(driverCoords, meetingPoint, pickupPoint, eventCoords, baseRoutePolyline) {
   const response = await client.post('/recalculate-route-with-pickup', {
-    driver_coords:  driverCoords,
-    meeting_point:  meetingPoint,
-    pickup_point:   pickupPoint,
-    event_coords:   eventCoords,
+    driver_coords:        driverCoords,
+    meeting_point:        meetingPoint,
+    pickup_point:         pickupPoint,
+    event_coords:         eventCoords,
+    base_route_polyline:  baseRoutePolyline,
   })
   return response.data
 }

@@ -178,12 +178,13 @@ In manual pickup mode:
 - Haversine check against active polyline vertices: > PICKUP_REJECT_M (3000m) → silently ignored; > PICKUP_WARNING_M (500m) → proceeds with "desvío" warning; otherwise proceeds cleanly.
 - `POST /pickup-place-info { lat, lng }` → backend: reverse geocode (Geocoding API) + searchNearby 100m no-type-filter (Places API) → returns `{lat, lng, name, address, types, opening_hours}`.
 - InfoWindow appears at clicked point showing name/address/hours + optional warning + "Confirmar como pickup" button.
-- Confirming calls `POST /recalculate-route-with-pickup { driver_coords, pickup_point, meeting_point, event_coords }` → Routes API: driver home → pickup → meeting point → event. New encoded_polyline replaces the active route in `state.driverRoutes`. `state.assignments.pickup_place` set to `{place_name, place_address, lat, lng}`.
+- Confirming calls `POST /recalculate-route-with-pickup { driver_coords, pickup_point, meeting_point, event_coords, base_route_polyline }` → Routes API: determines pickup order via polyline vertex index comparison (one API call), returns `{encoded_polyline, pickup_before_pe, leg_seconds}`. New encoded_polyline replaces the active route in `state.driverRoutes`. `state.assignments` updated with `pickup_place`, `pickup_before_pe`, `leg_seconds`.
 - Active route: PE chosen → update `base_route.encoded_polyline`; PEA chosen → update `direct_route.encoded_polyline`.
 - Banner in AssignmentSummaryPanel shows "Modo pickup activo" + "Cancelar" link while mode is active.
 - manualPickupMode cleared on: cancel, confirm, STEP_BACK from step 3.
+- **Pickup time** = PE departure ± `Math.ceil(leg_seconds / 60)` minutes. `pickup_before_pe = true` → subtract (pickup before PE); `false` → add (pickup after PE). Displayed as "Hora en punto de pickup: HH:MM" in FinalOutputBlocks; as "N min antes/después del PE" in AssignmentSummaryPanel and ConfirmationModal. Falls back to "Horario a confirmar" if `leg_seconds` is null.
 
-Backend functions in `modules/maps_client.py`: `pickup_place_info(lat, lng)`, `recalculate_route_with_pickup(driver_coords, pickup_point, meeting_point, event_coords)`. Both cache under "pickup_places" namespace.
+Backend functions in `modules/maps_client.py`: `pickup_place_info(lat, lng)`, `recalculate_route_with_pickup(driver_coords, pickup_point, meeting_point, event_coords, base_route_polyline)`. `recalculate_route_with_pickup` uses `_closest_vertex_index` (haversine) to compare vertex indices, building the correct intermediate order in one Routes API call. `leg_seconds` = legs[1].duration of the 3-leg response (the pickup↔PE middle leg).
 
 Uber vehicles do NOT get pickup points.
 

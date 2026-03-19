@@ -341,6 +341,18 @@ export default function ConfirmationModal() {
                       {pickupPlace.place_address}
                     </p>
                   )}
+                  {/* Pickup relative timing — PE departure not yet known here,
+                      so we show the relative label only (HH:MM in FinalOutputBlocks). */}
+                  {assignments?.leg_seconds != null ? (
+                    <p className="text-xs text-muted-foreground pl-3.5">
+                      {Math.ceil(assignments.leg_seconds / 60)} min{' '}
+                      {assignments.pickup_before_pe ? 'antes' : 'después'} del PE
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground pl-3.5">
+                      Horario a confirmar
+                    </p>
+                  )}
                 </div>
               )}
             </div>

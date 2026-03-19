@@ -13,6 +13,7 @@
 # =============================================================================
 
 import os
+import math
 
 import httpx
 import polyline as polyline_lib
@@ -1118,6 +1119,30 @@ def pea_place_info(
     return result
 
 
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Haversine distance in metres between two WGS-84 points."""
+    R    = 6_371_000
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    a    = (math.sin(math.radians(lat2 - lat1) / 2) ** 2
+            + math.cos(phi1) * math.cos(phi2)
+            * math.sin(math.radians(lng2 - lng1) / 2) ** 2)
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _closest_vertex_index(vertices: list, target_lat: float, target_lng: float) -> int:
+    """
+    Returns the index of the vertex in `vertices` closest to (target_lat, target_lng).
+    Each vertex is a [lat, lng] pair as returned by polyline_lib.decode().
+    """
+    best_i, best_d = 0, float("inf")
+    for i, (lat, lng) in enumerate(vertices):
+        d = _haversine_m(lat, lng, target_lat, target_lng)
+        if d < best_d:
+            best_d, best_i = d, i
+    return best_i
+
+
 def simple_route(origin: dict, destination: dict) -> dict:
     """
     Computes a single driving route from origin to destination using the
@@ -1155,52 +1180,97 @@ def simple_route(origin: dict, destination: dict) -> dict:
 
 
 def recalculate_route_with_pickup(
-    driver_coords:  dict,
-    pickup_point:   dict,
-    meeting_point:  dict,
-    event_coords:   dict,
+    driver_coords:       dict,
+    pickup_point:        dict,
+    meeting_point:       dict,
+    event_coords:        dict,
+    base_route_polyline: str,
 ) -> dict:
     """
     Computes the driving route from the driver's home to the event venue via
     the pickup point and the confirmed meeting point.
 
-    Route:  driver home → pickup point → meeting point → event venue
+    Unlike the old fixed-order version, this function determines whether the
+    pickup is BEFORE or AFTER the PE along the driver's natural route by
+    comparing polyline vertex indices — no extra API calls needed.
 
-    The pickup point comes first (intermediate[0]) so the driver collects the
-    employee before reaching the meeting point where the rest of the team boards.
-    This matches the operational sequence: individual pickup en route to PE/PEA.
+    Vertex-index ordering:
+        1. Decode base_route_polyline into [lat, lng] vertices.
+        2. Find the vertex closest to the PE  → pe_idx.
+        3. Find the vertex closest to pickup  → pickup_idx.
+        4. pickup_idx < pe_idx  → pickup is before the PE in the route.
+        5. pickup_idx ≥ pe_idx  → pickup is after the PE.
 
-    Uses the same _call_routes_api / _extract_route helpers as calculate_driver_route()
-    so caching and field-mask handling are consistent.
+    Route order produced:
+        pickup before PE:  home → pickup → PE → event
+        pickup after  PE:  home → PE → pickup → event
+
+    Middle-leg duration:
+        With two intermediates the Routes API returns three legs:
+          legs[0]: home → intermediate[0]
+          legs[1]: intermediate[0] → intermediate[1]   ← pickup ↔ PE
+          legs[2]: intermediate[1] → event
+        legs[1].duration ("XXXs") gives the car travel time between pickup
+        and PE regardless of which comes first, which the frontend uses to
+        compute the pickup-point arrival time.
 
     Parameters:
-        driver_coords  (dict): {"lat": float, "lng": float} — driver's home.
-        pickup_point   (dict): {"lat": float, "lng": float} — where driver picks up employee.
-        meeting_point  (dict): {"lat": float, "lng": float} — PE or PEA.
-        event_coords   (dict): {"lat": float, "lng": float} — event venue.
+        driver_coords       (dict): {"lat": float, "lng": float} — driver's home.
+        pickup_point        (dict): {"lat": float, "lng": float} — pickup location.
+        meeting_point       (dict): {"lat": float, "lng": float} — PE or PEA.
+        event_coords        (dict): {"lat": float, "lng": float} — event venue.
+        base_route_polyline (str):  Google-encoded polyline of the original
+                                    home→PE→event route; used for vertex-index
+                                    comparison only, not drawn on the map.
 
     Returns:
         dict: {
+            "encoded_polyline": str,
             "duration_seconds": int,
             "distance_meters":  int,
-            "encoded_polyline": str,
+            "pickup_before_pe": bool,   — True when pickup precedes PE on the route
+            "leg_seconds":      int,    — driving seconds between pickup and PE
         }
     """
+    # ── Determine pickup order via vertex-index comparison ───────────────────
+    vertices = polyline_lib.decode(base_route_polyline)  # list of [lat, lng]
+
+    pe_idx     = _closest_vertex_index(vertices, meeting_point["lat"], meeting_point["lng"])
+    pickup_idx = _closest_vertex_index(vertices, pickup_point["lat"],  pickup_point["lng"])
+
+    pickup_before_pe = pickup_idx < pe_idx
+
+    # ── Build the route with the correct intermediate order ──────────────────
+    if pickup_before_pe:
+        intermediates = [_latLng(pickup_point), _latLng(meeting_point)]
+    else:
+        intermediates = [_latLng(meeting_point), _latLng(pickup_point)]
+
     body = {
-        "origin":      _latLng(driver_coords),
-        "destination": _latLng(event_coords),
-        "intermediates": [
-            _latLng(pickup_point),
-            _latLng(meeting_point),
-        ],
+        "origin":        _latLng(driver_coords),
+        "destination":   _latLng(event_coords),
+        "intermediates": intermediates,
         "travelMode":        "DRIVE",
         "routingPreference": "TRAFFIC_AWARE",
     }
     response_json = _call_routes_api(body)
     route = _extract_route(response_json)
-    # Return only the fields needed by the frontend — legs are not used here
+
+    # ── Extract the middle-leg (pickup ↔ PE) duration ────────────────────────
+    # Leg duration is returned as a string "XXXs" by the Routes API — strip
+    # the unit suffix and convert to int, same as _extract_route does for the
+    # overall route duration.
+    legs = route.get("legs", [])
+    leg_seconds = None
+    if len(legs) >= 2:
+        raw = legs[1].get("duration", "")
+        if raw:
+            leg_seconds = int(str(raw).rstrip("s"))
+
     return {
+        "encoded_polyline": route["encoded_polyline"],
         "duration_seconds": route["duration_seconds"],
         "distance_meters":  route["distance_meters"],
-        "encoded_polyline": route["encoded_polyline"],
+        "pickup_before_pe": pickup_before_pe,
+        "leg_seconds":      leg_seconds,
     }

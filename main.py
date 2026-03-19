@@ -2443,36 +2443,37 @@ class RecalculateRouteRequest(BaseModel):
     """
     Body for POST /recalculate-route-with-pickup.
 
-    Route computed: driver home → pickup point → meeting point → event venue.
-    All four coordinate pairs are typed as LatLngInput (not plain dict) so
-    Pydantic raises a 422 with a clear error message if any field is missing
-    or has the wrong type, rather than letting _latLng() crash with a KeyError.
+    base_route_polyline is the Google-encoded polyline of the original
+    home→PE→event route.  The backend uses it to determine whether the
+    pickup is before or after the PE by comparing polyline vertex indices,
+    then builds the route with the correct intermediate order in a single
+    Routes API call.
     """
-    driver_coords: LatLngInput
-    pickup_point:  LatLngInput
-    meeting_point: LatLngInput
-    event_coords:  LatLngInput
+    driver_coords:       LatLngInput
+    pickup_point:        LatLngInput
+    meeting_point:       LatLngInput
+    event_coords:        LatLngInput
+    base_route_polyline: str
 
 
 @app.post(
     "/recalculate-route-with-pickup",
-    summary="Recalculate driver route including a manual pickup stop",
+    summary="Recalculate driver route including a pickup stop (order auto-detected)",
     description=(
-        "Computes the driving route driver home → pickup point → meeting point → "
-        "event venue using the Routes API.  Called after the user confirms a "
-        "manually selected pickup location on the map.  Returns the new encoded "
-        "polyline so the frontend can update the route overlay."
+        "Determines pickup order (before/after PE) via polyline vertex comparison, "
+        "then computes the full driving route in a single Routes API call.  "
+        "Returns the new encoded polyline plus pickup_before_pe (bool) and "
+        "leg_seconds (int) so the frontend can update the route overlay and "
+        "display the correct pickup arrival time."
     ),
 )
 def endpoint_recalculate_route_with_pickup(body: RecalculateRouteRequest):
-    # Convert typed Pydantic models to plain {"lat": float, "lng": float} dicts
-    # that _latLng() expects.  Never pass .model_dump() — that produces a nested
-    # dict; we want the flat two-key form the Routes API helper requires.
     return recalculate_route_with_pickup(
-        driver_coords={"lat": body.driver_coords.lat, "lng": body.driver_coords.lng},
-        pickup_point= {"lat": body.pickup_point.lat,  "lng": body.pickup_point.lng},
-        meeting_point={"lat": body.meeting_point.lat, "lng": body.meeting_point.lng},
-        event_coords= {"lat": body.event_coords.lat,  "lng": body.event_coords.lng},
+        driver_coords=       {"lat": body.driver_coords.lat, "lng": body.driver_coords.lng},
+        pickup_point=        {"lat": body.pickup_point.lat,  "lng": body.pickup_point.lng},
+        meeting_point=       {"lat": body.meeting_point.lat, "lng": body.meeting_point.lng},
+        event_coords=        {"lat": body.event_coords.lat,  "lng": body.event_coords.lng},
+        base_route_polyline= body.base_route_polyline,
     )
 
 
