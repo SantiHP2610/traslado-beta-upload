@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -153,14 +153,19 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 # Resolve the path to the Excel file once at app startup.
 # BASE_DIR points to the directory containing this file (the project root).
-# EXCEL_PATH falls back to the test file if EXCEL_PATH is not set in .env.
+# _excel_path falls back to the test file if EXCEL_PATH is not set in .env.
+#
+# Using a mutable module-level variable (not a constant) allows POST /upload-excel
+# to redirect all subsequent reads to an uploaded file without a server restart.
+# _DEFAULT_EXCEL_PATH is kept for the "use test file" reset case.
 # -----------------------------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent
-EXCEL_PATH = BASE_DIR / os.getenv("EXCEL_PATH", "sample_data/evento_prueba.xlsx")
+BASE_DIR           = Path(__file__).resolve().parent
+_DEFAULT_EXCEL_PATH = BASE_DIR / os.getenv("EXCEL_PATH", "sample_data/evento_prueba.xlsx")
+_excel_path        = _DEFAULT_EXCEL_PATH
 
 
 # -----------------------------------------------------------------------------
-# Internal helper shared by all endpoints that need the Excel data
+# Internal helpers shared by all endpoints that need the Excel data
 # -----------------------------------------------------------------------------
 
 def _load_excel() -> dict:
@@ -172,17 +177,57 @@ def _load_excel() -> dict:
     each endpoint calls _load_excel() instead of repeating the
     file-existence check and the read_excel() call.
     """
-    if not EXCEL_PATH.exists():
+    if not _excel_path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Excel file not found at: {EXCEL_PATH}",
+            detail=f"Excel file not found at: {_excel_path}",
         )
-    return read_excel(str(EXCEL_PATH))
+    return read_excel(str(_excel_path))
+
+
+def _geocode_event(event: dict) -> dict:
+    """
+    Geocodes the event venue address with venue_cache look-ahead.
+
+    Checks venues.json before calling the Google Geocoding API so the same
+    venue is never geocoded twice across different requests or server restarts.
+    Only successful geocoding results are persisted — failures raise 422 and
+    are NOT written to the cache, so the next request will retry the API.
+
+    Parameters:
+        event (dict): The event sub-dict from _load_excel() — must have
+                      'direccion_evento' and 'ciudad_evento' keys.
+
+    Returns:
+        dict: {lat, lng, formatted_address} from the Geocoding API or cache.
+
+    Raises:
+        HTTPException 422: if geocoding fails (unresolvable address).
+    """
+    event_address = (
+        f"{event.get('direccion_evento', '')}, "
+        f"{event.get('ciudad_evento', '')}"
+    )
+    cached = venue_lookup(event_address)
+    if cached is not None:
+        return cached
+    coords = geocode(event_address)
+    if coords is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not geocode event address: '{event_address}'",
+        )
+    venue_save(event_address, coords)
+    return coords
 
 
 # API response cache — eliminates repeated Google Maps calls during development.
 # Toggle via .env: API_CACHE_ENABLED=true (default) or false.
 from modules.api_cache import stats as cache_stats, clear as cache_clear
+
+# Venue geocoding cache — persists event address → lat/lng across server restarts.
+# Survives Excel uploads (venues.json is NOT cleared on upload).
+from modules.venue_cache import lookup as venue_lookup, save as venue_save
 
 # -----------------------------------------------------------------------------
 # Endpoints
@@ -208,6 +253,146 @@ def endpoint_cache_stats():
 def endpoint_cache_clear():
     deleted = cache_clear()
     return {"deleted": deleted, "message": f"Cleared {deleted} cached entries."}
+
+
+@app.post(
+    "/upload-excel",
+    summary="Upload an event Excel file (or reset to the test file)",
+    description=(
+        "Accepts a .xlsx/.xls file upload and sets it as the active event file "
+        "for all subsequent requests.  Clears the API response cache (routes change "
+        "per event) but preserves employees.json and venues.json (geocoding persists). "
+        "Pass ?use_test_file=true (no file body) to reset back to the default test Excel."
+    ),
+)
+async def endpoint_upload_excel(
+    file: Optional[UploadFile] = File(None),
+    use_test_file: bool = Query(False, description="Reset to the bundled test Excel instead of uploading"),
+):
+    """
+    Workflow when file is provided:
+        1. Validate extension (.xlsx or .xls).
+        2. Save to uploads/current_event.xlsx (overwrites any previous upload).
+        3. Parse with read_excel() — raises 422 with a descriptive message on any
+           structural problem (missing sheets, empty staff list, missing event fields).
+        4. Update _excel_path so all subsequent endpoints read the new file.
+        5. Clear the API response cache (distances and routes change per event).
+        6. Return a brief event_summary for the frontend to display.
+
+    Workflow when use_test_file=true (no file):
+        1. Reset _excel_path to the bundled test Excel.
+        2. Clear the API response cache.
+        3. Return the same event_summary format from the test file.
+    """
+    global _excel_path
+
+    # ── Reset to test file ────────────────────────────────────────────────
+    if use_test_file or file is None:
+        _excel_path = _DEFAULT_EXCEL_PATH
+        cache_clear()
+        data  = _load_excel()
+        event = data["event"]
+        return {
+            "status": "ok",
+            "source": "test_file",
+            "event_summary": {
+                "tipo":        event.get("tipo"),
+                "fecha":       event.get("fecha"),
+                "hora_inicio": event.get("hora_inicio"),
+                "comensales":  event.get("comensales"),
+                "staff_count": len(data["staff"]),
+            },
+        }
+
+    # ── Validate file extension ───────────────────────────────────────────
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=422,
+            detail="Formato incorrecto. Solo se aceptan archivos .xlsx o .xls",
+        )
+
+    # ── Save to uploads/current_event.xlsx ───────────────────────────────
+    uploads_dir = BASE_DIR / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    save_path = uploads_dir / "current_event.xlsx"
+
+    try:
+        content = await file.read()
+        save_path.write_bytes(content)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al guardar el archivo: {exc}",
+        )
+
+    # ── Validate contents ─────────────────────────────────────────────────
+    try:
+        data = read_excel(str(save_path))
+    except Exception as exc:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Error al leer el archivo Excel: {exc}",
+        )
+
+    # Structural checks — missing keys means the sheet is absent or malformed.
+    if not data.get("event") or data.get("staff") is None or data.get("services") is None:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "El archivo no contiene las 3 hojas requeridas "
+                "(Evento, Equipo, Prestaciones)."
+            ),
+        )
+
+    if not data["staff"]:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail="La hoja Equipo está vacía o no contiene personal.",
+        )
+
+    event = data["event"]
+
+    if not event.get("direccion_evento"):
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "La hoja Evento no contiene la dirección del evento "
+                "(campo 'Locacion')."
+            ),
+        )
+
+    if not event.get("hora_inicio"):
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "La hoja Evento no contiene el horario del evento "
+                "(campo 'Horario')."
+            ),
+        )
+
+    # ── Accept the file — update path and clear API cache ─────────────────
+    # employees.json and venues.json are intentionally NOT cleared: employee
+    # addresses and venue coordinates are stable across events.
+    _excel_path = save_path
+    cache_clear()
+
+    return {
+        "status": "ok",
+        "source": "uploaded_file",
+        "event_summary": {
+            "tipo":        event.get("tipo"),
+            "fecha":       event.get("fecha"),
+            "hora_inicio": event.get("hora_inicio"),
+            "comensales":  event.get("comensales"),
+            "staff_count": len(data["staff"]),
+        },
+    }
 
 
 @app.get(
@@ -335,21 +520,9 @@ def endpoint_nearest_meeting_point():
     data = _load_excel()
     event = data["event"]
 
-    # Build the full event address by joining the street and city fields.
-    # The keys ("direccion_evento", "ciudad_evento") are the raw field names
-    # stored in the Excel sheet — they remain in Spanish intentionally.
-    event_address = (
-        f"{event.get('direccion_evento', '')}, "
-        f"{event.get('ciudad_evento', '')}"
-    )
-
-    # Geocode the event venue to get its lat/lng coordinates
-    event_coords = geocode(event_address)
-    if event_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not geocode the event address: '{event_address}'",
-        )
+    # Geocode the event venue to get its lat/lng coordinates.
+    # _geocode_event() checks venues.json before calling the Google API.
+    event_coords = _geocode_event(event)
 
     # Find the nearest predefined meeting point and return its travel data
     try:
@@ -499,18 +672,9 @@ def endpoint_calculate_departure_time(body: DepartureTimeRequest):
         )
 
     # -------------------------------------------------------------------------
-    # Step 2: geocode the event venue address.
+    # Step 2: geocode the event venue address (with venue cache).
     # -------------------------------------------------------------------------
-    event_address = (
-        f"{event.get('direccion_evento', '')}, "
-        f"{event.get('ciudad_evento', '')}"
-    )
-    event_coords = geocode(event_address)
-    if event_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not geocode the event address: '{event_address}'",
-        )
+    event_coords = _geocode_event(event)
 
     # -------------------------------------------------------------------------
     # Step 3: get driving time from the CP to the event venue.
@@ -710,19 +874,10 @@ def endpoint_calculate_driver_route(
             )
 
     # -------------------------------------------------------------------------
-    # Step 3: geocode the event venue address.
+    # Step 3: geocode the event venue address (with venue cache).
     # -------------------------------------------------------------------------
     event = data["event"]
-    event_address = (
-        f"{event.get('direccion_evento', '')}, "
-        f"{event.get('ciudad_evento', '')}"
-    )
-    event_coords = geocode(event_address)
-    if event_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not geocode event address: '{event_address}'",
-        )
+    event_coords = _geocode_event(event)
 
     # -------------------------------------------------------------------------
     # Step 4: find the nearest meeting point (PE) to the event venue.
@@ -888,19 +1043,10 @@ def endpoint_evaluate_pea(
             )
 
     # -------------------------------------------------------------------------
-    # Step 3: geocode the event venue address.
+    # Step 3: geocode the event venue address (with venue cache).
     # -------------------------------------------------------------------------
     event = data["event"]
-    event_address = (
-        f"{event.get('direccion_evento', '')}, "
-        f"{event.get('ciudad_evento', '')}"
-    )
-    event_coords = geocode(event_address)
-    if event_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not geocode the event address: '{event_address}'",
-        )
+    event_coords = _geocode_event(event)
 
     # -------------------------------------------------------------------------
     # Step 4: find the nearest meeting point (PE) to the event venue.
@@ -1569,16 +1715,7 @@ def endpoint_confirm_assignments(body: ConfirmAssignmentsRequest):
     # calculate_departure_time() alongside the event duration and picada guests.
     # -------------------------------------------------------------------------
     event = data["event"]
-    event_address = (
-        f"{event.get('direccion_evento', '')}, "
-        f"{event.get('ciudad_evento', '')}"
-    )
-    event_coords = geocode(event_address)
-    if event_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not geocode the event address: '{event_address}'",
-        )
+    event_coords = _geocode_event(event)
 
     hora_inicio = str(event.get("hora_inicio", "")).strip()
     if not hora_inicio:
@@ -1812,19 +1949,9 @@ def endpoint_final_output(body: FinalOutputRequest):
     )
 
     # -------------------------------------------------------------------------
-    # Step 6: geocode the event venue.
+    # Step 6: geocode the event venue (with venue cache).
     # -------------------------------------------------------------------------
-    event_address = (
-        f"{event.get('direccion_evento', '')}, "
-        f"{event.get('ciudad_evento', '')}"
-    )
-    event_coords = geocode(event_address)
-    if event_coords is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not geocode the event address: '{event_address}'",
-        )
-
+    event_coords = _geocode_event(event)
     event_destination = [{"lat": event_coords["lat"], "lng": event_coords["lng"]}]
 
     # -------------------------------------------------------------------------

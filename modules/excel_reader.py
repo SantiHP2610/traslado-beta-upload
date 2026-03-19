@@ -37,7 +37,8 @@ _EVENT_FIELD_MAP = {
 # Number of data columns we care about in each table sheet.
 # Trailing None columns (artefacts of merged cells or Access export) are
 # sliced off before processing so they cannot produce spurious dict keys.
-_EQUIPO_COLS      = 8  # Profesion … Patente
+_EQUIPO_COLS      = 9  # Profesion … Patente + optional Telefono (9th)
+_EQUIPO_BASE_COLS = 8  # The always-present columns (Profesion … Patente)
 _PRESTACIONES_COLS = 3  # Servicio, Detalle, Cantidad
 
 
@@ -173,8 +174,10 @@ def _read_staff(sheet) -> list[dict]:
     Reads the 'Equipo' sheet (table format: row 1 = headers, row 2+ = data).
 
     Cleaning rules applied to the real source data exported from Access:
-    - Only the first _EQUIPO_COLS (8) columns are used; trailing None columns
-      from merged cells or export artefacts are discarded.
+    - The first 8 columns (Profesion … Patente) are always read.
+    - A 9th column 'Telefono' is read when present; set to None otherwise.
+      This makes the phone number field backwards-compatible with existing
+      Excel files that only have 8 columns.
     - Rows where 'Profesion' is None or empty are skipped — these are either
       blank spacer rows or rows where only incidental data was entered.
     - '\xa0' (non-breaking space) is stripped from every string value.
@@ -192,15 +195,20 @@ def _read_staff(sheet) -> list[dict]:
 
     # Use the canonical column names directly — the source header row may have
     # extra trailing None columns that we do not want as dict keys.
+    # 'Telefono' is the optional 9th column; it is padded with None if the
+    # sheet has fewer than 9 columns so downstream code always finds the key.
     headers = [
         "Profesion", "Nombre", "Apellido",
         "Direccion", "CP", "Ciudad",
         "Auto", "Patente",
+        "Telefono",   # optional — None when column is absent from this Excel
     ]
 
     result = []
     for row in rows[1:]:
-        # Trim to the expected column count; pad shorter rows with None.
+        # Read up to _EQUIPO_COLS (9) columns; pad shorter rows with None.
+        # Python slicing never raises IndexError, so row[:9] on an 8-column
+        # sheet returns 8 elements — the while-loop then appends the 9th None.
         values = list(row[:_EQUIPO_COLS])
         while len(values) < _EQUIPO_COLS:
             values.append(None)
@@ -212,8 +220,14 @@ def _read_staff(sheet) -> list[dict]:
         if not profesion:
             continue
 
-        # Clean every column: strip \xa0 and whitespace, stringify numerics.
-        cleaned = {key: _clean_str(val) for key, val in row_dict.items()}
+        # Clean the 8 always-present columns: strip \xa0 and whitespace.
+        cleaned = {key: _clean_str(row_dict[key]) for key in headers[:_EQUIPO_BASE_COLS]}
+
+        # Telefono: store None when the cell is empty or the column does not
+        # exist in this Excel (both produce raw value None after padding).
+        # When a value is present, strip whitespace the same way as other fields.
+        telefono_raw = row_dict.get("Telefono")
+        cleaned["Telefono"] = _clean_str(telefono_raw) if telefono_raw is not None else None
 
         # "NO" in the Auto column (from an Access boolean or dropdown) means
         # the employee has no personal vehicle.  Normalise to empty string

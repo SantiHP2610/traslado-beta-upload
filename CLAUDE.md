@@ -19,7 +19,10 @@ app-traslado-personal/
 │   ├── excel_reader.py      ← reads 3-sheet Excel (event, staff, services)
 │   ├── maps_client.py       ← Google Maps: geocode, distance matrix, meeting points
 │   ├── logistics.py         ← business logic: frescos, minifletes, vehicle assignment
-│   └── api_cache.py         ← file-based cache for all Google API calls (.api_cache/)
+│   ├── api_cache.py         ← file-based cache for all Google API calls (.api_cache/)
+│   ├── employee_cache.py    ← persistent geocoding cache for staff (employees.json)
+│   └── venue_cache.py       ← persistent geocoding cache for event venues (venues.json)
+├── uploads/                 ← uploaded Excel files (gitignored); current_event.xlsx
 ├── _generar_excel.py        ← generates sample .xlsx for testing
 ├── sample_data/evento_prueba.xlsx
 ├── requirements.txt
@@ -77,10 +80,11 @@ Sheet names: **Evento**, **Equipo**, **Prestaciones** (Spanish, from Access DB).
 | Comensales veggie | comensales_veggie | Integer |
 
 ### Equipo (table, row 1 = headers)
-Columns: Profesion, Nombre, Apellido, Direccion, CP, Ciudad, Auto, Patente (first 8 only).
+Columns: Profesion, Nombre, Apellido, Direccion, CP, Ciudad, Auto, Patente (always), Telefono (optional 9th column).
 - Seniority embedded in Profesion (e.g. "Manager Senior", "Camarero Medior", "Parrillero Junior")
 - Auto: non-empty, non-"NO" → has car. "NO" normalized to "". Always exactly 2 Parrilleros, never two Seniors.
 - Rows with empty Profesion skipped. `\xa0` stripped. Trailing None columns ignored.
+- Telefono: read if 9th column exists, otherwise None. Never crashes on 8-column files.
 
 ### Prestaciones (table, row 1 = headers)
 Columns: Servicio, Detalle, Cantidad. Trailing None columns beyond 3 ignored.
@@ -207,8 +211,10 @@ Functions: `validate_assignments`, `build_assignment_summary`, `calculate_pe_dep
 ## Working endpoints
 
 `GET`: /read-excel, /geocode-staff, /geocode-address, /nearest-meeting-point, /detect-personal-vehicle, /calculate-driver-route, /evaluate-pea, /cache-stats, /config
-`POST`: /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /pickup-place-info, /pea-place-info, /recalculate-route-with-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
+`POST`: /upload-excel, /determine-frescos, /determine-second-miniflete, /calculate-departure-time, /get-remaining-pool, /find-pickup, /pickup-place-info, /pea-place-info, /recalculate-route-with-pickup, /assign-passengers, /assign-uber-only, /validate-assignments, /confirm-assignments, /final-output, /config, /config-reset
 `DELETE`: /cache-clear
+
+**Cache behaviour on upload**: POST /upload-excel clears `.api_cache/` (routes and distances change per event) but preserves `employees.json` and `venues.json` (geocoding results are stable across events).
 
 ---
 
