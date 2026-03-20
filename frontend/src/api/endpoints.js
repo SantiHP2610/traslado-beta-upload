@@ -27,6 +27,41 @@
 import client from './client'
 
 // ---------------------------------------------------------------------------
+// Upload screen — set active Excel file before entering the map
+// ---------------------------------------------------------------------------
+
+/**
+ * Uploads an .xlsx/.xls file to the server and sets it as the active event
+ * Excel for all subsequent API calls.  The server validates the file structure
+ * and returns a brief event summary on success.
+ * @param {File} file
+ * @returns {{ status: string, source: string, event_summary: object }}
+ */
+export async function uploadExcel(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await client.post('/upload-excel', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return response.data
+}
+
+/**
+ * Resets the active Excel to the bundled test file.
+ * Clears the API response cache on the server; employees.json and venues.json
+ * are preserved.
+ * @returns {{ status: string, source: string, event_summary: object }}
+ */
+export async function useTestExcel() {
+  // use_test_file is a query parameter on the backend (FastAPI Query()),
+  // not a JSON body field — send it via params so axios appends ?use_test_file=true.
+  const response = await client.post('/upload-excel', null, {
+    params: { use_test_file: true },
+  })
+  return response.data
+}
+
+// ---------------------------------------------------------------------------
 // Step 1 — Excel data
 // ---------------------------------------------------------------------------
 

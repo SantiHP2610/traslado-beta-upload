@@ -42,6 +42,11 @@ import { createContext, useContext, useReducer } from 'react'
 // ---------------------------------------------------------------------------
 
 const initialState = {
+  // Upload gate — false until the user uploads (or selects the test file) on the upload screen.
+  // The map and all bootstrap calls are blocked until this is true.
+  fileUploaded: false,
+  eventSummary: null,   // { tipo, fecha, hora_inicio, comensales, staff_count } from /upload-excel
+
   // Step 1 — Excel data (loaded automatically on mount)
   excelData: null,
 
@@ -153,6 +158,7 @@ export const ACTIONS = {
   RESTORE_ORIGINAL_DRIVER_ROUTES: 'RESTORE_ORIGINAL_DRIVER_ROUTES',
   ADD_PICKUP_PASSENGER:      'ADD_PICKUP_PASSENGER',
   REMOVE_PICKUP_PASSENGER:   'REMOVE_PICKUP_PASSENGER',
+  SET_FILE_UPLOADED:         'SET_FILE_UPLOADED',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
   STEP_BACK:                 'STEP_BACK',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
@@ -169,6 +175,14 @@ export const ACTIONS = {
 
 function appReducer(state, action) {
   switch (action.type) {
+
+    case ACTIONS.SET_FILE_UPLOADED:
+      // payload: { uploaded: bool, summary: object | null }
+      return {
+        ...state,
+        fileUploaded:  action.payload.uploaded,
+        eventSummary:  action.payload.summary,
+      }
 
     case ACTIONS.SET_EXCEL_DATA:
       return { ...state, excelData: action.payload }

@@ -271,6 +271,18 @@ State in `appState.jsx`: `useReducer` + split contexts (state + dispatch, preven
 
 ## Frontend UX
 
+### Upload screen (pre-map gate)
+`UploadScreen.jsx` — shown before the map whenever `state.fileUploaded` is false. The map and all bootstrap API calls (`/read-excel`, `/geocode-staff`) are blocked until a valid Excel file is uploaded.
+
+Three upload options:
+- **Drag and drop** — drop zone with drag-state machine: `idle | valid-hover | invalid-hover | loading | success | error`. Checks MIME type during dragover; validates extension and calls `POST /upload-excel` on drop.
+- **File browser** — hidden `<input type="file" accept=".xlsx,.xls">` triggered by the "Examinar..." button; same upload flow as drag and drop.
+- **Test file** — "Usar Excel de prueba" button calls `POST /upload-excel?use_test_file=true`; skips the success summary screen and goes straight to the map.
+
+On success: shows green check + brief event summary (tipo, fecha, hora, comensales, staff count) + "Comenzar planificación" button → dispatches `SET_FILE_UPLOADED({ uploaded: true, summary })` → `AppShell` unmounts `UploadScreen` and mounts `BootstrappedApp`.
+
+AppShell architecture: `AppShell` checks `state.fileUploaded` and renders `<UploadScreen />` or `<BootstrappedApp />`. `useBootstrap()` lives inside `BootstrappedApp` (a private child component) so it never executes before a valid Excel is on the server — React hooks rules forbid conditional hook calls at the same component level.
+
 ### Color coding
 | Element | Before selection | After PE | After PEA |
 |---|---|---|---|

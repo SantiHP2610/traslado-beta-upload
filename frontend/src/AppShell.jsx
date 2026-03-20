@@ -2,28 +2,42 @@
  * AppShell.jsx
  * Sits between the providers and the map; owns the top-level loading/error gate.
  *
- * Separation from App.jsx:
- *   AppShell needs to call useBootstrap(), which calls useAppState(), which
- *   reads from AppStateContext.  That context is only available below
- *   <AppStateProvider> in the tree.  If this logic lived directly in App.jsx
- *   (which renders AppStateProvider), the hook would be called at the same
- *   level as the provider that creates the context — useContext would return
- *   null.  Moving it one level down solves this cleanly.
+ * ── Upload gate ───────────────────────────────────────────────────────────────
+ * Before the map can load, the user must upload (or select the test) Excel file
+ * via UploadScreen.  This ensures the backend always has a valid Excel loaded
+ * before any API calls are made.
+ *
+ * ── Why useBootstrap lives in a child component ───────────────────────────────
+ * useBootstrap() must only run after a valid Excel is on the server.  React's
+ * rules of hooks prohibit conditional hook calls, so we split the shell into two
+ * components: AppShell (renders the upload gate or the bootstrapped map) and
+ * BootstrappedApp (calls useBootstrap, handles loading/error, renders AppMap).
+ * BootstrappedApp only mounts once fileUploaded is true — no conditional hooks.
+ *
+ * ── Why AppShell exists (separation from App.jsx) ────────────────────────────
+ * AppShell needs to call useAppState(), which reads from AppStateContext.  That
+ * context is only available below <AppStateProvider> in the tree.  If this logic
+ * lived directly in App.jsx (which renders AppStateProvider), the hook would be
+ * called at the same level as the provider — useContext would return null.
  */
 
 import { useBootstrap } from './hooks/useBootstrap'
-import { useAppState } from './state/appState'
-import AppMap from './components/map/AppMap'
+import { useAppState }  from './state/appState'
+import AppMap           from './components/map/AppMap'
+import UploadScreen     from './components/UploadScreen'
 
 // Map each loadingStep value to a user-facing Spanish message.
-// Using an object lookup instead of if/else keeps the mapping explicit and
-// easy to extend when new loading phases are added.
 const LOADING_MESSAGES = {
   excel:     'Cargando datos del evento...',
   geocoding: 'Geolocalizando empleados...',
 }
 
-export default function AppShell() {
+// ---------------------------------------------------------------------------
+// BootstrappedApp — only mounted after the upload gate is cleared.
+// Owns the useBootstrap() call so it never runs before a valid Excel exists.
+// ---------------------------------------------------------------------------
+
+function BootstrappedApp() {
   const { isLoading, error } = useBootstrap()
   const { state } = useAppState()
 
@@ -62,4 +76,20 @@ export default function AppShell() {
 
   // ── Normal state: map fills the screen ────────────────────────────────────
   return <AppMap />
+}
+
+// ---------------------------------------------------------------------------
+// AppShell — upload gate + bootstrapped map
+// ---------------------------------------------------------------------------
+
+export default function AppShell() {
+  const { state } = useAppState()
+
+  // ── Upload gate: show upload screen until a valid Excel is confirmed ───────
+  if (!state.fileUploaded) {
+    return <UploadScreen />
+  }
+
+  // ── Past the gate: bootstrap and render the map ───────────────────────────
+  return <BootstrappedApp />
 }
