@@ -1,5 +1,5 @@
 /**
- * state/appState.js
+ * state/appState.jsx
  * Global application state via React context + useReducer.
  *
  * ── Why useReducer instead of multiple useState calls? ───────────────────────
@@ -33,9 +33,57 @@
  * "loading what?".  A string like "excel" or "pea" lets the UI render a
  * step-specific spinner message ("Cargando datos del evento..." vs
  * "Buscando puntos de reunión...").  null means nothing is loading.
+ *
+ * ── vehicles array model (step 3+) ───────────────────────────────────────────
+ * Each vehicle object:
+ *   {
+ *     id: "personal" | "uber_1" | "uber_2" | ...,
+ *     type: "personal" | "uber",
+ *     driver: string | null,           // personal only
+ *     vehicle_description: string | null, // personal only
+ *     meeting_point: { lat, lng, name, address },
+ *     custom_meeting_point: boolean,
+ *     passengers_pe: string[],         // names at this vehicle's PE
+ *     pickup: { point: object|null, passengers: string[] },
+ *     route: object | null,            // encoded_polyline, duration_seconds, etc.
+ *     capacity: 5 (personal) | 4 (uber),
+ *     color: object                    // from VEHICLE_COLORS
+ *   }
  */
 
 import { createContext, useContext, useReducer } from 'react'
+
+// ---------------------------------------------------------------------------
+// Vehicle color palette — one entry per vehicle slot.
+// Each entry carries route color, passenger marker color, and pickup color.
+// ---------------------------------------------------------------------------
+
+export const VEHICLE_COLORS = {
+  personal: { route: '#FBBC04', passengers: '#FBBC04', pickup: '#7B1FA2' },
+  uber_1:   { route: '#2D2D2D', passengers: '#2D2D2D', pickup: '#1A3A5C' },
+  uber_2:   { route: '#5A5A5A', passengers: '#5A5A5A', pickup: '#2E5E8E' },
+  uber_3:   { route: '#858585', passengers: '#858585', pickup: '#4A7FB5' },
+}
+
+// ---------------------------------------------------------------------------
+// Internal factory — builds a blank vehicle object with correct defaults.
+// ---------------------------------------------------------------------------
+
+function _buildVehicle(id, type, driver, vehicleDescription, meetingPoint, capacity, color) {
+  return {
+    id,
+    type,
+    driver:               driver ?? null,
+    vehicle_description:  vehicleDescription ?? null,
+    meeting_point:        meetingPoint,
+    custom_meeting_point: false,
+    passengers_pe:        [],
+    pickup:               { point: null, passengers: [] },
+    route:                null,
+    capacity,
+    color,
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Initial state — mirrors the full app flow declared in CLAUDE.md
@@ -73,7 +121,24 @@ const initialState = {
 
   // Step 6 — User choices (set via map interactions, not API calls)
   chosenMeetingPoint: null,
+
+  // ── NEW: vehicles array (step 3+) ─────────────────────────────────────────
+  // Initialized by INIT_VEHICLES when the user enters step 3.
+  // Each element is a vehicle object (see factory above).
+  vehicles: [],
+
+  // Single employee who could not be assigned to any vehicle and whose
+  // transport will be coordinated separately.  Top-level, not per vehicle.
+  pending_employee: null,
+
+  // ── LEGACY: kept so existing components reading these fields don't crash ──
+  // These are no longer written by any reducer case; new code uses vehicles.
+  // Will be removed once all UI components are migrated to the vehicles model.
   assignments: null,
+  uberMeetingPointOverrides: {},
+  uberPeEditMode: null,
+  uberPeDragMode: null,
+  originalDriverRoutes: null,
 
   // Step 3 UI — result of an on-demand /find-pickup call.
   // Kept in global state so both StaffMarkers (trigger) and
@@ -104,23 +169,8 @@ const initialState = {
   manualPickupMode: false,   // true while the user is clicking the map to select a pickup point
   manualPeaMode:    false,   // true while the user is clicking the map to manually select a PEA
 
-  // Per-Uber-group meeting-point overrides (step 3).
-  // Keys are group numbers (1, 2, 3…); values are { name, lat, lng, address }.
-  // When absent for a group, that group uses state.chosenMeetingPoint.
-  uberMeetingPointOverrides: {},
-
   // Snapshot of driverRoutes taken before the first pickup confirmation.
-  // When a pickup is confirmed (automatic or manual), the active route polyline
-  // is updated to include the pickup stop.  This snapshot lets us restore the
-  // original routes if the manager resets assignments or goes back to step 2.
-  // null = routes have not been modified by a pickup confirmation.
-  originalDriverRoutes: null,
-
-  // Which Uber group's address input form is currently open (int) or null.
-  uberPeEditMode: null,
-
-  // Which Uber group's draggable map pin is visible (int) or null.
-  uberPeDragMode: null,
+  // Kept as a legacy field (no longer written) — see originalDriverRoutes note above.
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +178,7 @@ const initialState = {
 // ---------------------------------------------------------------------------
 
 export const ACTIONS = {
+  // ── existing actions (unchanged) ─────────────────────────────────────────
   SET_EXCEL_DATA:            'SET_EXCEL_DATA',
   SET_FRESCOS_RESULT:        'SET_FRESCOS_RESULT',
   SET_SECOND_MINIFLETE:      'SET_SECOND_MINIFLETE',
@@ -138,9 +189,8 @@ export const ACTIONS = {
   SET_DRIVER_ROUTES:         'SET_DRIVER_ROUTES',
   SET_PEA_EVALUATION:        'SET_PEA_EVALUATION',
   SET_EVENT_COORDS:          'SET_EVENT_COORDS',
-  SET_CHOSEN_MEETING_POINT:   'SET_CHOSEN_MEETING_POINT',
-  SET_ASSIGNMENTS:            'SET_ASSIGNMENTS',
-  SET_ACTIVE_PICKUP_RESULT:   'SET_ACTIVE_PICKUP_RESULT',
+  SET_CHOSEN_MEETING_POINT:  'SET_CHOSEN_MEETING_POINT',
+  SET_ACTIVE_PICKUP_RESULT:  'SET_ACTIVE_PICKUP_RESULT',
   SET_FINAL_OUTPUT:          'SET_FINAL_OUTPUT',
   SET_SHOW_MODAL:            'SET_SHOW_MODAL',
   SET_SHOW_OUTPUT:           'SET_SHOW_OUTPUT',
@@ -150,19 +200,36 @@ export const ACTIONS = {
   SET_EDITING_MARKER:             'SET_EDITING_MARKER',
   SET_MANUAL_PICKUP_MODE:    'SET_MANUAL_PICKUP_MODE',
   SET_MANUAL_PEA_MODE:       'SET_MANUAL_PEA_MODE',
-  SET_UBER_MEETING_POINT:    'SET_UBER_MEETING_POINT',
-  CLEAR_UBER_MEETING_POINT:  'CLEAR_UBER_MEETING_POINT',
-  SET_UBER_PE_EDIT_MODE:          'SET_UBER_PE_EDIT_MODE',
-  SET_UBER_PE_DRAG_MODE:          'SET_UBER_PE_DRAG_MODE',
-  SET_ORIGINAL_DRIVER_ROUTES:     'SET_ORIGINAL_DRIVER_ROUTES',
-  RESTORE_ORIGINAL_DRIVER_ROUTES: 'RESTORE_ORIGINAL_DRIVER_ROUTES',
-  ADD_PICKUP_PASSENGER:      'ADD_PICKUP_PASSENGER',
-  REMOVE_PICKUP_PASSENGER:   'REMOVE_PICKUP_PASSENGER',
   SET_FILE_UPLOADED:         'SET_FILE_UPLOADED',
   SET_CURRENT_STEP:          'SET_CURRENT_STEP',
   STEP_BACK:                 'STEP_BACK',
   SET_LOADING_STEP:          'SET_LOADING_STEP',
   SET_ERROR:                 'SET_ERROR',
+
+  // ── legacy actions kept as no-ops so old components don't crash ──────────
+  // These will be removed once UI components migrate to the vehicles model.
+  SET_ASSIGNMENTS:            'SET_ASSIGNMENTS',
+  ADD_PICKUP_PASSENGER:       'ADD_PICKUP_PASSENGER',
+  REMOVE_PICKUP_PASSENGER:    'REMOVE_PICKUP_PASSENGER',
+  SET_UBER_MEETING_POINT:     'SET_UBER_MEETING_POINT',
+  CLEAR_UBER_MEETING_POINT:   'CLEAR_UBER_MEETING_POINT',
+  SET_UBER_PE_EDIT_MODE:      'SET_UBER_PE_EDIT_MODE',
+  SET_UBER_PE_DRAG_MODE:      'SET_UBER_PE_DRAG_MODE',
+  SET_ORIGINAL_DRIVER_ROUTES:     'SET_ORIGINAL_DRIVER_ROUTES',
+  RESTORE_ORIGINAL_DRIVER_ROUTES: 'RESTORE_ORIGINAL_DRIVER_ROUTES',
+
+  // ── new vehicles-model actions ────────────────────────────────────────────
+  INIT_VEHICLES:              'INIT_VEHICLES',
+  ASSIGN_TO_PE:               'ASSIGN_TO_PE',
+  ASSIGN_TO_PICKUP:           'ASSIGN_TO_PICKUP',
+  UNASSIGN_EMPLOYEE:          'UNASSIGN_EMPLOYEE',
+  SET_VEHICLE_ROUTE:          'SET_VEHICLE_ROUTE',
+  SET_VEHICLE_MEETING_POINT:  'SET_VEHICLE_MEETING_POINT',
+  RESET_VEHICLE_MEETING_POINT: 'RESET_VEHICLE_MEETING_POINT',
+  SET_VEHICLE_PICKUP_POINT:   'SET_VEHICLE_PICKUP_POINT',
+  CLEAR_VEHICLE_PICKUP:       'CLEAR_VEHICLE_PICKUP',
+  SET_PENDING_EMPLOYEE:       'SET_PENDING_EMPLOYEE',
+  RESET_ALL_VEHICLES:         'RESET_ALL_VEHICLES',
 }
 
 // ---------------------------------------------------------------------------
@@ -217,9 +284,6 @@ function appReducer(state, action) {
     case ACTIONS.SET_CHOSEN_MEETING_POINT:
       return { ...state, chosenMeetingPoint: action.payload }
 
-    case ACTIONS.SET_ASSIGNMENTS:
-      return { ...state, assignments: action.payload }
-
     case ACTIONS.SET_ACTIVE_PICKUP_RESULT:
       return { ...state, activePickupResult: action.payload }
 
@@ -238,65 +302,168 @@ function appReducer(state, action) {
     case ACTIONS.SET_MANUAL_PEA_MODE:
       return { ...state, manualPeaMode: action.payload }
 
-    case ACTIONS.SET_UBER_MEETING_POINT: {
-      // payload: { groupNumber, meetingPoint: { name, lat, lng, address } }
-      const { groupNumber, meetingPoint } = action.payload
-      return {
-        ...state,
-        uberMeetingPointOverrides: { ...state.uberMeetingPointOverrides, [groupNumber]: meetingPoint },
-      }
-    }
-
-    case ACTIONS.CLEAR_UBER_MEETING_POINT: {
-      // payload: { groupNumber } — removes the override so the group reverts to the shared PE.
-      const next = { ...state.uberMeetingPointOverrides }
-      delete next[action.payload.groupNumber]
-      return { ...state, uberMeetingPointOverrides: next }
-    }
-
+    // ── legacy no-ops ─────────────────────────────────────────────────────
+    // Old components may still dispatch these. Returning state unchanged
+    // prevents crashes without altering the vehicles-model state.
+    case ACTIONS.SET_ASSIGNMENTS:
+    case ACTIONS.ADD_PICKUP_PASSENGER:
+    case ACTIONS.REMOVE_PICKUP_PASSENGER:
+    case ACTIONS.SET_UBER_MEETING_POINT:
+    case ACTIONS.CLEAR_UBER_MEETING_POINT:
     case ACTIONS.SET_UBER_PE_EDIT_MODE:
-      // payload: int | null — opens/closes the address form for a specific group.
-      return { ...state, uberPeEditMode: action.payload }
-
     case ACTIONS.SET_UBER_PE_DRAG_MODE:
-      // payload: int | null — shows/hides the draggable map pin for a specific group.
-      return { ...state, uberPeDragMode: action.payload }
-
     case ACTIONS.SET_ORIGINAL_DRIVER_ROUTES:
-      // Snapshot the pre-pickup routes — only saved once (first call wins).
-      // Subsequent pickup confirmations build on the same modified route, so
-      // we never overwrite the true original with an already-modified version.
-      if (state.originalDriverRoutes !== null) return state
-      return { ...state, originalDriverRoutes: action.payload }
-
     case ACTIONS.RESTORE_ORIGINAL_DRIVER_ROUTES:
-      // Revert driverRoutes to the pre-pickup snapshot and clear the snapshot.
-      // No-op if no snapshot exists (nothing to restore).
-      if (!state.originalDriverRoutes) return state
-      return { ...state, driverRoutes: state.originalDriverRoutes, originalDriverRoutes: null }
+      return state
 
-    case ACTIONS.ADD_PICKUP_PASSENGER: {
-      // payload: employee object — appended to assignments.pickup_passengers.
-      const current = state.assignments?.pickup_passengers ?? []
+    // ── vehicles model ────────────────────────────────────────────────────
+
+    case ACTIONS.INIT_VEHICLES: {
+      // payload: { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint }
+      const { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint } = action.payload
+      const newVehicles = []
+
+      let remaining = pool_count
+
+      if (has_personal_vehicle) {
+        newVehicles.push(_buildVehicle(
+          'personal', 'personal', driver, vehicle_description, chosenMeetingPoint, 5, VEHICLE_COLORS.personal,
+        ))
+        remaining = pool_count - 1  // driver already consumes one slot
+      }
+
+      if (remaining > 0) {
+        const uberCount = Math.ceil(remaining / 4)
+        for (let i = 1; i <= uberCount; i++) {
+          const colorKey = `uber_${i}`
+          newVehicles.push(_buildVehicle(
+            `uber_${i}`, 'uber', null, null, chosenMeetingPoint, 4,
+            VEHICLE_COLORS[colorKey] ?? VEHICLE_COLORS.uber_1,
+          ))
+        }
+      }
+
+      return { ...state, vehicles: newVehicles }
+    }
+
+    case ACTIONS.ASSIGN_TO_PE: {
+      // payload: { employee_name, vehicle_id }
+      const { employee_name, vehicle_id } = action.payload
       return {
         ...state,
-        assignments: { ...state.assignments, pickup_passengers: [...current, action.payload] },
+        vehicles: state.vehicles.map(v => {
+          if (v.id !== vehicle_id) return v
+          const maxPassengers = v.capacity - (v.type === 'personal' ? 1 : 0)
+          if (v.passengers_pe.length + v.pickup.passengers.length >= maxPassengers) return v
+          return { ...v, passengers_pe: [...v.passengers_pe, employee_name] }
+        }),
       }
     }
 
-    case ACTIONS.REMOVE_PICKUP_PASSENGER: {
-      // payload: "Nombre Apellido" string — filtered out of assignments.pickup_passengers.
-      const name = action.payload
+    case ACTIONS.ASSIGN_TO_PICKUP: {
+      // payload: { employee_name, vehicle_id }
+      const { employee_name, vehicle_id } = action.payload
       return {
         ...state,
-        assignments: {
-          ...state.assignments,
-          pickup_passengers: (state.assignments?.pickup_passengers ?? []).filter(
-            (emp) => `${emp.Nombre} ${emp.Apellido}` !== name,
-          ),
-        },
+        vehicles: state.vehicles.map(v => {
+          if (v.id !== vehicle_id) return v
+          const maxPassengers = v.capacity - (v.type === 'personal' ? 1 : 0)
+          if (v.passengers_pe.length + v.pickup.passengers.length >= maxPassengers) return v
+          return { ...v, pickup: { ...v.pickup, passengers: [...v.pickup.passengers, employee_name] } }
+        }),
       }
     }
+
+    case ACTIONS.UNASSIGN_EMPLOYEE: {
+      // payload: { employee_name } — removes from whichever vehicle/slot holds them.
+      const { employee_name } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v => ({
+          ...v,
+          passengers_pe: v.passengers_pe.filter(n => n !== employee_name),
+          pickup: { ...v.pickup, passengers: v.pickup.passengers.filter(n => n !== employee_name) },
+        })),
+      }
+    }
+
+    case ACTIONS.SET_VEHICLE_ROUTE: {
+      // payload: { vehicle_id, route }
+      const { vehicle_id, route } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v => v.id !== vehicle_id ? v : { ...v, route }),
+      }
+    }
+
+    case ACTIONS.SET_VEHICLE_MEETING_POINT: {
+      // payload: { vehicle_id, meeting_point }
+      const { vehicle_id, meeting_point } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v =>
+          v.id !== vehicle_id ? v : { ...v, meeting_point, custom_meeting_point: true },
+        ),
+      }
+    }
+
+    case ACTIONS.RESET_VEHICLE_MEETING_POINT: {
+      // payload: { vehicle_id } — reverts to the global chosenMeetingPoint and clears route.
+      const { vehicle_id } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v =>
+          v.id !== vehicle_id ? v :
+          { ...v, meeting_point: state.chosenMeetingPoint, custom_meeting_point: false, route: null },
+        ),
+      }
+    }
+
+    case ACTIONS.SET_VEHICLE_PICKUP_POINT: {
+      // payload: { vehicle_id, point }
+      const { vehicle_id, point } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v =>
+          v.id !== vehicle_id ? v : { ...v, pickup: { ...v.pickup, point } },
+        ),
+      }
+    }
+
+    case ACTIONS.CLEAR_VEHICLE_PICKUP: {
+      // payload: { vehicle_id } — removes pickup point, passengers, and the modified route.
+      const { vehicle_id } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v =>
+          v.id !== vehicle_id ? v :
+          { ...v, pickup: { point: null, passengers: [] }, route: null },
+        ),
+      }
+    }
+
+    case ACTIONS.SET_PENDING_EMPLOYEE:
+      // payload: { name } | null
+      return { ...state, pending_employee: action.payload?.name ?? null }
+
+    case ACTIONS.RESET_ALL_VEHICLES:
+      // Clears all assignments and routes while preserving vehicle structure
+      // (same vehicles, same types, same driver).  Meeting points reset to
+      // the global chosenMeetingPoint.
+      return {
+        ...state,
+        pending_employee: null,
+        vehicles: state.vehicles.map(v => ({
+          ...v,
+          passengers_pe:        [],
+          pickup:               { point: null, passengers: [] },
+          route:                null,
+          meeting_point:        state.chosenMeetingPoint,
+          custom_meeting_point: false,
+        })),
+      }
+
+    // ── navigation ────────────────────────────────────────────────────────
 
     case ACTIONS.SET_CURRENT_STEP:
       // Push the current step onto the history stack before advancing.
@@ -310,8 +477,8 @@ function appReducer(state, action) {
     case ACTIONS.STEP_BACK: {
       if (state.stepHistory.length === 0) return state
 
-      const newHistory    = state.stepHistory.slice(0, -1)
-      const previousStep  = state.stepHistory[state.stepHistory.length - 1]
+      const newHistory   = state.stepHistory.slice(0, -1)
+      const previousStep = state.stepHistory[state.stepHistory.length - 1]
 
       // Clear state that was populated DURING the step being undone.
       // The clearing set is keyed on the step we are LEAVING.
@@ -321,28 +488,42 @@ function appReducer(state, action) {
         // Leaving step 4 → step 3: undo confirmation and final output.
         Object.assign(clearing, { showModal: false, showOutput: false, finalOutput: null })
       } else if (state.currentStep >= 3) {
-        // Leaving step 3 → step 2: undo passenger assignments; user must
-        // re-select the meeting point on the map before re-entering step 3.
-        // Also restore the original driver routes if a pickup confirmation had
-        // modified the active polyline (restores the unmodified home→PE→event route).
-        const routesToRestore = state.originalDriverRoutes ?? state.driverRoutes
+        // Leaving step 3 → step 2: undo all vehicle assignments.  Clearing
+        // vehicles[] discards per-vehicle routes, pickups, and meeting point
+        // overrides in one shot — no need for a separate originalDriverRoutes
+        // snapshot since driverRoutes (set in step 2) is untouched.
         Object.assign(clearing, {
-          assignments: null, activePickupResult: null, chosenMeetingPoint: null,
-          manualPickupMode: false, uberMeetingPointOverrides: {}, uberPeEditMode: null,
-          uberPeDragMode: null, originalDriverRoutes: null, driverRoutes: routesToRestore,
+          vehicles: [],
+          pending_employee: null,
+          activePickupResult: null,
+          chosenMeetingPoint: null,
+          manualPickupMode: false,
         })
       } else if (state.currentStep >= 2) {
         // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
         // point data so useStepTwo will recompute them if user re-advances.
-        Object.assign(clearing, { meetingPoint: null, driverRoutes: null, peaEvaluation: null, chosenMeetingPoint: null, manualPeaMode: false })
+        Object.assign(clearing, {
+          meetingPoint: null,
+          driverRoutes: null,
+          peaEvaluation: null,
+          chosenMeetingPoint: null,
+          manualPeaMode: false,
+        })
       } else if (state.currentStep >= 1) {
         // Leaving step 1 → step 0: undo the "van question" (frescos panel).
         // Clears the four slices that were set when the user answered it.
-        Object.assign(clearing, { frescosResult: null, secondMinifleteResult: null, remainingPool: null, personalVehicle: null })
+        Object.assign(clearing, {
+          frescosResult: null,
+          secondMinifleteResult: null,
+          remainingPool: null,
+          personalVehicle: null,
+        })
       }
 
       return { ...state, ...clearing, stepHistory: newHistory, currentStep: previousStep }
     }
+
+    // ── coordinate overrides ───────────────────────────────────────────────
 
     case ACTIONS.SET_COORDINATE_OVERRIDE: {
       // Spread the existing overrides and upsert the new entry so that
@@ -434,4 +615,88 @@ export function useAppState() {
   }
 
   return { state, dispatch }
+}
+
+// ---------------------------------------------------------------------------
+// Helper selectors — pure functions over state; no side effects.
+// Export these so components don't duplicate the traversal logic.
+// ---------------------------------------------------------------------------
+
+/** Returns the vehicle with the given id, or null if not found. */
+export function getVehicleById(state, id) {
+  return state.vehicles.find(v => v.id === id) ?? null
+}
+
+/**
+ * Returns a Set of all employee names currently assigned to any vehicle
+ * (passengers_pe + pickup.passengers across all vehicles).
+ * Does not include drivers — they are pre-assigned at INIT_VEHICLES time.
+ */
+export function getAssignedEmployees(state) {
+  const names = new Set()
+  for (const v of state.vehicles) {
+    for (const n of v.passengers_pe)       names.add(n)
+    for (const n of v.pickup.passengers)   names.add(n)
+  }
+  return names
+}
+
+/**
+ * Returns the pool members who are not yet assigned to any vehicle.
+ * Returns [] if remainingPool is not populated yet (pre-step-3).
+ */
+export function getUnassignedEmployees(state) {
+  if (!state.remainingPool) return []
+  const assigned = getAssignedEmployees(state)
+  return state.remainingPool.filter(emp => {
+    const name = `${emp.Nombre} ${emp.Apellido}`
+    return !assigned.has(name)
+  })
+}
+
+/**
+ * True when the vehicle has no remaining passenger capacity.
+ * Personal vehicle: capacity 5, driver occupies 1 → 4 passenger slots.
+ * Uber vehicle: capacity 4 → 4 passenger slots.
+ */
+export function isVehicleFull(vehicle) {
+  const maxPassengers = vehicle.capacity - (vehicle.type === 'personal' ? 1 : 0)
+  return vehicle.passengers_pe.length + vehicle.pickup.passengers.length >= maxPassengers
+}
+
+/**
+ * Checks whether the current vehicle state is ready for final validation.
+ * Returns { valid: boolean, reasons: string[] }.
+ *
+ * Rules:
+ *   1. All pool employees must be assigned (or tracked as pending_employee).
+ *   2. Every vehicle that has passengers must have a route.
+ *   3. If any Uber vehicle exists, the personal vehicle must be full first.
+ */
+export function canValidate(state) {
+  const reasons = []
+
+  const unassigned = getUnassignedEmployees(state)
+  // pending_employee is accounted for — subtract them if present
+  const effectivelyUnassigned = state.pending_employee
+    ? unassigned.filter(emp => `${emp.Nombre} ${emp.Apellido}` !== state.pending_employee)
+    : unassigned
+  if (effectivelyUnassigned.length > 0) {
+    reasons.push(`${effectivelyUnassigned.length} empleado(s) sin asignar`)
+  }
+
+  for (const v of state.vehicles) {
+    const hasPassengers = v.passengers_pe.length > 0 || v.pickup.passengers.length > 0
+    if (hasPassengers && !v.route) {
+      reasons.push(`Vehículo ${v.id} tiene pasajeros pero no tiene ruta`)
+    }
+  }
+
+  const hasUber     = state.vehicles.some(v => v.type === 'uber')
+  const personal    = state.vehicles.find(v => v.type === 'personal')
+  if (hasUber && personal && !isVehicleFull(personal)) {
+    reasons.push('El vehículo personal debe estar lleno antes de usar Ubers')
+  }
+
+  return { valid: reasons.length === 0, reasons }
 }

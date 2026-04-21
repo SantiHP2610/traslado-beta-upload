@@ -11,6 +11,7 @@
 import os
 import re
 import sys
+import hashlib
 import importlib
 import datetime
 from pathlib import Path
@@ -162,6 +163,9 @@ app.add_middleware(
 BASE_DIR           = Path(__file__).resolve().parent
 _DEFAULT_EXCEL_PATH = BASE_DIR / os.getenv("EXCEL_PATH", "sample_data/evento_prueba.xlsx")
 _excel_path        = _DEFAULT_EXCEL_PATH
+# SHA-256 hash of the last REAL uploaded file.  None until a file is uploaded.
+# Used to skip cache_clear() when the same file is uploaded again.
+_current_file_hash: str | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -276,20 +280,22 @@ async def endpoint_upload_excel(
         3. Parse with read_excel() — raises 422 with a descriptive message on any
            structural problem (missing sheets, empty staff list, missing event fields).
         4. Update _excel_path so all subsequent endpoints read the new file.
-        5. Clear the API response cache (distances and routes change per event).
+        5. Clear the API response cache only if the file hash changed (distances
+           and routes change per event; same file re-uploaded keeps cache valid).
         6. Return a brief event_summary for the frontend to display.
 
     Workflow when use_test_file=true (no file):
         1. Reset _excel_path to the bundled test Excel.
-        2. Clear the API response cache.
+        2. Do NOT clear the API cache — test file is always the same.
         3. Return the same event_summary format from the test file.
     """
-    global _excel_path
+    global _excel_path, _current_file_hash
 
     # ── Reset to test file ────────────────────────────────────────────────
     if use_test_file or file is None:
         _excel_path = _DEFAULT_EXCEL_PATH
-        cache_clear()
+        # Do NOT call cache_clear() here: the test file never changes, so all
+        # cached API results (routes, distances, places) remain valid.
         data  = _load_excel()
         event = data["event"]
         return {
@@ -319,6 +325,7 @@ async def endpoint_upload_excel(
 
     try:
         content = await file.read()
+        new_hash = hashlib.sha256(content).hexdigest()
         save_path.write_bytes(content)
     except Exception as exc:
         raise HTTPException(
@@ -376,11 +383,16 @@ async def endpoint_upload_excel(
             ),
         )
 
-    # ── Accept the file — update path and clear API cache ─────────────────
+    # ── Accept the file — update path and conditionally clear API cache ──────
     # employees.json and venues.json are intentionally NOT cleared: employee
     # addresses and venue coordinates are stable across events.
+    # Only clear the API cache when the file content has actually changed; if the
+    # same file is re-uploaded the cached routes, distances, and places are still
+    # valid and clearing would waste quota on the next request.
     _excel_path = save_path
-    cache_clear()
+    if new_hash != _current_file_hash:
+        cache_clear()
+        _current_file_hash = new_hash
 
     return {
         "status": "ok",
