@@ -650,8 +650,11 @@ export function getAssignedEmployees(state) {
  */
 export function getUnassignedEmployees(state) {
   if (!state.remainingPool) return []
+  const pool = Array.isArray(state.remainingPool)
+    ? state.remainingPool
+    : state.remainingPool.remaining_pool ?? []
   const assigned = getAssignedEmployees(state)
-  return state.remainingPool.filter(emp => {
+  return pool.filter(emp => {
     const name = `${emp.Nombre} ${emp.Apellido}`
     return !assigned.has(name)
   })
