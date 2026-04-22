@@ -332,7 +332,9 @@ function appReducer(state, action) {
         newVehicles.push(_buildVehicle(
           'personal', 'personal', driver, vehicle_description, chosenMeetingPoint, 5, VEHICLE_COLORS.personal,
         ))
-        remaining = pool_count - 1  // driver already consumes one slot
+        // Personal car seats 5 (driver + 4 passengers); subtract full capacity
+        // so Ubers are only created for people who can't fit in the car at all.
+        remaining = Math.max(0, pool_count - 5)
       }
 
       if (remaining > 0) {
@@ -631,13 +633,14 @@ export function getVehicleById(state, id) {
 }
 
 /**
- * Returns a Set of all employee names currently assigned to any vehicle
- * (passengers_pe + pickup.passengers across all vehicles).
- * Does not include drivers — they are pre-assigned at INIT_VEHICLES time.
+ * Returns a Set of all employee names currently assigned to any vehicle.
+ * Includes drivers (pre-assigned at INIT_VEHICLES), passengers_pe, and
+ * pickup.passengers so the driver is correctly excluded from the unassigned list.
  */
 export function getAssignedEmployees(state) {
   const names = new Set()
   for (const v of state.vehicles) {
+    if (v.driver) names.add(v.driver)
     for (const n of v.passengers_pe)       names.add(n)
     for (const n of v.pickup.passengers)   names.add(n)
   }
