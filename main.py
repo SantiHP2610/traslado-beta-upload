@@ -1481,24 +1481,40 @@ def endpoint_assign_uber_only(body: UberOnlyRequest):
 # /confirm-assignments can reference the same model without duplication.
 # -----------------------------------------------------------------------------
 
+class VehicleInput(BaseModel):
+    """
+    A single vehicle's assignment data submitted by the frontend.
+
+    id:                   Identifier: "personal", "uber_1", "uber_2", etc.
+    type:                 "personal" or "uber".
+    driver:               Full "Nombre Apellido" name of the driver (personal only).
+    vehicle_description:  Make/model string (personal only; e.g. "Fox").
+    passengers_pe:        Names of employees boarding at this vehicle's PE.
+    pickup_passengers:    Names of employees boarding at the pickup stop.
+    meeting_point:        The PE/PEA this vehicle departs from; None uses the
+                          global chosenMeetingPoint.
+    custom_meeting_point: True when the meeting point was manually overridden.
+    """
+    id:                   str
+    type:                 str
+    driver:               str | None = None
+    vehicle_description:  str | None = None
+    passengers_pe:        list[str] = []
+    pickup_passengers:    list[str] = []
+    meeting_point:        dict | None = None
+    custom_meeting_point: bool = False
+
+
 class AssignmentsInput(BaseModel):
     """
-    The user-submitted vehicle groupings produced by the interactive map.
+    The user-submitted vehicle assignments produced by the interactive map.
 
-    driver:             full name ("Nombre Apellido") of the personal car driver.
-    car_passengers:     full names of employees travelling to the PE in the personal car.
-    uber_groups:        each inner list is one Uber booking; names in "Nombre Apellido".
-    pickup_passengers:  full names of employees picked up at the confirmed pickup point.
-                        Multiple passengers can share one pickup location (up to car capacity).
-    pending_employee:   full name of the single employee left without Uber (alternative
-                        transport to be arranged separately), or None if not applicable.
+    vehicles:         List of all vehicles with their passengers (personal + Ubers).
+    pending_employee: Full name of the single employee whose transport will be
+                      coordinated separately; None if not applicable.
     """
-    driver:             str
-    car_passengers:     list[str]
-    uber_groups:        list[list[str]]
-    pickup_passengers:    list[str] = []
-    pending_employee:     str | None = None
-    uber_meeting_points:  dict | None = None   # { "1": {name,lat,lng,address}, … }
+    vehicles:         list[VehicleInput]
+    pending_employee: str | None = None
 
 
 class ValidateAssignmentsRequest(BaseModel):

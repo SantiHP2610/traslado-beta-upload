@@ -41,16 +41,18 @@ function vehicleDisplayName(v) {
 }
 
 function buildAssignmentsInput(vehicles, pending_employee) {
-  const personal = vehicles.find((v) => v.type === 'personal')
-  const ubers    = vehicles.filter((v) => v.type === 'uber')
   return {
-    driver:            personal?.driver ?? '',
-    car_passengers:    personal?.passengers_pe ?? [],
-    uber_groups:       ubers
-      .filter((v) => v.passengers_pe.length > 0)
-      .map((v) => v.passengers_pe),
-    pickup_passengers: personal?.pickup?.passengers ?? [],
-    pending_employee:  pending_employee ?? null,
+    vehicles: vehicles.map((v) => ({
+      id:                   v.id,
+      type:                 v.type,
+      driver:               v.driver ?? null,
+      vehicle_description:  v.vehicle_description ?? null,
+      passengers_pe:        v.passengers_pe,
+      pickup_passengers:    v.pickup.passengers,
+      meeting_point:        v.meeting_point,
+      custom_meeting_point: v.custom_meeting_point,
+    })),
+    pending_employee: pending_employee ?? null,
   }
 }
 

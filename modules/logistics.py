@@ -2063,34 +2063,21 @@ def validate_assignments(remaining_pool: list[dict], assignments: dict) -> dict:
 
     # -------------------------------------------------------------------------
     # Step 2: collect every name that appears in the assignments dict.
-    # We gather names from all four slots: driver, car passengers, each Uber
-    # group (a list of lists), and the optional pickup employee.
-    # Using a set automatically deduplicates — a name appearing in two slots
-    # would still only count once here (it would still be a logical error, but
-    # that is a separate concern from the coverage check we are performing).
+    # Iterate over the vehicles list; each vehicle may carry a driver,
+    # passengers_pe, and pickup_passengers.  Using a set auto-deduplicates.
     # -------------------------------------------------------------------------
     assigned_names: set[str] = set()
 
-    # The driver is always a single "Nombre Apellido" string
-    driver_name = assignments.get("driver", "")
-    if driver_name:
-        assigned_names.add(driver_name.strip())
-
-    # car_passengers is a flat list of name strings
-    for name in assignments.get("car_passengers", []):
-        if name:
-            assigned_names.add(name.strip())
-
-    # uber_groups is a list of lists — flatten both levels
-    for group in assignments.get("uber_groups", []):
-        for name in group:
+    for vehicle in assignments.get("vehicles", []):
+        driver_name = vehicle.get("driver")
+        if driver_name:
+            assigned_names.add(driver_name.strip())
+        for name in vehicle.get("passengers_pe", []):
             if name:
                 assigned_names.add(name.strip())
-
-    # pickup_passengers is a list of names (multiple employees can share one pickup point)
-    for name in assignments.get("pickup_passengers", []):
-        if name:
-            assigned_names.add(name.strip())
+        for name in vehicle.get("pickup_passengers", []):
+            if name:
+                assigned_names.add(name.strip())
 
     # pending_employee is set when the manager chose "Buscar alternativa y dejar
     # pendiente" for the single remaining employee — they will travel by an
@@ -2353,10 +2340,10 @@ def build_final_output(
         # formula component; passing the full result keeps the transport block
         # consistent in shape with the frescos block.
         "departure_breakdown": pe_departure,
-        "personal_vehicle":    confirmed_summary.get("personal_vehicle"),
-        "uber_groups":         confirmed_summary.get("uber_groups", []),
-        # Pass pending_employee through so the frontend can render the
-        # "Transporte alternativo a coordinar" note in the transport block.
+        # vehicles replaces the old personal_vehicle + uber_groups split.
+        # Each entry has: id, type, driver, vehicle_description, meeting_point,
+        # custom_meeting_point, passengers_pe, pickup { point, passengers }.
+        "vehicles":            confirmed_summary.get("vehicles", []),
         "pending_employee":    confirmed_summary.get("pending_employee"),
     }
 
@@ -2430,46 +2417,30 @@ def build_assignment_summary(
         }
     """
     # -------------------------------------------------------------------------
-    # Personal vehicle section.
-    # pickup_place is a TODO: the pickup candidate venue name comes from the
-    # map interaction (user confirms a place from find_pickup_candidate()),
-    # but build_assignment_summary does not yet receive that result as a
-    # parameter.  Both pickup fields pass through from assignments as-is;
-    # pickup_place is explicitly None until the frontend wires it through.
+    # Vehicles array — mirrors the VehicleInput list the frontend submitted,
+    # enriched with a pickup sub-object for display in the modal and output.
+    # pickup.point is None here: it is managed by the frontend map state and
+    # is not sent to the backend (the point is rendered client-side).
     # -------------------------------------------------------------------------
-    personal_vehicle = {
-        "driver":             assignments.get("driver"),
-        "passengers":         assignments.get("car_passengers", []),
-        "pickup_passengers":  assignments.get("pickup_passengers", []),
-        # pickup_place is managed by the frontend (map interaction state);
-        # it is not sent to the backend and is read from state.assignments on the frontend.
-        "pickup_place":       None,
-    }
-
-    # -------------------------------------------------------------------------
-    # Uber groups — convert from list[list[str]] to list[dict] with group numbers.
-    # The frontend needs group_number to label each separate Uber booking.
-    # enumerate starts at 0, so we add 1 to get 1-based group numbers.
-    #
-    # If the frontend supplied per-group meeting-point overrides in
-    # uber_meeting_points (a dict keyed by string group number), we embed them
-    # in each group dict so the final output can display the custom address.
-    # -------------------------------------------------------------------------
-    uber_mp_overrides = assignments.get("uber_meeting_points") or {}
-    uber_groups = []
-    for i, group in enumerate(assignments.get("uber_groups", [])):
-        entry = {"group_number": i + 1, "passengers": group}
-        custom_mp = uber_mp_overrides.get(str(i + 1))
-        if custom_mp:
-            entry["meeting_point"] = custom_mp
-        uber_groups.append(entry)
+    vehicles_summary = []
+    for v in assignments.get("vehicles", []):
+        vehicles_summary.append({
+            "id":                   v.get("id"),
+            "type":                 v.get("type"),
+            "driver":               v.get("driver"),
+            "vehicle_description":  v.get("vehicle_description"),
+            "meeting_point":        v.get("meeting_point"),
+            "custom_meeting_point": v.get("custom_meeting_point", False),
+            "passengers_pe":        v.get("passengers_pe", []),
+            "pickup": {
+                "point":      None,
+                "passengers": v.get("pickup_passengers", []),
+            },
+        })
 
     # -------------------------------------------------------------------------
     # Departure from CP — only available once calculate_departure_time() has
     # been called (i.e. from the confirm endpoint, not the validate endpoint).
-    # We read it from departure_time_result["departure_time"] which is "HH:MM".
-    # Both the frescos_vehicle block and the top-level departure_from_cp field
-    # share the same value — they depart together.
     # -------------------------------------------------------------------------
     departure_from_cp = (
         departure_time_result["departure_time"]
@@ -2479,30 +2450,20 @@ def build_assignment_summary(
 
     frescos_vehicle = {
         "vehicle":        frescos_result.get("vehicle"),
-        # assigned_names carries the actual "Nombre Apellido" strings of the
-        # employees riding the frescos vehicle — used for display in the modal.
         "assigned_names": frescos_result.get("assigned_names", []),
-        # Mirrors departure_from_cp: present at confirm time, None at validate time
         "departure_time": departure_from_cp,
     }
 
     return {
-        "meeting_point":    chosen_meeting_point,
-        "personal_vehicle": personal_vehicle,
-        "uber_groups":      uber_groups,
-        "frescos_vehicle":  frescos_vehicle,
-        "second_miniflete": second_miniflete_result,
+        "meeting_point":     chosen_meeting_point,
+        "vehicles":          vehicles_summary,
+        "pending_employee":  assignments.get("pending_employee"),
+        "frescos_vehicle":   frescos_vehicle,
+        "second_miniflete":  second_miniflete_result,
         "departure_from_cp": departure_from_cp,
-        # departure_from_pe is the time the personal car and Uber vehicles depart
-        # from the chosen meeting point toward the event venue.  Populated when
-        # /confirm-assignments computes the Routes API call and passes the result
-        # in; None when called from /validate-assignments which skips routing.
         "departure_from_pe": (
             pe_departure_time_result["departure_time"]
             if pe_departure_time_result
             else None
         ),
-        # pending_employee is the single employee (if any) whose transport is to
-        # be arranged separately — they were left out of car and Uber on purpose.
-        "pending_employee": assignments.get("pending_employee"),
     }

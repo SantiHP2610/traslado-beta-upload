@@ -1,12 +1,9 @@
 /**
  * ConfirmationModal.jsx
- * Step 4 — centered confirmation modal (no longer draggable).
+ * Step 4 — centered confirmation modal.
  *
- * All logic, API calls, and state dispatches are IDENTICAL to the original.
- * Visual changes:
- *   • useDraggable removed — modal is centered via fixed + translate(-50%,-50%)
- *   • Width increased from 340 → 500px, max-height 80vh with overflow-y:auto
- *   • "Confirmar" button is primary/prominent, "Editar" is secondary
+ * Reads display data from state.vehicles + state.pending_employee (new model).
+ * Sends POST /final-output with the vehicles array payload on confirm.
  *
  * ── Why the modal reads from state, not from the validate response ─────────
  * POST /validate-assignments is a server-side sanity check — its return value
@@ -21,22 +18,9 @@ import { useState }              from 'react'
 import { useAppState, ACTIONS }  from '../../state/appState'
 import { finalOutput }           from '../../api/endpoints'
 
-// Maximum passengers per Uber booking
-const MAX_UBER = 4
-
 // ---------------------------------------------------------------------------
-// Helpers (unchanged from original)
+// Helpers
 // ---------------------------------------------------------------------------
-
-function fullName(emp) {
-  return `${emp.Nombre} ${emp.Apellido}`
-}
-
-function chunkArray(arr, size) {
-  const groups = []
-  for (let i = 0; i < arr.length; i += size) groups.push(arr.slice(i, i + size))
-  return groups
-}
 
 function deriveProfesiones(assignedNames, staff) {
   return assignedNames
@@ -44,24 +28,22 @@ function deriveProfesiones(assignedNames, staff) {
     .filter(Boolean)
 }
 
-function buildBody(assignments, frescosResult, chosenMeetingPoint, staff, uberMeetingPointOverrides) {
+function buildBody(vehicles, pendingEmployee, frescosResult, chosenMeetingPoint, staff, loadingTimeMinutes) {
   const hasOwnVan     = frescosResult?.vehicle === 'camioneta propia'
   const assignedRoles = deriveProfesiones(frescosResult?.assigned_names ?? [], staff)
-
-  // Serialize uber_meeting_points: only include if there is at least one override.
-  const uberMpEntries = Object.keys(uberMeetingPointOverrides ?? {})
-  const uberMp = uberMpEntries.length > 0 ? uberMeetingPointOverrides : null
-
   return {
     assignments: {
-      driver:             assignments.driver ? fullName(assignments.driver) : '',
-      car_passengers:     (assignments.car_passengers ?? []).map(fullName),
-      uber_groups:        chunkArray(assignments.uber_passengers ?? [], MAX_UBER)
-                            .map((g) => g.map(fullName)),
-      pickup_passengers:  (assignments.pickup_passengers ?? []).map(fullName),
-      pending_employee:   assignments.pending_employee
-        ? fullName(assignments.pending_employee) : null,
-      uber_meeting_points: uberMp,
+      vehicles: vehicles.map((v) => ({
+        id:                   v.id,
+        type:                 v.type,
+        driver:               v.driver ?? null,
+        vehicle_description:  v.vehicle_description ?? null,
+        passengers_pe:        v.passengers_pe,
+        pickup_passengers:    v.pickup.passengers,
+        meeting_point:        v.meeting_point,
+        custom_meeting_point: v.custom_meeting_point,
+      })),
+      pending_employee: pendingEmployee ?? null,
     },
     assigned_roles:       assignedRoles,
     chosen_meeting_point: {
@@ -69,12 +51,22 @@ function buildBody(assignments, frescosResult, chosenMeetingPoint, staff, uberMe
       lat:  chosenMeetingPoint.lat,
       lng:  chosenMeetingPoint.lng,
     },
-    has_own_van: hasOwnVan,
+    has_own_van:          hasOwnVan,
+    loading_time_minutes: loadingTimeMinutes,
   }
 }
 
+function vehicleDisplayName(v) {
+  if (v.type === 'personal') {
+    return v.vehicle_description && v.driver
+      ? `${v.vehicle_description} de ${v.driver}`
+      : v.driver ? `Vehículo de ${v.driver}` : 'Vehículo personal'
+  }
+  return `Uber ${v.id.replace('uber_', '')}`
+}
+
 // ---------------------------------------------------------------------------
-// Sub-components (unchanged from original)
+// Sub-components
 // ---------------------------------------------------------------------------
 
 function SectionTitle({ children }) {
@@ -101,22 +93,18 @@ function NameRow({ name, role, color = 'bg-slate-400' }) {
 export default function ConfirmationModal() {
   const { state, dispatch } = useAppState()
   const [confirming, setConfirming] = useState(false)
-  // Loading time is editable by the manager before confirming.
-  // Pre-filled with the config default (50 min); stored locally — only
-  // relevant at confirmation time, not needed in global state.
   const [loadingTimeMinutes, setLoadingTimeMinutes] = useState(50)
 
   const {
-    assignments,
+    vehicles,
+    pending_employee,
     frescosResult,
     secondMinifleteResult,
     chosenMeetingPoint,
     meetingPoint,
     peaEvaluation,
-    personalVehicle,
     excelData,
     showOutput,
-    uberMeetingPointOverrides,
   } = state
 
   const staff = excelData?.staff ?? []
@@ -128,21 +116,20 @@ export default function ConfirmationModal() {
         ?.remuneration_note ?? null
     : null
 
-  const driver         = assignments?.driver
-  const carPassengers  = assignments?.car_passengers ?? []
-  const uberPassengers = assignments?.uber_passengers ?? []
-  const pickupPassengers = assignments?.pickup_passengers ?? []
-  const pickupPlace      = assignments?.pickup_place
-  const hasVehicle     = personalVehicle?.has_personal_vehicle
-  const vehicleDesc    = personalVehicle?.vehicle_description
+  const personalVehicle = vehicles.find((v) => v.type === 'personal') ?? null
+  const uberVehicles    = vehicles.filter((v) => v.type === 'uber')
 
-  const vehicleLabel = vehicleDesc && driver
-    ? `${vehicleDesc} de ${fullName(driver)}`
-    : driver ? `Vehículo de ${fullName(driver)}` : 'Vehículo'
+  // Pickup info for the personal vehicle — read from the vehicle's route.
+  const personalPickup    = personalVehicle?.pickup ?? null
+  const pickupLegSeconds  = personalVehicle?.route?.leg_seconds ?? null
+  const pickupBeforePe    = personalVehicle?.route?.pickup_before_pe ?? null
 
-  const uberGroups = chunkArray(uberPassengers, MAX_UBER)
+  // Look up Profesion for any name string.
+  function getProfesion(name) {
+    return staff.find((e) => `${e.Nombre} ${e.Apellido}` === name)?.Profesion ?? null
+  }
 
-  // ── Handlers (unchanged) ─────────────────────────────────────────────────
+  // ── Handlers ─────────────────────────────────────────────────────────────
 
   function handleEdit() {
     dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: false })
@@ -150,15 +137,12 @@ export default function ConfirmationModal() {
   }
 
   async function handleConfirm() {
-    if (!assignments || !frescosResult || !chosenMeetingPoint) return
+    if (!frescosResult || !chosenMeetingPoint) return
     setConfirming(true)
     dispatch({ type: ACTIONS.SET_ERROR, payload: null })
 
     try {
-      const body   = {
-        ...buildBody(assignments, frescosResult, chosenMeetingPoint, staff, uberMeetingPointOverrides),
-        loading_time_minutes: loadingTimeMinutes,
-      }
+      const body   = buildBody(vehicles, pending_employee, frescosResult, chosenMeetingPoint, staff, loadingTimeMinutes)
       const result = await finalOutput(body)
       dispatch({ type: ACTIONS.SET_FINAL_OUTPUT, payload: result })
       dispatch({ type: ACTIONS.SET_SHOW_OUTPUT,  payload: true  })
@@ -178,7 +162,7 @@ export default function ConfirmationModal() {
 
   return (
     <>
-      {/* Backdrop — dims map but pointer-events:none keeps map interactive */}
+      {/* Backdrop */}
       <div
         style={{
           position:        'fixed',
@@ -189,7 +173,7 @@ export default function ConfirmationModal() {
         }}
       />
 
-      {/* Modal — centered via translate */}
+      {/* Modal */}
       <div
         style={{
           position:      'fixed',
@@ -210,13 +194,7 @@ export default function ConfirmationModal() {
         }}
       >
         {/* Header */}
-        <div
-          style={{
-            padding:      '18px 24px 14px',
-            borderBottom: '1px solid #e5e7eb',
-            flexShrink:   0,
-          }}
-        >
+        <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0, color: '#111827' }}>
             Confirmar plan de traslado
           </h2>
@@ -228,10 +206,8 @@ export default function ConfirmationModal() {
         </div>
 
         {/* Scrollable content */}
-        <div
-          style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}
-          className="space-y-4"
-        >
+        <div style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }} className="space-y-4">
+
           {/* Section 1: Frescos + loading time */}
           <div className="space-y-1.5">
             <SectionTitle>Frescos</SectionTitle>
@@ -240,21 +216,15 @@ export default function ConfirmationModal() {
                 ? 'Vehículo QH'
                 : 'Miniflete contratado'}
             </p>
-            {(frescosResult?.assigned_names ?? []).map((name) => {
-              const emp = staff.find((e) => `${e.Nombre} ${e.Apellido}` === name)
-              return (
-                <NameRow key={name} name={name} role={emp?.Profesion} color="bg-orange-400" />
-              )
-            })}
+            {(frescosResult?.assigned_names ?? []).map((name) => (
+              <NameRow key={name} name={name} role={getProfesion(name)} color="bg-orange-400" />
+            ))}
             {secondMinifleteResult?.needs_second_miniflete && (
               <div className="pt-1 space-y-0.5">
                 <p className="text-xs font-medium text-muted-foreground">Segundo miniflete</p>
                 <p className="text-xs text-muted-foreground">{secondMinifleteResult.reason}</p>
               </div>
             )}
-
-            {/* Loading time — grouped here because it directly affects the CP
-                departure calculation for the frescos vehicle. */}
             <div className="pt-1 space-y-1">
               <p className="text-xs text-muted-foreground font-medium">
                 Tiempo estimado de carga (minutos)
@@ -272,14 +242,9 @@ export default function ConfirmationModal() {
                   }}
                   disabled={confirming}
                   style={{
-                    width:        72,
-                    padding:      '5px 8px',
-                    border:       '1px solid #d1d5db',
-                    borderRadius: 6,
-                    fontSize:     13,
-                    textAlign:    'right',
-                    outline:      'none',
-                    opacity:      confirming ? 0.6 : 1,
+                    width: 72, padding: '5px 8px', border: '1px solid #d1d5db',
+                    borderRadius: 6, fontSize: 13, textAlign: 'right',
+                    outline: 'none', opacity: confirming ? 0.6 : 1,
                   }}
                 />
                 <span style={{ fontSize: 13, color: '#374151' }}>min</span>
@@ -298,121 +263,108 @@ export default function ConfirmationModal() {
           </div>
 
           {/* Section 3: Personal vehicle */}
-          {hasVehicle && (
+          {personalVehicle && (
             <div className="space-y-1.5">
-              <SectionTitle>{vehicleLabel}</SectionTitle>
-              {driver && (
+              <SectionTitle>{vehicleDisplayName(personalVehicle)}</SectionTitle>
+
+              {personalVehicle.driver && (
                 <NameRow
-                  name={fullName(driver)}
-                  role={driver.Profesion}
+                  name={personalVehicle.driver}
+                  role={getProfesion(personalVehicle.driver)}
                   color="bg-green-500"
                 />
               )}
-              {pickupPassengers.length > 0 && carPassengers.length > 0 && (
-                <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">Se encuentran en el PE:</p>
+              {personalVehicle.driver && (
+                <p className="text-xs text-green-600 pl-3.5 font-medium -mt-1">Chofer</p>
               )}
-              {carPassengers.map((emp) => (
-                <NameRow
-                  key={fullName(emp)}
-                  name={fullName(emp)}
-                  role={emp.Profesion}
-                  color="bg-green-500"
-                />
-              ))}
-              {carPassengers.length === 0 && pickupPassengers.length === 0 && (
+
+              {personalVehicle.passengers_pe.length > 0 && (
+                <>
+                  {personalPickup?.passengers?.length > 0 && (
+                    <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">Se encuentran en el PE:</p>
+                  )}
+                  {personalVehicle.passengers_pe.map((name) => (
+                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-green-500" />
+                  ))}
+                </>
+              )}
+
+              {personalVehicle.passengers_pe.length === 0 && !personalPickup?.passengers?.length && (
                 <p className="text-xs text-muted-foreground pl-3.5">Sin pasajeros</p>
               )}
-              {pickupPassengers.length > 0 && (
+
+              {personalPickup?.passengers?.length > 0 && (
                 <div className="pl-1 space-y-0.5">
                   <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">
                     Se encuentran en el punto de pickup
-                    {pickupPlace ? ` (${pickupPlace.place_name})` : ''}:
+                    {personalPickup.point?.place_name ? ` (${personalPickup.point.place_name})` : ''}:
                   </p>
-                  {pickupPassengers.map((emp) => (
-                    <NameRow
-                      key={fullName(emp)}
-                      name={fullName(emp)}
-                      role={emp.Profesion}
-                      color="bg-[#7B1FA2]"
-                    />
+                  {personalPickup.passengers.map((name) => (
+                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#7B1FA2]" />
                   ))}
-                  {pickupPlace?.place_address && (
+                  {personalPickup.point?.place_address && (
                     <p className="text-xs text-muted-foreground pl-3.5">
-                      {pickupPlace.place_address}
+                      {personalPickup.point.place_address}
                     </p>
                   )}
-                  {/* Pickup relative timing — PE departure not yet known here,
-                      so we show the relative label only (HH:MM in FinalOutputBlocks). */}
-                  {assignments?.leg_seconds != null ? (
+                  {pickupLegSeconds != null ? (
                     <p className="text-xs text-muted-foreground pl-3.5">
-                      {Math.ceil(assignments.leg_seconds / 60)} min{' '}
-                      {assignments.pickup_before_pe ? 'antes' : 'después'} del PE
+                      {Math.ceil(pickupLegSeconds / 60)} min{' '}
+                      {pickupBeforePe ? 'antes' : 'después'} del PE
                     </p>
                   ) : (
-                    <p className="text-xs text-muted-foreground pl-3.5">
-                      Horario a confirmar
-                    </p>
+                    <p className="text-xs text-muted-foreground pl-3.5">Horario a confirmar</p>
                   )}
                 </div>
               )}
             </div>
           )}
 
-          {/* Section 4: Uber */}
-          <div className="space-y-1.5">
-            <SectionTitle>
-              Uber ({uberPassengers.length}{' '}
-              {uberPassengers.length === 1 ? 'pasajero' : 'pasajeros'})
-            </SectionTitle>
-            {uberPassengers.length === 0 ? (
-              <p className="text-xs text-muted-foreground">Sin pasajeros Uber</p>
-            ) : (
-              uberGroups.map((group, gi) => {
-                const groupNumber = gi + 1
-                const customPe    = uberMeetingPointOverrides?.[groupNumber]
-                return (
-                  <div key={gi} className="space-y-0.5">
-                    {uberGroups.length > 1 && (
-                      <p className="text-xs text-muted-foreground">
-                        Uber {gi + 1}
-                        {customPe ? ` — PE: ${customPe.name || customPe.address}` : ''}
-                      </p>
-                    )}
-                    {uberGroups.length === 1 && customPe && (
-                      <p className="text-xs text-blue-600">
-                        PE: {customPe.name || customPe.address}
-                      </p>
-                    )}
-                    {group.map((emp) => (
-                      <NameRow
-                        key={fullName(emp)}
-                        name={fullName(emp)}
-                        role={emp.Profesion}
-                        color="bg-slate-400"
-                      />
-                    ))}
-                  </div>
-                )
-              })
-            )}
-            {uberPassengers.length === 1 && (
-              <p className="text-xs text-amber-600">
-                ⚠ Un solo pasajero en Uber. Consultar con el manager.
-              </p>
-            )}
-          </div>
+          {/* Section 4: Uber vehicles */}
+          {uberVehicles.length > 0 && (
+            <div className="space-y-2">
+              <SectionTitle>
+                Uber ({uberVehicles.reduce((s, v) => s + v.passengers_pe.length + v.pickup.passengers.length, 0)}{' '}
+                pasajeros)
+              </SectionTitle>
+              {uberVehicles.map((v) => (
+                <div key={v.id} className="space-y-0.5">
+                  {uberVehicles.length > 1 && (
+                    <p className="text-xs text-muted-foreground">
+                      {vehicleDisplayName(v)}
+                      {v.custom_meeting_point && v.meeting_point
+                        ? ` — PE: ${v.meeting_point.name || v.meeting_point.address}`
+                        : ''}
+                    </p>
+                  )}
+                  {uberVehicles.length === 1 && v.custom_meeting_point && v.meeting_point && (
+                    <p className="text-xs text-blue-600">
+                      PE: {v.meeting_point.name || v.meeting_point.address}
+                    </p>
+                  )}
+                  {v.passengers_pe.map((name) => (
+                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-slate-400" />
+                  ))}
+                  {v.pickup.passengers.map((name) => (
+                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#7B1FA2]" />
+                  ))}
+                  {v.passengers_pe.length === 0 && v.pickup.passengers.length === 0 && (
+                    <p className="text-xs text-muted-foreground pl-3.5">Sin pasajeros</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
-          {/* Section 5: Pending */}
-          {assignments?.pending_employee && (
+          {/* Section 5: Pending employee */}
+          {pending_employee && (
             <div className="space-y-1 rounded-md bg-amber-50 border border-amber-200 p-2">
               <SectionTitle>Pendiente</SectionTitle>
               <div className="flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
                 <span className="text-xs font-medium">
-                  {fullName(assignments.pending_employee)}
-                  {assignments.pending_employee.Profesion
-                    ? ` — ${assignments.pending_employee.Profesion}`
-                    : ''}
+                  {pending_employee}
+                  {getProfesion(pending_employee) ? ` — ${getProfesion(pending_employee)}` : ''}
                 </span>
               </div>
               <p className="text-xs text-amber-700">Transporte alternativo a coordinar</p>
@@ -428,27 +380,17 @@ export default function ConfirmationModal() {
         {/* Footer buttons */}
         <div
           style={{
-            padding:      '14px 24px',
-            borderTop:    '1px solid #e5e7eb',
-            flexShrink:   0,
-            display:      'flex',
-            gap:          10,
+            padding: '14px 24px', borderTop: '1px solid #e5e7eb',
+            flexShrink: 0, display: 'flex', gap: 10,
           }}
         >
           <button
             onClick={handleEdit}
             disabled={confirming}
             style={{
-              flex:         1,
-              padding:      '10px 16px',
-              background:   '#fff',
-              color:        '#374151',
-              border:       '1px solid #d1d5db',
-              borderRadius: 8,
-              fontSize:     14,
-              fontWeight:   500,
-              cursor:       confirming ? 'default' : 'pointer',
-              transition:   'background 150ms ease',
+              flex: 1, padding: '10px 16px', background: '#fff', color: '#374151',
+              border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, fontWeight: 500,
+              cursor: confirming ? 'default' : 'pointer', transition: 'background 150ms ease',
             }}
             onMouseEnter={(e) => { if (!confirming) e.currentTarget.style.background = '#f9fafb' }}
             onMouseLeave={(e) => { e.currentTarget.style.background = '#fff' }}
@@ -459,20 +401,12 @@ export default function ConfirmationModal() {
             onClick={handleConfirm}
             disabled={confirming || showOutput}
             style={{
-              flex:           2,
-              padding:        '10px 16px',
-              background:     (confirming || showOutput) ? '#374151' : '#111827',
-              color:          '#fff',
-              border:         'none',
-              borderRadius:   8,
-              fontSize:       14,
-              fontWeight:     600,
-              cursor:         (confirming || showOutput) ? 'default' : 'pointer',
-              display:        'flex',
-              alignItems:     'center',
-              justifyContent: 'center',
-              gap:            8,
-              transition:     'background 150ms ease',
+              flex: 2, padding: '10px 16px',
+              background: (confirming || showOutput) ? '#374151' : '#111827',
+              color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600,
+              cursor: (confirming || showOutput) ? 'default' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              transition: 'background 150ms ease',
             }}
             onMouseEnter={(e) => {
               if (!confirming && !showOutput) e.currentTarget.style.background = '#374151'
@@ -486,12 +420,9 @@ export default function ConfirmationModal() {
                 <span
                   className="animate-spin"
                   style={{
-                    display:       'inline-block',
-                    width:         14,
-                    height:        14,
-                    border:        '2px solid rgba(255,255,255,0.4)',
-                    borderTopColor: '#fff',
-                    borderRadius:  '50%',
+                    display: 'inline-block', width: 14, height: 14,
+                    border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff',
+                    borderRadius: '50%',
                   }}
                 />
                 Confirmando...

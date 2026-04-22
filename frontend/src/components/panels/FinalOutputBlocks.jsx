@@ -1,49 +1,27 @@
 /**
  * FinalOutputBlocks.jsx
  * Full-screen summary panel shown after the user confirms all assignments.
- * Replaces the former two draggable blocks with a single centered panel
- * covering 85% of the viewport.
  *
  * ── Layout ───────────────────────────────────────────────────────────────────
- * A semi-transparent backdrop (pointer-events:none) keeps the map visible and
- * interactive behind the panel.  The panel itself sits at z-50 and is centered
- * via transform: translate(-50%, -50%).
- *
- * Content is split into two scrollable columns side by side:
+ * A semi-transparent backdrop keeps the map visible behind the panel.
+ * Content is split into two scrollable columns:
  *   Left:  "Salida desde CP"  — frescos vehicle, crew, departure time + breakdown.
- *   Right: "Salida desde PE"  — meeting point, departure time + breakdown,
- *                                personal vehicle, pickup, Uber groups.
- * Each column has its own clipboard copy button.
+ *   Right: "Salida desde PE"  — meeting point, departure time, vehicles (personal
+ *          + Uber), pending employee.
  *
- * ── "Volver a editar" ────────────────────────────────────────────────────────
- * Dispatches SET_SHOW_OUTPUT false + SET_SHOW_MODAL false + SET_CURRENT_STEP 3.
- * All accumulated state (assignments, meeting point, routes, PEA evaluation)
- * is preserved exactly — no API calls are repeated.
- *
- * ── Departure breakdowns ─────────────────────────────────────────────────────
- * CP:  cp_departure returns { departure_time, extra_prep_applied,
- *      extra_prep_reason, total_minutes_before_event }.  Individual components
- *      are not included, so travel_minutes is derived by subtracting the known
- *      config constants (mirrored as module-level constants below).
- * PE:  pe_departure returns { departure_time, breakdown: { event_time,
- *      prep_hours, travel_minutes, buffer_minutes, extra_prep_hours,
- *      extra_prep_reason, total_minutes_before_event } }.  Used directly.
- *
- * ── Pickup departure time ────────────────────────────────────────────────────
- * pickup_time = departure_from_pe − transit_time_to_pickup_minutes.
- * The backend does not compute this; transit_time_to_pickup_minutes was stored
- * in state.assignments.pickup_transit_minutes when the user confirmed the pickup
- * in PickupResultPanel.
+ * ── Data sources ─────────────────────────────────────────────────────────────
+ * tb.vehicles (from /final-output) carries the vehicle array.
+ * Pickup timing (leg_seconds, pickup_before_pe) is read from
+ * state.vehicles[personal].route — the backend does not carry route data.
  */
 
 import { useState }                         from 'react'
-import { useAppState, ACTIONS }             from '../../state/appState'
+import { useAppState, ACTIONS, VEHICLE_COLORS } from '../../state/appState'
 import { Card, CardContent, CardHeader,
          CardTitle }                        from '@/components/ui/card'
 import { Button }                           from '@/components/ui/button'
 
 // ── Config constants mirrored from config.py ──────────────────────────────────
-// Kept here to derive the CP travel-time component without an extra API call.
 const DEPARTURE_PREP_HOURS     = 4
 const DEPARTURE_BUFFER_MINUTES = 10
 const LOADING_TIME_MINUTES     = 50
@@ -61,20 +39,6 @@ function cpTravelMinutes(totalMinutes, extraPrepApplied, loadingTimeMinutes) {
     - (extraPrepApplied ? LONG_EVENT_EXTRA_HOURS * 60 : 0)
 }
 
-/**
- * Computes the pickup point arrival time and a human-readable relative label.
- *
- * pickup_before_pe = true  → driver passes pickup BEFORE reaching the PE
- *   → pickup time = PE departure − legMinutes
- *   → label: "N min antes del PE"
- *
- * pickup_before_pe = false → driver passes pickup AFTER leaving the PE
- *   → pickup time = PE departure + legMinutes
- *   → label: "N min después del PE"
- *
- * Returns { time: "HH:MM"|null, label: string }.
- * If legSeconds is null, returns { time: null, label: "Horario a confirmar" }.
- */
 function computePickupInfo(departureFromPe, legSeconds, pickupBeforePe) {
   if (legSeconds == null) return { time: null, label: 'Horario a confirmar' }
 
@@ -89,12 +53,20 @@ function computePickupInfo(departureFromPe, legSeconds, pickupBeforePe) {
   const total  = h * 60 + m + (pickupBeforePe ? -legMinutes : +legMinutes)
   const wrapped = ((total % 1440) + 1440) % 1440
   const time = `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`
-
   return { time, label }
 }
 
 function getProfesion(nameStr, staff) {
   return staff.find((e) => `${e.Nombre} ${e.Apellido}` === nameStr)?.Profesion ?? null
+}
+
+function vehicleDisplayName(v) {
+  if (v.type === 'personal') {
+    return v.vehicle_description && v.driver
+      ? `${v.vehicle_description} de ${v.driver}`
+      : v.driver ? `Vehículo de ${v.driver}` : 'Vehículo personal'
+  }
+  return `Uber ${v.id.replace('uber_', '')}`
 }
 
 function frescosText(fb, event) {
@@ -112,32 +84,28 @@ function frescosText(fb, event) {
   return lines.join('\n')
 }
 
-function transportText(tb, assignments, uberMeetingPointOverrides) {
+function transportText(tb, pendingEmployee) {
   const lines = [
     `TRASLADO — PE: ${tb.meeting_point?.name ?? ''}`,
     `Salida PE: ${tb.departure_from_pe}`,
   ]
-  const pv = tb.personal_vehicle
-  if (pv?.driver) {
-    lines.push(`Chofer: ${pv.driver}`)
-    if ((pv.passengers ?? []).length) {
-      lines.push(`Pasajeros: ${pv.passengers.join(', ')}`)
+  for (const v of tb.vehicles ?? []) {
+    if (v.type === 'personal') {
+      if (v.driver) lines.push(`Chofer: ${v.driver}`)
+      if (v.passengers_pe?.length) lines.push(`PE: ${v.passengers_pe.join(', ')}`)
+      if (v.pickup?.passengers?.length) {
+        lines.push(`Pickup: ${v.pickup.passengers.join(', ')}`)
+      }
+    } else {
+      const peName = v.meeting_point?.name || v.meeting_point?.address || tb.meeting_point?.name || ''
+      lines.push(`${vehicleDisplayName(v)} (PE: ${peName}): ${(v.passengers_pe ?? []).join(', ')}`)
+      if (v.pickup?.passengers?.length) {
+        lines.push(`  Pickup: ${v.pickup.passengers.join(', ')}`)
+      }
     }
   }
-  if ((assignments?.pickup_passengers ?? []).length > 0) {
-    const names = assignments.pickup_passengers.map(
-      (e) => `${e.Nombre} ${e.Apellido}`,
-    ).join(', ')
-    lines.push(`Pickup (${assignments.pickup_place?.place_name ?? ''}): ${names}`)
-  }
-  ;(tb.uber_groups ?? []).forEach((g) => {
-    const customPe = uberMeetingPointOverrides?.[g.group_number] ?? g.meeting_point
-    const peName   = customPe?.name || customPe?.address || tb.meeting_point?.name || ''
-    lines.push(`Uber ${g.group_number} (PE: ${peName}): ${(g.passengers ?? []).join(', ')}`)
-  })
-  if (assignments?.pending_employee) {
-    const pendName = `${assignments.pending_employee.Nombre} ${assignments.pending_employee.Apellido}`
-    lines.push(`Pendiente (transporte alternativo): ${pendName}`)
+  if (pendingEmployee) {
+    lines.push(`Pendiente (transporte alternativo): ${pendingEmployee}`)
   }
   return lines.join('\n')
 }
@@ -175,7 +143,6 @@ function DepartureSection({ departureTime, children }) {
         <button
           onClick={() => setOpen((v) => !v)}
           className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          aria-label={open ? 'Ocultar desglose' : 'Ver desglose'}
         >
           {open ? '▲ Ocultar' : '▼ Desglose'}
         </button>
@@ -191,24 +158,15 @@ function DepartureSection({ departureTime, children }) {
 
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false)
-
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Clipboard API requires HTTPS or localhost — always true here.
-    }
+    } catch {}
   }
-
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      className="w-full text-xs"
-      onClick={handleCopy}
-    >
+    <Button variant="outline" size="sm" className="w-full text-xs" onClick={handleCopy}>
       {copied ? 'Copiado ✓' : 'Copiar'}
     </Button>
   )
@@ -224,12 +182,18 @@ export default function FinalOutputBlocks() {
   const finalOut = state.finalOutput
   if (!finalOut?.frescos_block || !finalOut?.transport_block) return null
 
-  const fb                      = finalOut.frescos_block
-  const tb                      = finalOut.transport_block
-  const staff                   = state.excelData?.staff ?? []
-  const event                   = state.excelData?.event ?? {}
-  const assignments             = state.assignments
-  const uberMeetingPointOverrides = state.uberMeetingPointOverrides ?? {}
+  const fb    = finalOut.frescos_block
+  const tb    = finalOut.transport_block
+  const staff = state.excelData?.staff ?? []
+  const event = state.excelData?.event ?? {}
+
+  // Pickup timing lives on the personal vehicle's route (frontend state).
+  const statePersonal    = state.vehicles.find((v) => v.type === 'personal')
+  const pickupLegSeconds = statePersonal?.route?.leg_seconds ?? null
+  const pickupBeforePe   = statePersonal?.route?.pickup_before_pe ?? null
+
+  // pending_employee in state is a string; also available from tb if needed.
+  const pendingEmployee = state.pending_employee ?? tb.pending_employee ?? null
 
   // ── Frescos breakdown ────────────────────────────────────────────────────
   const cpBd     = fb.departure_breakdown
@@ -245,15 +209,7 @@ export default function FinalOutputBlocks() {
   const peBd       = tb.departure_breakdown
   const peBdDetail = peBd?.breakdown
 
-  // ── Pickup arrival time ──────────────────────────────────────────────────
-  const pickupInfo = computePickupInfo(
-    tb.departure_from_pe,
-    assignments?.leg_seconds,
-    assignments?.pickup_before_pe,
-  )
-
-  // ── "Volver a editar": close panel, clear modal, return to step 3 ────────
-  // All state (assignments, meeting point, routes) is preserved — no API calls.
+  // ── "Volver a editar" ────────────────────────────────────────────────────
   function handleEdit() {
     dispatch({ type: ACTIONS.SET_SHOW_OUTPUT,  payload: false })
     dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: false })
@@ -262,36 +218,22 @@ export default function FinalOutputBlocks() {
 
   return (
     <>
-      {/*
-        Backdrop — dims the map to signal the panel is active, but
-        pointer-events:none keeps the map fully interactive underneath.
-      */}
       <div
         style={{
-          position: 'fixed',
-          inset: 0,
-          backgroundColor: 'rgba(0,0,0,0.30)',
-          zIndex: 40,
-          pointerEvents: 'none',
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.30)',
+          zIndex: 40, pointerEvents: 'none',
         }}
       />
 
-      {/* Panel — centered, 85vw × 85vh, non-draggable */}
       <div
         style={{
-          position:  'fixed',
-          left:      '50%',
-          top:       '50%',
+          position: 'fixed', left: '50%', top: '50%',
           transform: 'translate(-50%, -50%)',
-          width:     '85vw',
-          height:    '85vh',
-          zIndex:    50,
-          pointerEvents: 'auto',
+          width: '85vw', height: '85vh', zIndex: 50, pointerEvents: 'auto',
         }}
       >
         <Card className="h-full flex flex-col shadow-2xl">
 
-          {/* Header */}
           <CardHeader className="pb-3 flex-shrink-0">
             <CardTitle className="text-base">Plan de traslado confirmado</CardTitle>
             {(event.fecha || event.hora_inicio || event.tipo) && (
@@ -303,7 +245,6 @@ export default function FinalOutputBlocks() {
 
           <CardContent className="flex-1 overflow-hidden flex flex-col gap-4 pt-0">
 
-            {/* Two-column content area */}
             <div className="flex-1 overflow-hidden grid grid-cols-2 gap-6">
 
               {/* ── Left: Salida desde CP ────────────────────────────────── */}
@@ -311,7 +252,6 @@ export default function FinalOutputBlocks() {
 
                 <p className="text-sm font-semibold">Salida desde CP</p>
 
-                {/* Vehicle + crew */}
                 <div className="space-y-1">
                   <SectionTitle>Vehículo</SectionTitle>
                   <p className="text-xs font-medium">
@@ -328,28 +268,25 @@ export default function FinalOutputBlocks() {
                   ))}
                 </div>
 
-                {/* CP departure + breakdown */}
                 <div className="space-y-1">
                   <SectionTitle>Salida del CP</SectionTitle>
-                  {/* Loading start — when crew must arrive at CP */}
                   {fb.loading_start_time && (
                     <p className="text-xs text-muted-foreground">
                       Inicio de carga:{' '}
                       <span className="font-medium text-foreground">{fb.loading_start_time}</span>
                     </p>
                   )}
-                  {/* Actual departure — when vehicle leaves CP after loading */}
                   <DepartureSection departureTime={fb.departure_from_cp}>
                     {cpBd && (
                       <>
-                        <BreakdownRow label="Hora evento"    value={event.hora_inicio ?? '—'} />
-                        <BreakdownRow label="Prep en venue"  value={`${DEPARTURE_PREP_HOURS}h`} />
+                        <BreakdownRow label="Hora evento"   value={event.hora_inicio ?? '—'} />
+                        <BreakdownRow label="Prep en venue" value={`${DEPARTURE_PREP_HOURS}h`} />
                         <BreakdownRow
                           label="Tiempo de viaje"
                           value={`${cpTravel} min`}
                           note="calculado con tráfico real al arribo"
                         />
-                        <BreakdownRow label="Buffer"         value={`${DEPARTURE_BUFFER_MINUTES} min`} />
+                        <BreakdownRow label="Buffer"        value={`${DEPARTURE_BUFFER_MINUTES} min`} />
                         <BreakdownRow
                           label="Carga en CP"
                           value={`${cpBd.loading_time_minutes ?? LOADING_TIME_MINUTES} min`}
@@ -366,21 +303,14 @@ export default function FinalOutputBlocks() {
                             label="Total antes del evento"
                             value={`${cpBd.total_minutes_before_event} min`}
                           />
-                          <BreakdownRow
-                            label="Inicio de carga"
-                            value={fb.loading_start_time ?? '—'}
-                          />
-                          <BreakdownRow
-                            label="Salida del CP"
-                            value={fb.departure_from_cp ?? '—'}
-                          />
+                          <BreakdownRow label="Inicio de carga" value={fb.loading_start_time ?? '—'} />
+                          <BreakdownRow label="Salida del CP"   value={fb.departure_from_cp ?? '—'} />
                         </div>
                       </>
                     )}
                   </DepartureSection>
                 </div>
 
-                {/* Second miniflete */}
                 {fb.second_miniflete?.needs_second_miniflete && (
                   <div className="space-y-0.5">
                     <SectionTitle>Segundo miniflete</SectionTitle>
@@ -397,7 +327,6 @@ export default function FinalOutputBlocks() {
 
                 <p className="text-sm font-semibold">Salida desde Punto de Encuentro</p>
 
-                {/* Meeting point */}
                 <div className="space-y-0.5">
                   <SectionTitle>Punto de encuentro</SectionTitle>
                   <p className="text-xs font-medium">{tb.meeting_point?.name}</p>
@@ -406,20 +335,19 @@ export default function FinalOutputBlocks() {
                   )}
                 </div>
 
-                {/* PE departure + breakdown */}
                 <div className="space-y-1">
                   <SectionTitle>Salida del PE</SectionTitle>
                   <DepartureSection departureTime={tb.departure_from_pe}>
                     {peBdDetail && (
                       <>
-                        <BreakdownRow label="Hora evento"    value={peBdDetail.event_time ?? '—'} />
-                        <BreakdownRow label="Prep en venue"  value={`${peBdDetail.prep_hours}h`} />
+                        <BreakdownRow label="Hora evento"   value={peBdDetail.event_time ?? '—'} />
+                        <BreakdownRow label="Prep en venue" value={`${peBdDetail.prep_hours}h`} />
                         <BreakdownRow
                           label="Tiempo de viaje"
                           value={`${peBdDetail.travel_minutes} min`}
                           note="calculado con tráfico real al arribo"
                         />
-                        <BreakdownRow label="Buffer"         value={`${peBdDetail.buffer_minutes} min`} />
+                        <BreakdownRow label="Buffer" value={`${peBdDetail.buffer_minutes} min`} />
                         {peBdDetail.extra_prep_hours > 0 && (
                           <BreakdownRow
                             label={`Extra prep (${(peBdDetail.extra_prep_reason ?? []).join(', ')})`}
@@ -438,117 +366,140 @@ export default function FinalOutputBlocks() {
                   </DepartureSection>
                 </div>
 
-                {/* Personal vehicle */}
-                {tb.personal_vehicle?.driver && (
-                  <div className="space-y-1">
-                    <SectionTitle>Vehículo personal</SectionTitle>
-                    {(assignments?.pickup_passengers ?? []).length > 0 && (
-                      <p className="text-xs text-muted-foreground">Se dirigen al Punto de Encuentro:</p>
-                    )}
-                    <div className="flex items-center gap-1.5">
-                      <span className="h-2 w-2 rounded-full bg-green-500 shrink-0" />
-                      <span className="text-xs">
-                        {tb.personal_vehicle.driver}
-                        {getProfesion(tb.personal_vehicle.driver, staff)
-                          ? ` — ${getProfesion(tb.personal_vehicle.driver, staff)}`
-                          : ''}
-                        <span className="text-muted-foreground"> (chofer)</span>
-                      </span>
+                {/* ── Vehicles ─────────────────────────────────────────── */}
+                {(tb.vehicles ?? []).map((v) => {
+                  const colors = VEHICLE_COLORS[v.id] ?? VEHICLE_COLORS.uber_1
+                  const pickupPassengers = v.pickup?.passengers ?? []
+                  const pePassengers     = v.passengers_pe ?? []
+
+                  if (v.type === 'personal') {
+                    const vPickupInfo = computePickupInfo(tb.departure_from_pe, pickupLegSeconds, pickupBeforePe)
+                    return (
+                      <div key={v.id} className="space-y-1">
+                        <SectionTitle>{vehicleDisplayName(v)}</SectionTitle>
+
+                        {v.driver && (
+                          <>
+                            <div className="flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full bg-green-500 shrink-0" />
+                              <span className="text-xs">
+                                {v.driver}
+                                {getProfesion(v.driver, staff) ? ` — ${getProfesion(v.driver, staff)}` : ''}
+                                <span className="text-muted-foreground"> (chofer)</span>
+                              </span>
+                            </div>
+                          </>
+                        )}
+
+                        {pePassengers.length > 0 && (
+                          <>
+                            {pickupPassengers.length > 0 && (
+                              <p className="text-xs text-muted-foreground">Se dirigen al PE:</p>
+                            )}
+                            {pePassengers.map((name) => (
+                              <div key={name} className="flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-full bg-green-500 shrink-0" />
+                                <span className="text-xs">
+                                  {name}
+                                  {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
+                                </span>
+                              </div>
+                            ))}
+                          </>
+                        )}
+
+                        {pickupPassengers.length > 0 && (
+                          <div className="pt-0.5 space-y-0.5">
+                            <p className="text-xs text-muted-foreground">
+                              Pickup
+                              {statePersonal?.pickup?.point?.place_name
+                                ? ` (${statePersonal.pickup.point.place_name})`
+                                : ''}:
+                            </p>
+                            {pickupPassengers.map((name) => (
+                              <div key={name} className="flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-full bg-[#7B1FA2] shrink-0" />
+                                <span className="text-xs">
+                                  {name}
+                                  {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
+                                </span>
+                              </div>
+                            ))}
+                            {statePersonal?.pickup?.point?.place_address && (
+                              <p className="text-xs text-muted-foreground pl-3.5">
+                                {statePersonal.pickup.point.place_address}
+                              </p>
+                            )}
+                            {vPickupInfo.time ? (
+                              <p className="text-xs font-medium pl-3.5">
+                                Hora en punto de pickup: {vPickupInfo.time}
+                              </p>
+                            ) : (
+                              <p className="text-xs text-muted-foreground pl-3.5">
+                                Horario a confirmar
+                              </p>
+                            )}
+                            <p className="text-xs text-muted-foreground pl-3.5">
+                              {vPickupInfo.label}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  // Uber vehicle
+                  const peName = v.meeting_point?.name || v.meeting_point?.address || tb.meeting_point?.name
+                  return (
+                    <div key={v.id} className="space-y-0.5">
+                      <SectionTitle>
+                        {vehicleDisplayName(v)}
+                        {v.custom_meeting_point ? ` — PE: ${peName}` : ''}
+                      </SectionTitle>
+                      {!v.custom_meeting_point && (
+                        <p className="text-xs text-muted-foreground">PE: {peName}</p>
+                      )}
+                      {pePassengers.map((name) => (
+                        <div key={name} className="flex items-center gap-1.5">
+                          <span
+                            className="h-2 w-2 rounded-full shrink-0"
+                            style={{ background: colors.passengers }}
+                          />
+                          <span className="text-xs">
+                            {name}
+                            {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
+                          </span>
+                        </div>
+                      ))}
+                      {pickupPassengers.map((name) => (
+                        <div key={name} className="flex items-center gap-1.5">
+                          <span
+                            className="h-2 w-2 rounded-full shrink-0"
+                            style={{ background: colors.pickup }}
+                          />
+                          <span className="text-xs">
+                            {name}
+                            {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
+                          </span>
+                        </div>
+                      ))}
+                      {pePassengers.length === 0 && pickupPassengers.length === 0 && (
+                        <p className="text-xs text-muted-foreground">Sin pasajeros</p>
+                      )}
                     </div>
-                    {(tb.personal_vehicle.passengers ?? []).map((name) => (
-                      <div key={name} className="flex items-center gap-1.5">
-                        <span className="h-2 w-2 rounded-full bg-green-500 shrink-0" />
-                        <span className="text-xs">
-                          {name}
-                          {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
-                        </span>
-                      </div>
-                    ))}
-
-                    {/* Pickup */}
-                    {(assignments?.pickup_passengers ?? []).length > 0 && (
-                      <div className="pt-0.5 space-y-0.5">
-                        <p className="text-xs text-muted-foreground">
-                          Se encuentran en el punto de pickup
-                          {assignments.pickup_place ? ` (${assignments.pickup_place.place_name})` : ''}:
-                        </p>
-                        {assignments.pickup_passengers.map((emp) => (
-                          <div key={`${emp.Nombre} ${emp.Apellido}`} className="flex items-center gap-1.5">
-                            <span className="h-2 w-2 rounded-full bg-[#7B1FA2] shrink-0" />
-                            <span className="text-xs">
-                              {`${emp.Nombre} ${emp.Apellido}`}
-                              {emp.Profesion ? ` — ${emp.Profesion}` : ''}
-                            </span>
-                          </div>
-                        ))}
-                        {assignments.pickup_place?.place_address && (
-                          <p className="text-xs text-muted-foreground pl-3.5">
-                            {assignments.pickup_place.place_address}
-                          </p>
-                        )}
-                        {pickupInfo.time ? (
-                          <p className="text-xs font-medium pl-3.5">
-                            Hora en punto de pickup: {pickupInfo.time}
-                          </p>
-                        ) : (
-                          <p className="text-xs text-muted-foreground pl-3.5">
-                            Horario a confirmar
-                          </p>
-                        )}
-                        <p className="text-xs text-muted-foreground pl-3.5">
-                          {pickupInfo.label}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Uber groups */}
-                {(tb.uber_groups ?? []).length > 0 && (
-                  <div className="space-y-1.5">
-                    <SectionTitle>Uber</SectionTitle>
-                    {tb.uber_groups.map((group) => {
-                      const customPe = uberMeetingPointOverrides[group.group_number] ?? group.meeting_point
-                      const peName   = customPe?.name || customPe?.address || tb.meeting_point?.name
-                      return (
-                      <div key={group.group_number} className="space-y-0.5">
-                        {tb.uber_groups.length > 1 ? (
-                          <p className="text-xs text-muted-foreground">
-                            Uber {group.group_number} ({group.passengers?.length}{' '}
-                            {group.passengers?.length === 1 ? 'pasajero' : 'pasajeros'})
-                            {' '}→ {peName}
-                          </p>
-                        ) : (
-                          <p className="text-xs text-muted-foreground">
-                            {group.passengers?.length}{' '}
-                            {group.passengers?.length === 1 ? 'pasajero' : 'pasajeros'}
-                            {' '}→ {peName}
-                          </p>
-                        )}
-                        {(group.passengers ?? []).map((name) => (
-                          <div key={name} className="flex items-center gap-1.5">
-                            <span className="h-2 w-2 rounded-full bg-slate-400 shrink-0" />
-                            <span className="text-xs">
-                              {name}
-                              {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )})}
-                  </div>
-                )}
+                  )
+                })}
 
                 {/* Pending employee */}
-                {assignments?.pending_employee && (
+                {pendingEmployee && (
                   <div className="rounded-md bg-amber-50 border border-amber-200 p-2 space-y-1">
                     <SectionTitle>Pendiente</SectionTitle>
                     <div className="flex items-center gap-1.5">
                       <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
                       <span className="text-xs">
-                        {`${assignments.pending_employee.Nombre} ${assignments.pending_employee.Apellido}`}
-                        {assignments.pending_employee.Profesion
-                          ? ` — ${assignments.pending_employee.Profesion}`
+                        {pendingEmployee}
+                        {getProfesion(pendingEmployee, staff)
+                          ? ` — ${getProfesion(pendingEmployee, staff)}`
                           : ''}
                       </span>
                     </div>
@@ -556,7 +507,7 @@ export default function FinalOutputBlocks() {
                   </div>
                 )}
 
-                <CopyButton text={transportText(tb, assignments, uberMeetingPointOverrides)} />
+                <CopyButton text={transportText(tb, pendingEmployee)} />
               </div>
             </div>
 
