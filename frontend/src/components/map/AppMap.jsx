@@ -30,11 +30,11 @@
  * there can conflict with its internal rendering.
  */
 
-import { useMemo, useEffect, useState, useCallback } from 'react'
+import { useMemo, useEffect, useState, useCallback, Fragment } from 'react'
 import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-maps'
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
-import { useAppState, ACTIONS }                      from '../../state/appState'
+import { useAppState, ACTIONS, VEHICLE_COLORS }       from '../../state/appState'
 import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo } from '../../api/endpoints'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
 import MapBoundsController               from './MapBoundsController'
@@ -182,6 +182,9 @@ export default function AppMap() {
   // black custom-PE marker.  null means no InfoWindow is shown.
   const [vehiclePeIw, setVehiclePeIw] = useState(null)
 
+  // Pickup InfoWindow — stores vehicle id when the user clicks a pickup marker.
+  const [pickupIw, setPickupIw] = useState(null)
+
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
 
@@ -195,18 +198,16 @@ export default function AppMap() {
   // We check proximity to the current route polyline; if the click is within
   // PICKUP_REJECT_M metres we show an InfoWindow with place info.
   const handleMapClick = useCallback(async (event) => {
-    if (!state.manualPickupMode || state.currentStep !== 3) return
+    if (!state.manualPickupMode?.active || state.currentStep !== 3) return
     if (!event.detail?.latLng) return
 
     const { lat, lng } = event.detail.latLng
     const clickedPoint = { lat, lng }
 
-    // Determine which polyline is active (same logic as RoutePolylines).
-    const isPea = state.meetingPoint &&
-      state.chosenMeetingPoint?.name !== state.meetingPoint?.name
-    const activePolyline = isPea
-      ? state.driverRoutes?.direct_route?.encoded_polyline
-      : state.driverRoutes?.base_route?.encoded_polyline
+    // Use the route polyline of the specific vehicle requesting the pickup.
+    const vehicleId    = state.manualPickupMode?.vehicleId
+    const vehicle      = state.vehicles.find((v) => v.id === vehicleId)
+    const activePolyline = vehicle?.route?.encoded_polyline
 
     let tooFar = false
     let offRoute = false
@@ -230,58 +231,62 @@ export default function AppMap() {
     } catch {
       setManualPickupInfo({ lat, lng, loading: false, tooFar, name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, types: [], opening_hours: [], error: 'No se pudo obtener info del lugar.' })
     }
-  }, [state.manualPickupMode, state.currentStep, state.meetingPoint, state.chosenMeetingPoint, state.driverRoutes])
+  }, [state.manualPickupMode, state.currentStep, state.vehicles])
 
   // When the user confirms a manually clicked pickup point.
   const handleConfirmManualPickup = useCallback(async () => {
     if (!manualPickupInfo || recalculating) return
     setRecalculating(true)
 
-    const driver     = state.personalVehicle?.driver
-    const driverName = driver ? `${driver.Nombre} ${driver.Apellido}` : null
-    const override   = driverName ? state.coordinateOverrides[driverName] : null
-    // detect-personal-vehicle does not geocode staff, so driver.coordinates is
-    // not populated.  Look up the geocoded entry from staffWithCoords instead
-    // (always populated by the bootstrap's geocodeStaff call).
-    const driverWithCoords = driverName
-      ? state.staffWithCoords?.find((e) => `${e.Nombre} ${e.Apellido}` === driverName)
-      : null
-    const driverCoords = {
-      lat: override?.lat ?? driverWithCoords?.coordinates?.lat,
-      lng: override?.lng ?? driverWithCoords?.coordinates?.lng,
-    }
-    const meetingPt = {
-      lat: state.chosenMeetingPoint.lat,
-      lng: state.chosenMeetingPoint.lng,
-    }
-    const pickupPt = { lat: manualPickupInfo.lat, lng: manualPickupInfo.lng }
+    const vehicleId = state.manualPickupMode?.vehicleId ?? 'personal'
+    const vehicle   = state.vehicles.find((v) => v.id === vehicleId)
+    if (!vehicle) { setRecalculating(false); return }
 
-    const baseRoutePolyline = state.driverRoutes?.base_route?.encoded_polyline ?? ''
+    let originCoords
+    if (vehicleId === 'personal') {
+      // Personal vehicle: use driver's home address as the route origin.
+      const driver     = state.personalVehicle?.driver
+      const driverName = driver ? `${driver.Nombre} ${driver.Apellido}` : null
+      const override   = driverName ? state.coordinateOverrides[driverName] : null
+      // detect-personal-vehicle does not geocode staff, so driver.coordinates is
+      // not populated.  Look up the geocoded entry from staffWithCoords instead.
+      const driverWithCoords = driverName
+        ? state.staffWithCoords?.find((e) => `${e.Nombre} ${e.Apellido}` === driverName)
+        : null
+      originCoords = {
+        lat: override?.lat ?? driverWithCoords?.coordinates?.lat,
+        lng: override?.lng ?? driverWithCoords?.coordinates?.lng,
+      }
+    } else {
+      // Uber vehicle: the journey starts at the vehicle's meeting point (PE).
+      originCoords = { lat: vehicle.meeting_point.lat, lng: vehicle.meeting_point.lng }
+    }
+
+    const meetingPt = { lat: vehicle.meeting_point.lat, lng: vehicle.meeting_point.lng }
+    const pickupPt  = { lat: manualPickupInfo.lat, lng: manualPickupInfo.lng }
+    const baseRoutePolyline = vehicle.route?.encoded_polyline ?? ''
 
     try {
       const newRoute = await recalculateRouteWithPickup(
-        driverCoords, meetingPt, pickupPt, state.eventCoords, baseRoutePolyline,
+        originCoords, meetingPt, pickupPt, state.eventCoords, baseRoutePolyline,
       )
 
-      // Update the active route polyline to include the pickup stop.
-      const isPea = state.meetingPoint &&
-        state.chosenMeetingPoint?.name !== state.meetingPoint?.name
-      const updatedRoutes = isPea
-        ? {
-            ...state.driverRoutes,
-            direct_route: { ...state.driverRoutes.direct_route, encoded_polyline: newRoute.encoded_polyline },
-          }
-        : {
-            ...state.driverRoutes,
-            base_route: { ...state.driverRoutes.base_route, encoded_polyline: newRoute.encoded_polyline, legs: [] },
-          }
-      dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: updatedRoutes })
+      // For the personal vehicle also keep state.driverRoutes in sync so that
+      // any component still reading it (e.g. step-2 fallback preview) stays correct.
+      if (vehicleId === 'personal') {
+        const isPea = state.meetingPoint &&
+          state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+        const updatedRoutes = isPea
+          ? { ...state.driverRoutes, direct_route: { ...state.driverRoutes.direct_route, encoded_polyline: newRoute.encoded_polyline } }
+          : { ...state.driverRoutes, base_route:   { ...state.driverRoutes.base_route,   encoded_polyline: newRoute.encoded_polyline, legs: [] } }
+        dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: updatedRoutes })
+      }
 
-      // Store the pickup point on the personal vehicle so panels can render it.
+      // Store the pickup point and updated route on the vehicle.
       dispatch({
         type:    ACTIONS.SET_VEHICLE_PICKUP_POINT,
         payload: {
-          vehicle_id: 'personal',
+          vehicle_id: vehicleId,
           point: {
             place_name:    manualPickupInfo.name ?? manualPickupInfo.address,
             place_address: manualPickupInfo.address,
@@ -290,12 +295,10 @@ export default function AppMap() {
           },
         },
       })
-
-      // Update the personal vehicle's route with the new polyline and timing.
       dispatch({
         type:    ACTIONS.SET_VEHICLE_ROUTE,
         payload: {
-          vehicle_id: 'personal',
+          vehicle_id: vehicleId,
           route: {
             encoded_polyline: newRoute.encoded_polyline,
             pickup_before_pe: newRoute.pickup_before_pe ?? null,
@@ -304,7 +307,7 @@ export default function AppMap() {
         },
       })
 
-      dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: false })
+      dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: { active: false, vehicleId: null } })
       setManualPickupInfo(null)
     } catch {
       setManualPickupInfo((prev) => ({ ...prev, error: 'Error al recalcular la ruta.' }))
@@ -375,9 +378,6 @@ export default function AppMap() {
   const showSidebar     = state.currentStep <= 2 && !overlayActive
   const showStep3Panels = state.currentStep === 3 && !overlayActive
 
-  // Pickup point for the personal vehicle (from new vehicles model).
-  const personalPickupPoint = state.vehicles.find(v => v.type === 'personal')?.pickup?.point ?? null
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -415,12 +415,12 @@ export default function AppMap() {
           style={{
             width:  '100%',
             height: '100%',
-            cursor: (state.manualPickupMode && state.currentStep === 3) ||
+            cursor: (state.manualPickupMode?.active && state.currentStep === 3) ||
                     (state.manualPeaMode    && state.currentStep === 2)
               ? 'crosshair' : undefined,
           }}
           onClick={
-            (state.manualPickupMode && state.currentStep === 3) ? handleMapClick :
+            (state.manualPickupMode?.active && state.currentStep === 3) ? handleMapClick :
             (state.manualPeaMode    && state.currentStep === 2) ? handleMapClickPea :
             undefined
           }
@@ -431,7 +431,7 @@ export default function AppMap() {
             <StaffMarkers staff={state.staffWithCoords} />
           )}
 
-          {state.driverRoutes && <RoutePolylines uberRoutes={{}} />}
+          <RoutePolylines />
 
           {state.meetingPoint && state.currentStep >= 2 && (
             <MeetingPointMarkers />
@@ -441,20 +441,62 @@ export default function AppMap() {
 
           {state.activePickupResult && <PickupCandidateMarkers />}
 
-          {/* Pickup point marker for the personal vehicle */}
-          {state.currentStep >= 3 && personalPickupPoint && (
-            <AdvancedMarker
-              position={{ lat: personalPickupPoint.lat, lng: personalPickupPoint.lng }}
-              title={`Pickup: ${personalPickupPoint.place_name}`}
-            >
-              <Pin
-                background="#7B1FA2"
-                borderColor="#ffffff"
-                glyphColor="#ffffff"
-                scale={1.4}
-              />
-            </AdvancedMarker>
-          )}
+          {/* Per-vehicle pickup markers — one for each vehicle that has a pickup point */}
+          {state.currentStep >= 3 && state.vehicles
+            .filter((v) => v.pickup?.point)
+            .map((v) => {
+              const pickupColor = (VEHICLE_COLORS[v.id] ?? VEHICLE_COLORS.uber_1).pickup
+              const pt = v.pickup.point
+              return (
+                <Fragment key={`pickup-${v.id}`}>
+                  <AdvancedMarker
+                    position={{ lat: pt.lat, lng: pt.lng }}
+                    title={`Pickup: ${pt.place_name}`}
+                    onClick={() => setPickupIw(v.id)}
+                  >
+                    <Pin
+                      background={pickupColor}
+                      borderColor="#ffffff"
+                      glyphColor="#ffffff"
+                      scale={1.3}
+                    />
+                  </AdvancedMarker>
+
+                  {pickupIw === v.id && (
+                    <InfoWindow
+                      position={{ lat: pt.lat, lng: pt.lng }}
+                      onCloseClick={() => setPickupIw(null)}
+                    >
+                      <div style={{ minWidth: 160, maxWidth: 220, fontFamily: 'sans-serif' }}>
+                        <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 4px', color: '#111827' }}>
+                          {pt.place_name}
+                        </p>
+                        {pt.place_address && pt.place_address !== pt.place_name && (
+                          <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 8px', lineHeight: 1.4 }}>
+                            {pt.place_address}
+                          </p>
+                        )}
+                        <button
+                          onClick={() => {
+                            dispatch({ type: ACTIONS.CLEAR_VEHICLE_PICKUP, payload: { vehicle_id: v.id } })
+                            setPickupIw(null)
+                          }}
+                          style={{
+                            width: '100%', padding: '6px 10px',
+                            background: '#dc2626', color: '#fff',
+                            border: 'none', borderRadius: 5,
+                            fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                          }}
+                        >
+                          Quitar pickup
+                        </button>
+                      </div>
+                    </InfoWindow>
+                  )}
+                </Fragment>
+              )
+            })
+          }
 
           {/* ── Custom vehicle PE markers ─────────────────────────────────── */}
           {/* One black pin per Uber vehicle whose meeting point was customised  */}

@@ -119,9 +119,6 @@ export default function PickupResultPanel() {
       lng: override?.lng ?? driverWithCoords?.coordinates?.lng,
     }
 
-    // Snapshot original routes before any modification (idempotent — only saves once).
-    dispatch({ type: ACTIONS.SET_ORIGINAL_DRIVER_ROUTES, payload: state.driverRoutes })
-
     // Timing fields populated from the route response; null on failure (shows
     // "Horario a confirmar" in the summary panels).
     let pickupBeforePe = null
@@ -153,17 +150,33 @@ export default function PickupResultPanel() {
       console.warn('[PickupResultPanel] Route recalculation failed:', err?.message)
     }
 
+    // Automatic pickup always targets the personal vehicle (the context menu
+    // "Buscar pickup en ruta" is only shown for personal-vehicle passengers).
     dispatch({
-      type:    ACTIONS.SET_ASSIGNMENTS,
+      type:    ACTIONS.SET_VEHICLE_PICKUP_POINT,
       payload: {
-        ...(state.assignments ?? {}),
-        pickup_passengers:      [...(state.assignments?.pickup_passengers ?? []), employee],
-        pickup_place:           place,
-        pickup_transit_minutes: candidate?.transit_time_to_pickup_minutes ?? null,
-        pickup_before_pe:       pickupBeforePe,
-        leg_seconds:            legSeconds,
+        vehicle_id: 'personal',
+        point: {
+          place_name:    place.place_name,
+          place_address: place.place_address,
+          lat:           place.lat,
+          lng:           place.lng,
+        },
       },
     })
+    if (pickupBeforePe !== null || legSeconds !== null) {
+      dispatch({
+        type:    ACTIONS.SET_VEHICLE_ROUTE,
+        payload: {
+          vehicle_id: 'personal',
+          route: {
+            encoded_polyline: state.driverRoutes?.base_route?.encoded_polyline ?? '',
+            pickup_before_pe: pickupBeforePe,
+            leg_seconds:      legSeconds,
+          },
+        },
+      })
+    }
     dispatch({ type: ACTIONS.SET_ACTIVE_PICKUP_RESULT, payload: null })
     setConfirming(false)
   }

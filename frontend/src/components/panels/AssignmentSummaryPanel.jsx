@@ -272,8 +272,8 @@ function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
           </div>
         )}
 
-        {/* ── "Elegir pickup en mapa" (personal vehicle only, no pickup yet) */}
-        {vehicle.type === 'personal' && !vehicle.pickup.point && vehicle.route && (
+        {/* ── "Elegir pickup en mapa" (any vehicle with route, no pickup yet) */}
+        {!vehicle.pickup.point && vehicle.route && (
           <button
             onClick={() => onPickupClick(vehicle.id)}
             style={{
@@ -351,10 +351,7 @@ export default function AssignmentSummaryPanel() {
   }
 
   function handlePickupClick(vehicleId) {
-    // For now only personal vehicle pickup is supported (Uber pickup in prompt 3).
-    if (vehicleId === 'personal') {
-      dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: true })
-    }
+    dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: { active: true, vehicleId } })
   }
 
   return (
@@ -397,7 +394,7 @@ export default function AssignmentSummaryPanel() {
       <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
 
         {/* ── Manual pickup mode banner ─────────────────────────────── */}
-        {state.manualPickupMode && (
+        {state.manualPickupMode?.active && (
           <div
             style={{
               marginBottom: 14,
@@ -415,7 +412,7 @@ export default function AssignmentSummaryPanel() {
               Hacé click en un punto sobre la ruta para elegirlo como pickup.
             </p>
             <button
-              onClick={() => dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: false })}
+              onClick={() => dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: { active: false, vehicleId: null } })}
               style={{
                 fontSize:       12,
                 color:          '#2563eb',

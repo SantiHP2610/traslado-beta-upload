@@ -166,7 +166,10 @@ const initialState = {
   error: null,         // last error message surfaced to the user, or null
   showModal:        false,   // true when the step-4 ConfirmationModal is visible
   showOutput:       false,   // true when the two FinalOutputBlocks are visible
-  manualPickupMode: false,   // true while the user is clicking the map to select a pickup point
+  // Shape: { active: boolean, vehicleId: string | null }
+  // vehicleId identifies which vehicle is requesting the pickup so AppMap can
+  // check proximity against that vehicle's route and dispatch to the right slot.
+  manualPickupMode: { active: false, vehicleId: null },
   manualPeaMode:    false,   // true while the user is clicking the map to manually select a PEA
 
   // Snapshot of driverRoutes taken before the first pickup confirmation.
@@ -497,7 +500,7 @@ function appReducer(state, action) {
           pending_employee: null,
           activePickupResult: null,
           chosenMeetingPoint: null,
-          manualPickupMode: false,
+          manualPickupMode: { active: false, vehicleId: null },
         })
       } else if (state.currentStep >= 2) {
         // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
