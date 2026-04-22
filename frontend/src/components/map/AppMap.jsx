@@ -28,21 +28,15 @@
  * All side panels are siblings of <Map> (inside the flex row or the map-area
  * div) — the Maps JS API owns the DOM inside <Map>, so React nodes appended
  * there can conflict with its internal rendering.
- *
- * ── Assignment logic ─────────────────────────────────────────────────────
- * useAssignmentLogic() is called here so the same state instance (local
- * useState + useEffect) is shared between UnassignedPanel (left) and
- * AssignmentSummaryPanel (right).  Both panels receive the results as props.
  */
 
-import { useMemo, useEffect, useRef, useState, useCallback } from 'react'
+import { useMemo, useEffect, useState, useCallback } from 'react'
 import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-maps'
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
 import { useAppState, ACTIONS }                      from '../../state/appState'
-import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo, simpleRoute } from '../../api/endpoints'
+import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo } from '../../api/endpoints'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
-import { useAssignmentLogic }            from '../../hooks/useAssignmentLogic'
 import MapBoundsController               from './MapBoundsController'
 import StaffMarkers                      from './StaffMarkers'
 import RoutePolylines                    from './RoutePolylines'
@@ -99,7 +93,7 @@ function distanceToPolylineMetres(point, encodedPolyline) {
 }
 
 // ---------------------------------------------------------------------------
-// Bounds computation (unchanged from original)
+// Bounds computation
 // ---------------------------------------------------------------------------
 
 function getRouteEndpoints(encodedPolyline) {
@@ -145,6 +139,19 @@ function computeBounds(staffWithCoords, driverRoutes, eventCoords) {
 }
 
 // ---------------------------------------------------------------------------
+// Vehicle label helper
+// ---------------------------------------------------------------------------
+
+function vehicleLabel(v) {
+  if (v.type === 'personal') {
+    return v.vehicle_description && v.driver
+      ? `${v.vehicle_description} de ${v.driver}`
+      : v.vehicle_description ?? 'Vehículo personal'
+  }
+  return `Uber ${v.id.replace('uber_', '')}`
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -171,179 +178,12 @@ export default function AppMap() {
   // null = no InfoWindow shown.
   const [manualPeaInfo, setManualPeaInfo] = useState(null)
 
-  // Ref that tracks the current drag position of the Uber PE drag pin so we
-  // can read the final position in onDragEnd regardless of event shape.
-  const uberDragPosRef = useRef(null)
-
-  // ── Uber PE edit marker animation ────────────────────────────────────────
-  // The animated black marker that appears whenever uberPeEditMode is set.
-  // Reuses the same ease-out-cubic logic as StaffMarkers.useAnimatedPosition.
-  //   uberEditSnappedPos — React-known position (position prop on AdvancedMarker).
-  //                        Only updated once per animation (at completion) so
-  //                        React's position-binding stays dormant during frames.
-  //   uberEditMarkerRef  — ref to the AdvancedMarkerElement; mutated each frame.
-  //   uberEditPosRef     — current interpolated position (avoids reading state).
-  //   uberEditRafRef     — active rAF handle so we can cancel on re-trigger.
-  //   uberDragJustDoneRef — set true in onDragEnd to suppress animation when the
-  //                         position change is caused by a drag (not geocode).
-  //   uberPrevGroupRef   — detects group switches (instant jump, not animate).
-  const uberEditMarkerRef   = useRef(null)
-  const uberEditPosRef      = useRef(null)
-  const uberEditRafRef      = useRef(null)
-  const uberDragJustDoneRef = useRef(false)
-  const uberPrevGroupRef    = useRef(null)
-  const [uberEditSnappedPos, setUberEditSnappedPos] = useState(null)
-  // InfoWindow open for a static (non-edit) Uber PE override marker.
-  const [staticUberIw, setStaticUberIw] = useState(null)
-
-  // Encoded polylines for Uber group custom-PE → event routes.
-  // Populated by a useEffect below whenever uberMeetingPointOverrides changes.
-  // Keyed by group number as a string (matches uberMeetingPointOverrides keys).
-  const [uberRoutes, setUberRoutes] = useState({})
-  // Tracks the {lat,lng} of the last DirectionsService call per group so we
-  // skip redundant API requests when the override position hasn't changed.
-  const uberDirPrevRef = useRef({})
-
-  // Derive the target position for the active edit-mode marker.
-  const uberEditGroupNumber = state.uberPeEditMode
-  const uberEditTarget = uberEditGroupNumber != null
-    ? (state.uberMeetingPointOverrides[uberEditGroupNumber] ?? state.chosenMeetingPoint)
-    : null
-
-  // Animation effect — runs when the target position or active group changes.
-  useEffect(() => {
-    if (uberEditRafRef.current) {
-      cancelAnimationFrame(uberEditRafRef.current)
-      uberEditRafRef.current = null
-    }
-
-    if (!uberEditTarget) {
-      uberEditPosRef.current = null
-      setUberEditSnappedPos(null)
-      return
-    }
-
-    const target       = { lat: uberEditTarget.lat, lng: uberEditTarget.lng }
-    const groupChanged = uberPrevGroupRef.current !== uberEditGroupNumber
-    uberPrevGroupRef.current = uberEditGroupNumber
-
-    // Skip animation for: first appearance, group switch, or after a drag.
-    const instant = !uberEditPosRef.current || groupChanged || uberDragJustDoneRef.current
-    uberDragJustDoneRef.current = false
-
-    if (instant ||
-        (uberEditPosRef.current?.lat === target.lat &&
-         uberEditPosRef.current?.lng === target.lng)) {
-      uberEditPosRef.current = target
-      setUberEditSnappedPos(target)
-      return
-    }
-
-    // Ease-out-cubic over 1500 ms — same parameters as StaffMarkers.
-    const start    = { ...uberEditPosRef.current }
-    const t0       = performance.now()
-    const DURATION = 1500
-    const ease     = (t) => 1 - Math.pow(1 - t, 3)
-
-    function step(now) {
-      const progress = Math.min((now - t0) / DURATION, 1)
-      const e        = ease(progress)
-      const current  = {
-        lat: start.lat + (target.lat - start.lat) * e,
-        lng: start.lng + (target.lng - start.lng) * e,
-      }
-      uberEditPosRef.current = current
-      if (uberEditMarkerRef.current) {
-        uberEditMarkerRef.current.position = current
-      }
-      if (progress < 1) {
-        uberEditRafRef.current = requestAnimationFrame(step)
-      } else {
-        uberEditRafRef.current = null
-        setUberEditSnappedPos({ ...current })
-      }
-    }
-
-    uberEditRafRef.current = requestAnimationFrame(step)
-    return () => {
-      if (uberEditRafRef.current) {
-        cancelAnimationFrame(uberEditRafRef.current)
-        uberEditRafRef.current = null
-      }
-    }
-  }, [uberEditTarget?.lat, uberEditTarget?.lng, uberEditGroupNumber]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Uber custom-PE → event route computation ─────────────────────────────
-  // Whenever uberMeetingPointOverrides changes (override added, moved, or
-  // cleared), rebuild the uberRoutes map via DirectionsService.
-  //   • Only calls the API for groups whose position actually changed — the
-  //     `uberDirPrevRef` tracks the last lat/lng per group.
-  //   • Cleared groups are removed immediately from state.
-  //   • API calls are fire-and-forget; each resolves into a functional setState
-  //     so concurrent calls compose correctly without race-condition overwrites.
-  useEffect(() => {
-    if (!state.eventCoords) return
-
-    const overrides   = state.uberMeetingPointOverrides
-    const activeGroups = new Set(Object.keys(overrides))
-
-    // Remove routes and prev-position tracking for cleared overrides.
-    const removed = Object.keys(uberDirPrevRef.current).filter((k) => !activeGroups.has(k))
-    if (removed.length > 0) {
-      removed.forEach((k) => delete uberDirPrevRef.current[k])
-      setUberRoutes((prev) => {
-        const next = { ...prev }
-        removed.forEach((k) => delete next[k])
-        return next
-      })
-    }
-
-    // Request a route for each override whose position has changed.
-    for (const [key, pos] of Object.entries(overrides)) {
-      const prev = uberDirPrevRef.current[key]
-      if (prev && prev.lat === pos.lat && prev.lng === pos.lng) continue   // unchanged
-
-      uberDirPrevRef.current[key] = { lat: pos.lat, lng: pos.lng }
-
-      simpleRoute(pos.lat, pos.lng, state.eventCoords.lat, state.eventCoords.lng)
-        .then((result) => {
-          if (result?.encoded_polyline) {
-            setUberRoutes((prev) => ({ ...prev, [key]: result.encoded_polyline }))
-          }
-        })
-        .catch(() => {})
-    }
-  }, [state.uberMeetingPointOverrides, state.eventCoords]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Vehicle custom-PE InfoWindow — stores vehicle id when the user clicks a
+  // black custom-PE marker.  null means no InfoWindow is shown.
+  const [vehiclePeIw, setVehiclePeIw] = useState(null)
 
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
-
-  // Extract assignment logic so UnassignedPanel and AssignmentSummaryPanel
-  // share the same state instance via props (no additional context needed).
-  const assignLogic = useAssignmentLogic()
-
-  // ── Step 3: auto-assign driver ───────────────────────────────────────────
-  // Initialise the assignments object with the driver the moment step 3
-  // starts.  Guard on assignments === null so this fires exactly once.
-  useEffect(() => {
-    if (state.currentStep !== 3) return
-    if (state.assignments !== null) return
-
-    const driver = state.personalVehicle?.has_personal_vehicle
-      ? state.personalVehicle.driver
-      : null
-
-    dispatch({
-      type:    ACTIONS.SET_ASSIGNMENTS,
-      payload: {
-        driver,
-        car_passengers:    [],
-        uber_passengers:   [],
-        pickup_passengers: [],
-        pickup_place:      null,
-      },
-    })
-  }, [state.currentStep, state.assignments, state.personalVehicle, dispatch])
 
   const bounds = useMemo(
     () => computeBounds(state.staffWithCoords, state.driverRoutes, state.eventCoords),
@@ -437,26 +277,36 @@ export default function AppMap() {
           }
       dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: updatedRoutes })
 
-      // Store pickup place + timing metadata so panels can compute the
-      // pickup arrival time as PE departure ± leg_seconds.
+      // Store the pickup point on the personal vehicle so panels can render it.
       dispatch({
-        type:    ACTIONS.SET_ASSIGNMENTS,
+        type:    ACTIONS.SET_VEHICLE_PICKUP_POINT,
         payload: {
-          ...state.assignments,
-          pickup_place: {
+          vehicle_id: 'personal',
+          point: {
             place_name:    manualPickupInfo.name ?? manualPickupInfo.address,
             place_address: manualPickupInfo.address,
             lat:           manualPickupInfo.lat,
             lng:           manualPickupInfo.lng,
           },
-          pickup_before_pe: newRoute.pickup_before_pe ?? null,
-          leg_seconds:      newRoute.leg_seconds ?? null,
+        },
+      })
+
+      // Update the personal vehicle's route with the new polyline and timing.
+      dispatch({
+        type:    ACTIONS.SET_VEHICLE_ROUTE,
+        payload: {
+          vehicle_id: 'personal',
+          route: {
+            encoded_polyline: newRoute.encoded_polyline,
+            pickup_before_pe: newRoute.pickup_before_pe ?? null,
+            leg_seconds:      newRoute.leg_seconds ?? null,
+          },
         },
       })
 
       dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: false })
       setManualPickupInfo(null)
-    } catch (err) {
+    } catch {
       setManualPickupInfo((prev) => ({ ...prev, error: 'Error al recalcular la ruta.' }))
     } finally {
       setRecalculating(false)
@@ -525,6 +375,9 @@ export default function AppMap() {
   const showSidebar     = state.currentStep <= 2 && !overlayActive
   const showStep3Panels = state.currentStep === 3 && !overlayActive
 
+  // Pickup point for the personal vehicle (from new vehicles model).
+  const personalPickupPoint = state.vehicles.find(v => v.type === 'personal')?.pickup?.point ?? null
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -538,14 +391,7 @@ export default function AppMap() {
     >
       {/* ── Left panel slot ──────────────────────────────────────────────── */}
       {showSidebar     && <Sidebar />}
-      {showStep3Panels && (
-        <UnassignedPanel
-          unassigned={assignLogic.unassigned}
-          totalToAssign={assignLogic.totalToAssign}
-          hasAnyAssigned={assignLogic.assignedCount > 0}
-          onReset={assignLogic.handleReset}
-        />
-      )}
+      {showStep3Panels && <UnassignedPanel />}
 
       {/* ── Map area (always present, flex:1) ────────────────────────────── */}
       {/*
@@ -585,7 +431,7 @@ export default function AppMap() {
             <StaffMarkers staff={state.staffWithCoords} />
           )}
 
-          {state.driverRoutes && <RoutePolylines uberRoutes={uberRoutes} />}
+          {state.driverRoutes && <RoutePolylines uberRoutes={{}} />}
 
           {state.meetingPoint && state.currentStep >= 2 && (
             <MeetingPointMarkers />
@@ -595,13 +441,11 @@ export default function AppMap() {
 
           {state.activePickupResult && <PickupCandidateMarkers />}
 
-          {state.currentStep >= 3 && state.assignments?.pickup_place && (
+          {/* Pickup point marker for the personal vehicle */}
+          {state.currentStep >= 3 && personalPickupPoint && (
             <AdvancedMarker
-              position={{
-                lat: state.assignments.pickup_place.lat,
-                lng: state.assignments.pickup_place.lng,
-              }}
-              title={`Pickup: ${state.assignments.pickup_place.place_name}`}
+              position={{ lat: personalPickupPoint.lat, lng: personalPickupPoint.lng }}
+              title={`Pickup: ${personalPickupPoint.place_name}`}
             >
               <Pin
                 background="#7B1FA2"
@@ -611,6 +455,54 @@ export default function AppMap() {
               />
             </AdvancedMarker>
           )}
+
+          {/* ── Custom vehicle PE markers ─────────────────────────────────── */}
+          {/* One black pin per Uber vehicle whose meeting point was customised  */}
+          {/* via the Sidebar geocode flow (custom_meeting_point === true).       */}
+          {state.vehicles
+            .filter(v => v.custom_meeting_point && v.meeting_point)
+            .map(v => (
+              <AdvancedMarker
+                key={`vehicle-pe-${v.id}`}
+                position={{ lat: v.meeting_point.lat, lng: v.meeting_point.lng }}
+                title={`PE personalizado — ${vehicleLabel(v)}`}
+                onClick={() => setVehiclePeIw(v.id)}
+              >
+                <Pin
+                  background="#000000"
+                  borderColor="#ffffff"
+                  glyphColor="#ffffff"
+                  scale={1.1}
+                />
+              </AdvancedMarker>
+            ))
+          }
+
+          {/* InfoWindow for a clicked custom vehicle PE marker */}
+          {vehiclePeIw !== null && (() => {
+            const v = state.vehicles.find(veh => veh.id === vehiclePeIw)
+            if (!v?.meeting_point) return null
+            return (
+              <InfoWindow
+                position={{ lat: v.meeting_point.lat, lng: v.meeting_point.lng }}
+                onCloseClick={() => setVehiclePeIw(null)}
+              >
+                <div style={{ minWidth: 160, maxWidth: 220, fontFamily: 'sans-serif' }}>
+                  <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 2px', color: '#111827' }}>
+                    PE — {vehicleLabel(v)}
+                  </p>
+                  {v.meeting_point.name && (
+                    <p style={{ fontSize: 11, color: '#374151', margin: '0 0 2px', lineHeight: 1.4 }}>
+                      {v.meeting_point.name}
+                    </p>
+                  )}
+                  <p style={{ fontSize: 11, color: '#6b7280', margin: 0, lineHeight: 1.4 }}>
+                    {v.meeting_point.address}
+                  </p>
+                </div>
+              </InfoWindow>
+            )
+          })()}
 
           {/* Manual pickup InfoWindow — shown when user clicks during pickup mode */}
           {manualPickupInfo && (
@@ -668,6 +560,7 @@ export default function AppMap() {
               </div>
             </InfoWindow>
           )}
+
           {/* Manual PEA InfoWindow — shown when user clicks during PEA mode */}
           {manualPeaInfo && (
             <InfoWindow
@@ -744,105 +637,6 @@ export default function AppMap() {
               </div>
             </InfoWindow>
           )}
-
-          {/* ── Uber PE edit marker (draggable, appears when uberPeEditMode set) ── */}
-          {/* Animated ease-out-cubic via uberEditSnappedPos + direct position     */}
-          {/* mutations on uberEditMarkerRef.  After drag, animation is suppressed. */}
-          {uberEditGroupNumber !== null && (uberEditSnappedPos ?? uberEditTarget) && (
-            <AdvancedMarker
-              ref={uberEditMarkerRef}
-              position={uberEditSnappedPos ?? uberEditTarget}
-              draggable={true}
-              title={`PE personalizado — Uber ${uberEditGroupNumber}`}
-              onDrag={(e) => {
-                const p = e?.target?.position ?? e?.latLng
-                if (p) {
-                  uberDragPosRef.current = {
-                    lat: typeof p.lat === 'function' ? p.lat() : p.lat,
-                    lng: typeof p.lng === 'function' ? p.lng() : p.lng,
-                  }
-                }
-              }}
-              onDragEnd={(e) => {
-                const p = e?.target?.position ?? e?.latLng ?? uberDragPosRef.current
-                if (p) {
-                  const lat = typeof p.lat === 'function' ? p.lat() : p.lat
-                  const lng = typeof p.lng === 'function' ? p.lng() : p.lng
-                  // Suppress animation for drag-caused position changes — the
-                  // marker is already at the drag destination.
-                  uberDragJustDoneRef.current = true
-                  dispatch({
-                    type:    ACTIONS.SET_UBER_MEETING_POINT,
-                    payload: {
-                      groupNumber: uberEditGroupNumber,
-                      meetingPoint: {
-                        name:    'PE personalizado',
-                        address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
-                        lat,
-                        lng,
-                      },
-                    },
-                  })
-                }
-                // Do NOT clear uberPeEditMode — the marker stays draggable and
-                // the edit form stays open until the user clicks "Listo" / "Cancelar".
-                uberDragPosRef.current = null
-              }}
-            >
-              <Pin
-                background="#111827"
-                borderColor="#ffffff"
-                glyphColor="#ffffff"
-                scale={1.2}
-              />
-            </AdvancedMarker>
-          )}
-
-          {/* ── Static Uber PE override markers (always visible, non-draggable) ── */}
-          {/* One marker per group that has a custom meeting point, except for the  */}
-          {/* group currently being edited (covered by the draggable marker above). */}
-          {Object.entries(state.uberMeetingPointOverrides).map(([groupNumStr, pos]) => {
-            const groupNum = Number(groupNumStr)
-            if (groupNum === uberEditGroupNumber) return null
-            return (
-              <AdvancedMarker
-                key={`uber-pe-static-${groupNum}`}
-                position={{ lat: pos.lat, lng: pos.lng }}
-                draggable={false}
-                title={`PE — Uber ${groupNum}: ${pos.name || pos.address}`}
-                onClick={() => setStaticUberIw(groupNum)}
-              >
-                <Pin
-                  background="#111827"
-                  borderColor="#ffffff"
-                  glyphColor="#ffffff"
-                />
-              </AdvancedMarker>
-            )
-          })}
-
-          {/* InfoWindow for a clicked static Uber PE marker */}
-          {staticUberIw !== null && state.uberMeetingPointOverrides[staticUberIw] && (
-            <InfoWindow
-              position={{
-                lat: state.uberMeetingPointOverrides[staticUberIw].lat,
-                lng: state.uberMeetingPointOverrides[staticUberIw].lng,
-              }}
-              onCloseClick={() => setStaticUberIw(null)}
-            >
-              <div style={{ minWidth: 160, maxWidth: 220, fontFamily: 'sans-serif' }}>
-                <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 2px', color: '#111827' }}>
-                  PE — Uber {staticUberIw}
-                </p>
-                <p style={{ fontSize: 11, color: '#6b7280', margin: 0, lineHeight: 1.4 }}>
-                  {state.uberMeetingPointOverrides[staticUberIw].name || ''}
-                </p>
-                <p style={{ fontSize: 11, color: '#6b7280', margin: 0, lineHeight: 1.4 }}>
-                  {state.uberMeetingPointOverrides[staticUberIw].address}
-                </p>
-              </div>
-            </InfoWindow>
-          )}
         </Map>
 
         {/* Center-bottom card showing the chosen meeting point (step 3) */}
@@ -904,30 +698,7 @@ export default function AppMap() {
       </div>
 
       {/* ── Right panel slot ─────────────────────────────────────────────── */}
-      {showStep3Panels && (
-        <AssignmentSummaryPanel
-          driver={assignLogic.driver}
-          carPassengers={assignLogic.carPassengers}
-          uberPassengers={assignLogic.uberPassengers}
-          uberGroups={assignLogic.uberGroups}
-          pickupPassengers={assignLogic.pickupPassengers}
-          pickupPlace={assignLogic.pickupPlace}
-          hasVehicle={assignLogic.hasVehicle}
-          vehicleLabel={assignLogic.vehicleLabel}
-          assignedCount={assignLogic.assignedCount}
-          totalToAssign={assignLogic.totalToAssign}
-          validating={assignLogic.validating}
-          showSoloChoice={assignLogic.showSoloChoice}
-          pendingSolo={assignLogic.pendingSolo}
-          unassigned={assignLogic.unassigned}
-          assignments={assignLogic.assignments}
-          uberAutoFilled={assignLogic.uberAutoFilled}
-          onAutoFill={assignLogic.handleAutoFill}
-          onValidate={assignLogic.handleValidate}
-          onPendiente={assignLogic.handlePendiente}
-          onContinueWithSolo={assignLogic.handleContinueWithSolo}
-        />
-      )}
+      {showStep3Panels && <AssignmentSummaryPanel />}
 
       {/* ── Step 4 overlays (position:fixed — independent of flex layout) ── */}
       {state.showModal  && <ConfirmationModal />}

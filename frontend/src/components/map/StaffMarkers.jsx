@@ -11,10 +11,17 @@
  *
  * ── Marker color coding ──────────────────────────────────────────────────────
  * Blue   (#4285F4)        → unassigned (default, steps 1-2, unassigned in step 3)
- * Green  (#34A853)        → driver or personal car passenger
- * Grey   (#9E9E9E)        → Uber passenger
- * Purple (#7B1FA2)        → pickup passenger (assigned to the pickup point on the route)
+ * Green  (#34A853)        → driver of the personal vehicle
+ * Vehicle color           → passenger on a specific vehicle (from VEHICLE_COLORS)
+ * Pickup color            → pickup passenger (vehicle.color.pickup)
  * Washed blue (#B0C4DE)   → frescos-assigned (step 3+); 0.6 opacity, no actions
+ *
+ * ── Context menu (step 3+) ───────────────────────────────────────────────────
+ * Unassigned employees: hierarchical menu — one row per available vehicle,
+ * expanding into "→ Punto de encuentro" and (when a pickup point exists)
+ * "→ Punto de pickup" sub-options.
+ * Assigned employees: single "Quitar asignación" button.
+ * Driver: informational text only.
  *
  * ── Marker edit mode ─────────────────────────────────────────────────────────
  * Every marker has an "Editar dirección" link in its InfoWindow.  Clicking it
@@ -44,35 +51,14 @@
  * ([marker, position]): it only fires when the prop reference changes, not on
  * every render.  While snappedPos is stable, prop binding is dormant and our
  * direct mutations are the sole driver of the marker's screen position.
- *
- * ── Why assignment logic lives in this component ─────────────────────────────
- * Actions are spatially anchored to a specific marker: "assign to car" only
- * makes sense for the employee whose pin you just tapped.  Rendering the
- * action menu as an InfoWindow on that pin is the natural spatial affordance —
- * it mirrors how Google Maps shows place actions when you tap a pin.  Moving
- * the logic to a sidebar or separate overlay would break the spatial connection
- * between the employee's home address and the action being taken.
- *
- * ── Why selectedKey is local state ───────────────────────────────────────────
- * "Which InfoWindow is open" is pure transient UI state — it has no meaning
- * outside this component and does not affect any backend call or downstream
- * step.  Local useState is the right scope.
  */
 
 import { useState, useMemo, useEffect, useRef }  from 'react'
 import { AdvancedMarker, InfoWindow, Pin }        from '@vis.gl/react-google-maps'
-import { useAppState, ACTIONS }                   from '../../state/appState'
-import { findPickup, geocodeAddress as geocodeAddressApi } from '../../api/endpoints'
+import { useAppState, ACTIONS, isVehicleFull }    from '../../state/appState'
+import { geocodeAddress as geocodeAddressApi }    from '../../api/endpoints'
 import { Card, CardContent }                      from '@/components/ui/card'
 import { Button }                                 from '@/components/ui/button'
-
-// Maximum passengers in the personal car (excluding driver).
-// Mirrors MAX_PASSENGERS_PER_CAR in config.py — kept in sync manually.
-const MAX_CAR_PASSENGERS = 4
-
-// ── Scenario color palette for driver + car passengers ────────────────────────
-const SCENARIO_PE  = { background: '#FBBC04', borderColor: '#d6a000', glyphColor: '#1a1a1a' }
-const SCENARIO_PEA = { background: '#FF6D00', borderColor: '#e65100', glyphColor: '#ffffff' }
 
 // ---------------------------------------------------------------------------
 // Helpers — employee identification
@@ -82,29 +68,66 @@ function fullName(emp) {
   return `${emp.Nombre} ${emp.Apellido}`
 }
 
-function sameEmployee(a, b) {
-  return a && b && fullName(a) === fullName(b)
+// ---------------------------------------------------------------------------
+// Helpers — vehicle display
+// ---------------------------------------------------------------------------
+
+function vehicleLabel(v) {
+  if (v.type === 'personal') {
+    return v.vehicle_description && v.driver
+      ? `${v.vehicle_description} de ${v.driver}`
+      : v.vehicle_description ?? 'Vehículo personal'
+  }
+  return `Uber ${v.id.replace('uber_', '')}`
+}
+
+function capacityInfo(v) {
+  const max     = v.capacity - (v.type === 'personal' ? 1 : 0)
+  const current = v.passengers_pe.length + v.pickup.passengers.length
+  return `${current}/${max}`
 }
 
 // ---------------------------------------------------------------------------
-// Marker color by assignment state
+// Marker color helpers
 // ---------------------------------------------------------------------------
 
-function getMarkerColors(employee, assignments, chosenScenarioColor) {
-  if (!assignments) {
-    return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
+/**
+ * Derives { background, borderColor, glyphColor } from a hex background.
+ * Border is 72% brightness of the background.
+ * Glyph is dark (#1a1a1a) on light backgrounds, white on dark.
+ */
+function pinColorsFromHex(hex) {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  const luminance  = 0.299 * r + 0.587 * g + 0.114 * b
+  const glyphColor = luminance > 128 ? '#1a1a1a' : '#ffffff'
+  const dr = Math.round(r * 0.72).toString(16).padStart(2, '0')
+  const dg = Math.round(g * 0.72).toString(16).padStart(2, '0')
+  const db = Math.round(b * 0.72).toString(16).padStart(2, '0')
+  return { background: hex, borderColor: `#${dr}${dg}${db}`, glyphColor }
+}
+
+const BLUE_COLORS   = { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
+const GREEN_COLORS  = { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
+const FRESCOS_COLORS = { background: '#B0C4DE', borderColor: '#8aabbf', glyphColor: '#ffffff' }
+
+/**
+ * Returns Pin color props for an employee based on the current vehicles model.
+ * Only called in step 3+ when vehicles is non-empty.
+ */
+function getMarkerColors(employee, vehicles) {
+  const name = fullName(employee)
+
+  const personal = vehicles.find(v => v.type === 'personal')
+  if (personal?.driver === name) return GREEN_COLORS
+
+  for (const v of vehicles) {
+    if (v.pickup.passengers.includes(name)) return pinColorsFromHex(v.color.pickup)
+    if (v.passengers_pe.includes(name))     return pinColorsFromHex(v.color.passengers)
   }
 
-  const carColors = chosenScenarioColor === 'pe'  ? SCENARIO_PE
-                  : chosenScenarioColor === 'pea' ? SCENARIO_PEA
-                  : { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
-
-  if (sameEmployee(assignments.driver, employee))                                    return carColors
-  if (assignments.pickup_passengers?.some((p) => sameEmployee(p, employee)))        return { background: '#7B1FA2', borderColor: '#4a0072', glyphColor: '#ffffff' }
-  if (assignments.car_passengers?.some((p) => sameEmployee(p, employee)))           return carColors
-  if (assignments.uber_passengers?.some((p) => sameEmployee(p, employee))) return { background: '#9E9E9E', borderColor: '#757575', glyphColor: '#ffffff' }
-
-  return { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
+  return BLUE_COLORS
 }
 
 // ---------------------------------------------------------------------------
@@ -392,112 +415,97 @@ function FrescosInfoContent({ employee }) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3+ context menu: assignment actions
+// VehicleSubMenu — one vehicle's expandable sub-options (PE / Pickup)
+// Uses inline styles: lives inside Google Maps InfoWindow DOM.
 // ---------------------------------------------------------------------------
 
-function AssignmentMenuContent({
-  employee,
-  assignments,
-  personalVehicle,
-  driverRoutes,
-  chosenMeetingPoint,
-  meetingPoint,
-  dispatch,
-  onClose,
-}) {
-  const [loadingPickup, setLoadingPickup] = useState(false)
+function VehicleSubMenu({ vehicle, employeeName, expanded, onToggle, dispatch, onClose }) {
+  const label = vehicleLabel(vehicle)
+  const cap   = capacityInfo(vehicle)
+
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        style={{
+          fontSize:   12,
+          color:      '#374151',
+          background: 'none',
+          border:     'none',
+          cursor:     'pointer',
+          padding:    '3px 0',
+          textAlign:  'left',
+          display:    'flex',
+          alignItems: 'center',
+          gap:        4,
+          width:      '100%',
+        }}
+      >
+        <span style={{ fontSize: 10 }}>{expanded ? '▾' : '▸'}</span>
+        <span style={{ fontWeight: 500 }}>{label}</span>
+        <span style={{ color: '#9ca3af', fontSize: 11 }}>({cap})</span>
+      </button>
+
+      {expanded && (
+        <div style={{ marginLeft: 14, display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <button
+            onClick={() => {
+              dispatch({ type: ACTIONS.ASSIGN_TO_PE, payload: { employee_name: employeeName, vehicle_id: vehicle.id } })
+              onClose()
+            }}
+            style={{
+              fontSize:   12,
+              color:      '#1d4ed8',
+              background: 'none',
+              border:     'none',
+              cursor:     'pointer',
+              padding:    '2px 0',
+              textAlign:  'left',
+            }}
+          >
+            → Punto de encuentro
+          </button>
+          {vehicle.pickup.point && (
+            <button
+              onClick={() => {
+                dispatch({ type: ACTIONS.ASSIGN_TO_PICKUP, payload: { employee_name: employeeName, vehicle_id: vehicle.id } })
+                onClose()
+              }}
+              style={{
+                fontSize:   12,
+                color:      '#7B1FA2',
+                background: 'none',
+                border:     'none',
+                cursor:     'pointer',
+                padding:    '2px 0',
+                textAlign:  'left',
+              }}
+            >
+              → Punto de pickup
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// VehicleAssignmentMenu — step 3+ context menu for one employee
+// ---------------------------------------------------------------------------
+
+function VehicleAssignmentMenu({ employee, vehicles, dispatch, onClose }) {
+  const [expandedVehicle, setExpandedVehicle] = useState(null)
 
   const name     = fullName(employee)
-  const isDriver = sameEmployee(assignments?.driver, employee)
+  const personal = vehicles.find(v => v.type === 'personal')
+  const isDriver = personal?.driver === name
 
-  const inCar    = assignments?.car_passengers?.some((p) => sameEmployee(p, employee))
-  const inUber   = assignments?.uber_passengers?.some((p) => sameEmployee(p, employee))
-  const pickupPassengers = assignments?.pickup_passengers ?? []
-  const isPickup = pickupPassengers.some((p) => sameEmployee(p, employee))
-  const isAssigned = inCar || inUber
+  const isAssigned = vehicles.some(v =>
+    v.passengers_pe.includes(name) || v.pickup.passengers.includes(name),
+  )
 
-  const pickupConfirmed = !!assignments?.pickup_place
-  // Car is full when driver + car_passengers + pickup_passengers = 5
-  const carCount        = assignments?.car_passengers?.length ?? 0
-  const pickupFull      = (1 + carCount + pickupPassengers.length) >= 5
-  const carFull    = carCount >= MAX_CAR_PASSENGERS
-  const hasVehicle = personalVehicle?.has_personal_vehicle
-
-  // "PE" when the user chose the original meeting point; "PEA" for any alternative.
-  const isPea = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
-  const peLabel = isPea ? 'PEA' : 'PE'
-
-  const vLabel = personalVehicle?.vehicle_description && personalVehicle?.driver
-    ? `${personalVehicle.vehicle_description} de ${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
-    : 'vehículo'
-
-  function patch(fields) {
-    dispatch({ type: ACTIONS.SET_ASSIGNMENTS, payload: { ...assignments, ...fields } })
-  }
-
-  function handleAssignCar() {
-    patch({
-      car_passengers:  [...(assignments?.car_passengers ?? []), employee],
-      uber_passengers: assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-    })
-    onClose()
-  }
-
-  function handleAssignUber() {
-    patch({
-      uber_passengers: [...(assignments?.uber_passengers ?? []), employee],
-      car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-      ...(isPickup ? { pickup_passengers: pickupPassengers.filter((p) => !sameEmployee(p, employee)) } : {}),
-    })
-    onClose()
-  }
-
-  function handleRemove() {
-    patch({
-      car_passengers:  assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-      uber_passengers: assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-      ...(isPickup ? { pickup_passengers: pickupPassengers.filter((p) => !sameEmployee(p, employee)) } : {}),
-    })
-    onClose()
-  }
-
-  async function handleFindPickup() {
-    if (!driverRoutes || !chosenMeetingPoint) return
-    const isPea = meetingPoint && chosenMeetingPoint.name !== meetingPoint.name
-    const routePolyline = isPea
-      ? driverRoutes.direct_route?.encoded_polyline
-      : driverRoutes.base_route?.encoded_polyline
-    if (!routePolyline) return
-
-    setLoadingPickup(true)
-    try {
-      const result = await findPickup({
-        employee_name:  name,
-        route_polyline: routePolyline,
-        meeting_point:  { name: chosenMeetingPoint.name, lat: chosenMeetingPoint.lat, lng: chosenMeetingPoint.lng },
-      })
-      dispatch({ type: ACTIONS.SET_ACTIVE_PICKUP_RESULT, payload: { employeeName: name, result } })
-    } catch (err) {
-      dispatch({ type: ACTIONS.SET_ERROR, payload: err?.response?.data?.detail ?? err?.message ?? 'Error al buscar pickup.' })
-    } finally {
-      setLoadingPickup(false)
-      onClose()
-    }
-  }
-
-  function handleAssignPickup() {
-    patch({
-      pickup_passengers: [...pickupPassengers, employee],
-      car_passengers:    assignments?.car_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-      uber_passengers:   assignments?.uber_passengers?.filter((p) => !sameEmployee(p, employee)) ?? [],
-    })
-    onClose()
-  }
-
-  function handleRemovePickup() {
-    dispatch({ type: ACTIONS.REMOVE_PICKUP_PASSENGER, payload: name })
-    onClose()
-  }
+  const available = vehicles.filter(v => !isVehicleFull(v))
 
   return (
     <Card className="min-w-[200px] shadow-none border-0">
@@ -508,58 +516,44 @@ function AssignmentMenuContent({
           <p className="text-xs text-muted-foreground">{employee.Profesion}</p>
         </div>
 
-        {isDriver && (
+        {isDriver ? (
           <p className="text-xs text-green-600 font-medium">
             Chofer — asignado automáticamente
           </p>
-        )}
-
-        {!isDriver && (
-          <div className="space-y-1.5">
-            {isPickup ? (
-              // Pickup employee: only option is to remove them from the pickup slot.
-              // Keeps pickup_place — the confirmed venue stays available for reassignment.
-              <Button size="sm" variant="ghost" className="w-full text-xs text-destructive hover:text-destructive" onClick={handleRemovePickup}>
-                Quitar del punto de pickup
-              </Button>
+        ) : isAssigned ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="w-full text-xs text-destructive hover:text-destructive"
+            onClick={() => {
+              dispatch({ type: ACTIONS.UNASSIGN_EMPLOYEE, payload: { employee_name: name } })
+              onClose()
+            }}
+          >
+            Quitar asignación
+          </Button>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {available.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Todos los vehículos están llenos
+              </p>
             ) : (
-              <>
-                {hasVehicle && !carFull && !inCar && (
-                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignCar}>
-                    Asignar al {peLabel} ({vLabel})
-                  </Button>
-                )}
-                {hasVehicle && carFull && !inCar && (
-                  <p className="text-xs text-muted-foreground text-center">
-                    Vehículo completo ({MAX_CAR_PASSENGERS}/{MAX_CAR_PASSENGERS})
-                  </p>
-                )}
-                {pickupConfirmed && !pickupFull && (
-                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignPickup}>
-                    Asignar al Punto de Pickup
-                  </Button>
-                )}
-                {!inUber && (
-                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleAssignUber}>
-                    Asignar a Uber
-                  </Button>
-                )}
-                {!pickupConfirmed && hasVehicle && driverRoutes && (
-                  <Button size="sm" variant="outline" className="w-full text-xs" onClick={handleFindPickup} disabled={loadingPickup}>
-                    {loadingPickup
-                      ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
-                      : 'Buscar pickup en ruta'}
-                  </Button>
-                )}
-                {isAssigned && (
-                  <Button size="sm" variant="ghost" className="w-full text-xs text-destructive hover:text-destructive" onClick={handleRemove}>
-                    Quitar asignación
-                  </Button>
-                )}
-              </>
+              available.map(v => (
+                <VehicleSubMenu
+                  key={v.id}
+                  vehicle={v}
+                  employeeName={name}
+                  expanded={expandedVehicle === v.id}
+                  onToggle={() => setExpandedVehicle(prev => prev === v.id ? null : v.id)}
+                  dispatch={dispatch}
+                  onClose={onClose}
+                />
+              ))
             )}
           </div>
         )}
+
       </CardContent>
     </Card>
   )
@@ -582,11 +576,8 @@ export default function StaffMarkers({ staff }) {
 
   const isStep3Plus = state.currentStep >= 3
   const {
-    assignments,
+    vehicles,
     personalVehicle,
-    driverRoutes,
-    chosenMeetingPoint,
-    meetingPoint,
     frescosResult,
     secondMinifleteResult,
     coordinateOverrides,
@@ -602,14 +593,11 @@ export default function StaffMarkers({ staff }) {
     return names
   }, [frescosResult, secondMinifleteResult])
 
-  // Driver name — used to detect whether the selected marker is the driver
-  // and to enforce the address-lock after a meeting point has been chosen.
+  // Driver name — used to enforce the address-lock after a meeting point has
+  // been chosen (relevant in step 2 before vehicles is populated).
   const driverName = personalVehicle?.driver
     ? `${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
     : null
-
-  const isPea = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
-  const chosenScenarioColor = !chosenMeetingPoint ? null : isPea ? 'pea' : 'pe'
 
   // ── Marker click handler ───────────────────────────────────────────────────
   // When the user clicks a marker:
@@ -655,13 +643,15 @@ export default function StaffMarkers({ staff }) {
         const key             = fullName(employee)
         const isFrescosAssigned = isStep3Plus && frescosAssignedNames.has(key.toLowerCase().trim())
         const override        = coordinateOverrides?.[key]
-        const colors          = isFrescosAssigned
-          ? { background: '#B0C4DE', borderColor: '#8aabbf', glyphColor: '#ffffff' }
-          : getMarkerColors(
-              employee,
-              isStep3Plus ? assignments : null,
-              isStep3Plus ? chosenScenarioColor : null,
-            )
+
+        let colors
+        if (isFrescosAssigned) {
+          colors = FRESCOS_COLORS
+        } else if (isStep3Plus && vehicles.length > 0) {
+          colors = getMarkerColors(employee, vehicles)
+        } else {
+          colors = BLUE_COLORS
+        }
 
         return (
           <StaffMarker
@@ -704,13 +694,9 @@ export default function StaffMarkers({ staff }) {
               {selIsFrescosAssigned ? (
                 <FrescosInfoContent employee={selectedEmployee} />
               ) : isStep3Plus ? (
-                <AssignmentMenuContent
+                <VehicleAssignmentMenu
                   employee={selectedEmployee}
-                  assignments={assignments}
-                  personalVehicle={personalVehicle}
-                  driverRoutes={driverRoutes}
-                  chosenMeetingPoint={chosenMeetingPoint}
-                  meetingPoint={meetingPoint}
+                  vehicles={vehicles}
                   dispatch={dispatch}
                   onClose={handleInfoClose}
                 />
@@ -727,7 +713,7 @@ export default function StaffMarkers({ staff }) {
                 The driver's edit button is hidden once a meeting point has been
                 chosen — routes are committed and the origin can no longer change.
               */}
-              {selectedKey === driverName && chosenMeetingPoint ? (
+              {selectedKey === driverName && state.chosenMeetingPoint ? (
                 // Driver address locked — meeting point already selected.
                 <div style={{ padding: '6px 12px 10px', borderTop: '1px solid #e5e7eb' }}>
                   <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>

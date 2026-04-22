@@ -9,8 +9,7 @@
  */
 
 import { useState }                from 'react'
-import { useAppState, ACTIONS }    from '../../state/appState'
-import { Button }                  from '@/components/ui/button'
+import { useAppState }             from '../../state/appState'
 
 // ── Loading messages keyed on loadingStep ─────────────────────────────────
 const LOADING_MESSAGES = {
@@ -99,10 +98,6 @@ export default function PeaPanel() {
   const driverName     = driver ? `${driver.Nombre} ${driver.Apellido}` : ''
   const hasCandidates  = peaEvaluation?.has_candidates ?? false
   const candidateCount = peaEvaluation?.candidates?.length ?? 0
-
-  function handleConfirm() {
-    dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 3 })
-  }
 
   return (
     <div className="space-y-3">
@@ -204,23 +199,18 @@ export default function PeaPanel() {
         </>
       )}
 
-      {/* ── Point chosen ────────────────────────────────────────────── */}
+      {/* ── Point chosen — confirmed; UberRoutesSection below handles advance ── */}
       {!isLoading && chosenMeetingPoint && (
-        <div className="space-y-3">
-          <div className="space-y-0.5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Punto elegido
-            </p>
-            <p className="text-sm font-medium text-foreground">
-              ✓ {chosenMeetingPoint.name}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {chosenMeetingPoint.address}
-            </p>
-          </div>
-          <Button className="w-full" onClick={handleConfirm}>
-            Confirmar y asignar pasajeros
-          </Button>
+        <div className="space-y-0.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Punto elegido
+          </p>
+          <p className="text-sm font-medium text-foreground">
+            ✓ {chosenMeetingPoint.name}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {chosenMeetingPoint.address}
+          </p>
         </div>
       )}
 

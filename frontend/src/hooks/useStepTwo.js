@@ -123,7 +123,8 @@ export function useStepTwo() {
         if (!state.personalVehicle.has_personal_vehicle) {
           dispatch({ type: ACTIONS.SET_CHOSEN_MEETING_POINT, payload: meetingPoint })
           dispatch({ type: ACTIONS.SET_LOADING_STEP,         payload: null })
-          dispatch({ type: ACTIONS.SET_CURRENT_STEP,         payload: 3 })
+          // UberRoutesSection in Sidebar handles the step 2 → 3 advance once
+          // all Uber routes have been traced.
           return
         }
 

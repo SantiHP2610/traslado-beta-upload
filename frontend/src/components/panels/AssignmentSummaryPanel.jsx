@@ -2,77 +2,61 @@
  * AssignmentSummaryPanel.jsx
  * Zone C — right panel for step 3 (passenger assignment).
  *
- * Receives all assignment data and handlers as props from AppMap (which calls
- * useAssignmentLogic).  Renders four sections as they populate:
- *   1. Vehículo propio — driver (auto-assigned green) + car passengers
- *   2. Uber — grouped in 4s; solo-group highlighted amber after Phase-2 check
- *   3. Pickup — only when a pickup employee/place is confirmed
- *   4. Pendiente — only when pending_employee is set
+ * Self-contained: reads from state.vehicles, state.pending_employee,
+ * and the canValidate / getUnassignedEmployees selectors.
  *
- * The validate button and the two-button solo-passenger choice live here
- * (sticky footer) so the manager can always reach them without scrolling.
+ * Layout:
+ *   Header — title + N/M counter + "Reiniciar" button
+ *   Scrollable body — one card per vehicle (personal first, then Ubers)
+ *     Each card shows: driver row (personal), PE passengers with [✕],
+ *     pickup section, capacity counter, and "Elegir pickup" button.
+ *   Pending employee section (amber) — when state.pending_employee is set.
+ *   Footer (sticky) — validate button with inline reasons when disabled.
  *
- * PickupResultPanel is rendered inline at the top of this panel when
- * activePickupResult is set — the manager reviews and confirms the pickup
- * venue without leaving the assignment context.
+ * Validate flow:
+ *   1. canValidate(state) must return valid: true.
+ *   2. Builds AssignmentsInput from vehicles (personal = car_passengers + driver,
+ *      Uber vehicles = uber_groups, personal pickup = pickup_passengers).
+ *   3. POST /validate-assignments → step 4 + ConfirmationModal.
+ *
+ * PickupResultPanel is rendered inline at the top when activePickupResult is set.
  */
 
-import { useState }             from 'react'
-import { useAppState, ACTIONS } from '../../state/appState'
-import { geocodeAddress }       from '../../api/endpoints'
-import PickupResultPanel        from './PickupResultPanel'
+import { useState }    from 'react'
+import { useAppState, ACTIONS, canValidate, getUnassignedEmployees, VEHICLE_COLORS } from '../../state/appState'
+import { validateAssignments } from '../../api/endpoints'
+import PickupResultPanel       from './PickupResultPanel'
 
-function fullName(emp) {
-  return `${emp.Nombre} ${emp.Apellido}`
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function vehicleDisplayName(v) {
+  if (v.type === 'personal') {
+    return v.vehicle_description && v.driver
+      ? `${v.vehicle_description} de ${v.driver}`
+      : 'Vehículo personal'
+  }
+  return `Uber ${v.id.replace('uber_', '')}`
 }
 
-// Small colored dot + employee name/role row
-function EmployeeRow({ name, profesion, dotColor, badge }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-      <span
-        style={{
-          width:      8,
-          height:     8,
-          borderRadius: '50%',
-          background: dotColor,
-          flexShrink: 0,
-        }}
-      />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p
-          style={{
-            fontSize:   13,
-            fontWeight: 500,
-            margin:     0,
-            color:      '#111827',
-            lineHeight: 1.3,
-          }}
-        >
-          {name}
-        </p>
-        {profesion && (
-          <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>{profesion}</p>
-        )}
-      </div>
-      {badge && (
-        <span
-          style={{
-            fontSize:   10,
-            fontWeight: 700,
-            background: '#dcfce7',
-            color:      '#166534',
-            padding:    '2px 7px',
-            borderRadius: 4,
-            flexShrink: 0,
-          }}
-        >
-          {badge}
-        </span>
-      )}
-    </div>
-  )
+function buildAssignmentsInput(vehicles, pending_employee) {
+  const personal = vehicles.find((v) => v.type === 'personal')
+  const ubers    = vehicles.filter((v) => v.type === 'uber')
+  return {
+    driver:            personal?.driver ?? '',
+    car_passengers:    personal?.passengers_pe ?? [],
+    uber_groups:       ubers
+      .filter((v) => v.passengers_pe.length > 0)
+      .map((v) => v.passengers_pe),
+    pickup_passengers: personal?.pickup?.passengers ?? [],
+    pending_employee:  pending_employee ?? null,
+  }
 }
+
+// ---------------------------------------------------------------------------
+// SectionHeader — small uppercase label
+// ---------------------------------------------------------------------------
 
 function SectionHeader({ children }) {
   return (
@@ -83,7 +67,7 @@ function SectionHeader({ children }) {
         textTransform: 'uppercase',
         letterSpacing: '0.06em',
         color:         '#6b7280',
-        margin:        '0 0 10px',
+        margin:        '0 0 8px',
       }}
     >
       {children}
@@ -92,65 +76,284 @@ function SectionHeader({ children }) {
 }
 
 // ---------------------------------------------------------------------------
-// Main component
+// PassengerRow — one name + optional remove button
 // ---------------------------------------------------------------------------
 
-export default function AssignmentSummaryPanel({
-  driver            = null,
-  carPassengers     = [],
-  uberPassengers    = [],
-  uberGroups        = [],
-  pickupPassengers  = [],
-  pickupPlace       = null,
-  hasVehicle     = false,
-  vehicleLabel   = 'Vehículo',
-  showSoloChoice = false,
-  validating     = false,
-  assignedCount  = 0,
-  totalToAssign  = 0,
-  uberAutoFilled = false,
-  onAutoFill,
-  onValidate,
-  onPendiente,
-  onContinueWithSolo,
-  unassigned  = [],
-  assignments = null,
-}) {
+function PassengerRow({ name, profesion, dotColor, onRemove }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+      <span
+        style={{
+          width:        8,
+          height:       8,
+          borderRadius: '50%',
+          background:   dotColor,
+          flexShrink:   0,
+        }}
+      />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{ fontSize: 13, fontWeight: 500, margin: 0, color: '#111827', lineHeight: 1.3 }}>
+          {name}
+        </p>
+        {profesion && (
+          <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>{profesion}</p>
+        )}
+      </div>
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          title="Quitar asignación"
+          style={{
+            background:    'none',
+            border:        'none',
+            cursor:        'pointer',
+            color:         '#9ca3af',
+            fontSize:      16,
+            lineHeight:    1,
+            padding:       '0 2px',
+            flexShrink:    0,
+            transition:    'color 120ms ease',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = '#dc2626' }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = '#9ca3af' }}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// VehicleCard — one section per vehicle
+// ---------------------------------------------------------------------------
+
+function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
+  const colors = VEHICLE_COLORS[vehicle.id] ?? VEHICLE_COLORS.uber_1
+  const maxPassengers = vehicle.capacity - (vehicle.type === 'personal' ? 1 : 0)
+  const occupied      = vehicle.passengers_pe.length + vehicle.pickup.passengers.length
+  const totalOccupied = occupied + (vehicle.type === 'personal' ? 1 : 0) // +1 for driver
+
+  // Look up a passenger's Profesion from the staff pool by name.
+  function getProfesion(name) {
+    return staffPool.find((e) => `${e.Nombre} ${e.Apellido}` === name)?.Profesion ?? ''
+  }
+
+  function handleUnassign(name) {
+    dispatch({ type: ACTIONS.UNASSIGN_EMPLOYEE, payload: { employee_name: name } })
+  }
+
+  const hasPickup = vehicle.pickup.passengers.length > 0 || vehicle.pickup.point !== null
+
+  return (
+    <div
+      style={{
+        marginBottom: 16,
+        border:       '1px solid #e5e7eb',
+        borderRadius: 10,
+        overflow:     'hidden',
+      }}
+    >
+      {/* ── Card header ───────────────────────────────────────────────── */}
+      <div
+        style={{
+          display:    'flex',
+          alignItems: 'center',
+          gap:        8,
+          padding:    '10px 14px 8px',
+          background: '#f9fafb',
+          borderBottom: vehicle.passengers_pe.length > 0 || vehicle.type === 'personal'
+            ? '1px solid #e5e7eb'
+            : 'none',
+        }}
+      >
+        <span
+          style={{
+            width:        10,
+            height:       10,
+            borderRadius: '50%',
+            background:   colors.passengers,
+            flexShrink:   0,
+          }}
+        />
+        <p style={{ flex: 1, fontSize: 13, fontWeight: 600, color: '#111827', margin: 0 }}>
+          {vehicleDisplayName(vehicle)}
+        </p>
+        <span style={{ fontSize: 11, color: '#6b7280' }}>
+          {totalOccupied}/{vehicle.capacity}
+        </span>
+      </div>
+
+      <div style={{ padding: '10px 14px' }}>
+
+        {/* ── Driver row (personal vehicle only) ────────────────────── */}
+        {vehicle.type === 'personal' && vehicle.driver && (
+          <PassengerRow
+            name={vehicle.driver}
+            profesion={getProfesion(vehicle.driver)}
+            dotColor="#34A853"
+            onRemove={undefined}
+          />
+        )}
+        {vehicle.type === 'personal' && vehicle.driver && (
+          <p style={{ fontSize: 11, fontWeight: 600, color: '#16a34a', margin: '-2px 0 8px 17px' }}>
+            Chofer
+          </p>
+        )}
+
+        {/* ── Custom PE label (Uber vehicles) ───────────────────────── */}
+        {vehicle.type === 'uber' && vehicle.custom_meeting_point && (
+          <p style={{ fontSize: 11, color: '#2563eb', margin: '0 0 8px', lineHeight: 1.4 }}>
+            📍 {vehicle.meeting_point?.name || vehicle.meeting_point?.address}
+          </p>
+        )}
+
+        {/* ── PE passengers ─────────────────────────────────────────── */}
+        {vehicle.passengers_pe.length > 0 && (
+          <div style={{ marginBottom: hasPickup ? 8 : 0 }}>
+            {vehicle.passengers_pe.map((name) => (
+              <PassengerRow
+                key={name}
+                name={name}
+                profesion={getProfesion(name)}
+                dotColor={colors.passengers}
+                onRemove={() => handleUnassign(name)}
+              />
+            ))}
+          </div>
+        )}
+
+        {vehicle.passengers_pe.length === 0 && vehicle.type === 'uber' && (
+          <p style={{ fontSize: 12, color: '#9ca3af', margin: '0 0 4px' }}>
+            Sin pasajeros asignados
+          </p>
+        )}
+        {vehicle.passengers_pe.length === 0 && vehicle.type === 'personal' && !vehicle.driver && (
+          <p style={{ fontSize: 12, color: '#9ca3af', margin: '0 0 4px' }}>
+            Sin pasajeros asignados
+          </p>
+        )}
+
+        {/* ── Pickup section ────────────────────────────────────────── */}
+        {hasPickup && (
+          <div
+            style={{
+              marginTop:    8,
+              paddingTop:   8,
+              borderTop:    '1px solid #f3f4f6',
+            }}
+          >
+            <p
+              style={{
+                fontSize:   11,
+                fontWeight: 600,
+                color:      '#7B1FA2',
+                margin:     '0 0 6px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+              }}
+            >
+              Pickup{vehicle.pickup.point?.name ? `: ${vehicle.pickup.point.name}` : ''}
+            </p>
+            {vehicle.pickup.point?.address && (
+              <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 6px' }}>
+                {vehicle.pickup.point.address}
+              </p>
+            )}
+            {vehicle.pickup.passengers.map((name) => (
+              <PassengerRow
+                key={name}
+                name={name}
+                profesion={getProfesion(name)}
+                dotColor={colors.pickup}
+                onRemove={() => handleUnassign(name)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* ── "Elegir pickup en mapa" (personal vehicle only, no pickup yet) */}
+        {vehicle.type === 'personal' && !vehicle.pickup.point && vehicle.route && (
+          <button
+            onClick={() => onPickupClick(vehicle.id)}
+            style={{
+              display:      'flex',
+              alignItems:   'center',
+              gap:          5,
+              marginTop:    8,
+              fontSize:     11,
+              color:        '#374151',
+              background:   '#f9fafb',
+              border:       '1px solid #e5e7eb',
+              borderRadius: 6,
+              padding:      '5px 10px',
+              cursor:       'pointer',
+              width:        '100%',
+              transition:   'background 120ms ease',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = '#f3f4f6' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = '#f9fafb' }}
+          >
+            <span style={{ fontSize: 12 }}>📍</span>
+            Elegir pickup en mapa
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main component — self-contained, no props required
+// ---------------------------------------------------------------------------
+
+export default function AssignmentSummaryPanel() {
   const { state, dispatch } = useAppState()
-  const { error, activePickupResult, manualPickupMode,
-          uberMeetingPointOverrides, uberPeEditMode, chosenMeetingPoint } = state
-  const pendingEmployee = assignments?.pending_employee ?? null
+  const [validating, setValidating] = useState(false)
 
-  // Local state for the address form (keyed by group number) and geocoding spinner.
-  const [uberAddressInputs, setUberAddressInputs] = useState({})
-  const [uberGeocoding, setUberGeocoding] = useState(null)
-  const [uberGeoError, setUberGeoError]   = useState(null)
+  const pool         = state.remainingPool?.remaining_pool ?? []
+  const staffPool    = state.excelData?.staff ?? []
+  const unassigned   = getUnassignedEmployees(state)
+  const assigned     = pool.length - unassigned.length
+  const { valid, reasons } = canValidate(state)
 
-  async function handleUberGeocode(groupNumber) {
-    const address = uberAddressInputs[groupNumber] ?? ''
-    if (!address.trim()) return
-    setUberGeocoding(groupNumber)
-    setUberGeoError(null)
+  const pendingEmployeeName = state.pending_employee
+  const pendingEmpObj       = pendingEmployeeName
+    ? pool.find((e) => `${e.Nombre} ${e.Apellido}` === pendingEmployeeName)
+    : null
+
+  // Build and POST /validate-assignments, then advance to step 4.
+  async function handleValidate() {
+    if (!valid || validating) return
+
+    const assignedRoles = (state.frescosResult?.assigned_names ?? []).map((name) => {
+      const emp = staffPool.find((e) => `${e.Nombre} ${e.Apellido}` === name)
+      return emp?.Profesion ?? name
+    }).filter(Boolean)
+
+    const assignmentsInput = buildAssignmentsInput(state.vehicles, pendingEmployeeName)
+
+    setValidating(true)
+    dispatch({ type: ACTIONS.SET_ERROR, payload: null })
     try {
-      const result = await geocodeAddress(address.trim())
-      dispatch({
-        type:    ACTIONS.SET_UBER_MEETING_POINT,
-        payload: {
-          groupNumber,
-          meetingPoint: {
-            name:    address.trim(),
-            address: result.formatted_address ?? address.trim(),
-            lat:     result.lat,
-            lng:     result.lng,
-          },
-        },
-      })
-      // Keep edit mode open so the user sees the marker animate to the new
-      // position before clicking "Listo".
-    } catch {
-      setUberGeoError('No se pudo geocodificar la dirección.')
+      await validateAssignments({ assignments: assignmentsInput, assigned_roles: assignedRoles })
+      dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 4 })
+      dispatch({ type: ACTIONS.SET_SHOW_MODAL,   payload: true })
+    } catch (err) {
+      const detail = err?.response?.data?.detail
+      const msg    = typeof detail === 'object'
+        ? detail.message ?? JSON.stringify(detail)
+        : err?.message ?? 'Error al validar asignaciones.'
+      dispatch({ type: ACTIONS.SET_ERROR, payload: msg })
     } finally {
-      setUberGeocoding(null)
+      setValidating(false)
+    }
+  }
+
+  function handlePickupClick(vehicleId) {
+    // For now only personal vehicle pickup is supported (Uber pickup in prompt 3).
+    if (vehicleId === 'personal') {
+      dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: true })
     }
   }
 
@@ -174,21 +377,27 @@ export default function AssignmentSummaryPanel({
           padding:      '16px 20px 12px',
           borderBottom: '1px solid #e5e7eb',
           flexShrink:   0,
+          display:      'flex',
+          alignItems:   'flex-start',
+          justifyContent: 'space-between',
+          gap:          12,
         }}
       >
-        <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0, color: '#111827' }}>
-          Asignaciones
-        </h2>
-        <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
-          {assignedCount} de {totalToAssign} asignados
-        </p>
+        <div>
+          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0, color: '#111827' }}>
+            Asignaciones
+          </h2>
+          <p style={{ fontSize: 13, color: '#6b7280', margin: '4px 0 0' }}>
+            {assigned} de {pool.length} asignados
+          </p>
+        </div>
       </div>
 
       {/* ── Scrollable content ──────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
 
-        {/* ── Manual pickup mode banner ────────────────────────────────── */}
-        {manualPickupMode && (
+        {/* ── Manual pickup mode banner ─────────────────────────────── */}
+        {state.manualPickupMode && (
           <div
             style={{
               marginBottom: 14,
@@ -208,12 +417,12 @@ export default function AssignmentSummaryPanel({
             <button
               onClick={() => dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: false })}
               style={{
-                fontSize:   12,
-                color:      '#2563eb',
-                background: 'none',
-                border:     'none',
-                padding:    0,
-                cursor:     'pointer',
+                fontSize:       12,
+                color:          '#2563eb',
+                background:     'none',
+                border:         'none',
+                padding:        0,
+                cursor:         'pointer',
                 textDecoration: 'underline',
               }}
             >
@@ -222,8 +431,8 @@ export default function AssignmentSummaryPanel({
           </div>
         )}
 
-        {/* ── Inline pickup result panel ──────────────────────────────── */}
-        {activePickupResult && (
+        {/* ── Inline pickup result panel ────────────────────────────── */}
+        {state.activePickupResult && (
           <div
             style={{
               marginBottom: 18,
@@ -236,307 +445,26 @@ export default function AssignmentSummaryPanel({
           </div>
         )}
 
-        {/* ── Personal vehicle section ─────────────────────────────────── */}
-        {hasVehicle && (
-          <section style={{ marginBottom: 20 }}>
-            <SectionHeader>Vehículo propio</SectionHeader>
-            <p
-              style={{
-                fontSize:   12,
-                color:      '#374151',
-                fontStyle:  'italic',
-                margin:     '0 0 10px',
-              }}
-            >
-              {vehicleLabel}
-            </p>
-            {driver && (
-              <EmployeeRow
-                name={fullName(driver)}
-                profesion={driver.Profesion}
-                dotColor="#22c55e"
-                badge="Chofer"
-              />
-            )}
-            {pickupPassengers.length > 0 && (
-              <p style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', margin: '6px 0 4px 17px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                → PE
-              </p>
-            )}
-            {carPassengers.map((emp) => (
-              <EmployeeRow
-                key={fullName(emp)}
-                name={fullName(emp)}
-                profesion={emp.Profesion}
-                dotColor="#22c55e"
-              />
-            ))}
-            {carPassengers.length === 0 && pickupPassengers.length === 0 && (
-              <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginBottom: 4 }}>
-                Sin pasajeros asignados
-              </p>
-            )}
-            <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginTop: 2 }}>
-              {1 + carPassengers.length + pickupPassengers.length}/5 ocupantes
-            </p>
-            {pickupPassengers.length > 0 && (
-              <>
-                <p style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', margin: '6px 0 4px 17px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  → Pickup{pickupPlace ? `: ${pickupPlace.place_name}` : ''}
-                </p>
-                {pickupPassengers.map((emp) => (
-                  <EmployeeRow
-                    key={fullName(emp)}
-                    name={fullName(emp)}
-                    profesion={emp.Profesion}
-                    dotColor="#7B1FA2"
-                  />
-                ))}
-                {pickupPlace?.place_address && (
-                  <p style={{ fontSize: 12, color: '#6b7280', marginLeft: 17 }}>
-                    {pickupPlace.place_address}
-                  </p>
-                )}
-                {/* Relative pickup timing — HH:MM is shown later in FinalOutputBlocks */}
-                <p style={{ fontSize: 12, color: '#9ca3af', marginLeft: 17, marginTop: 2 }}>
-                  {assignments?.leg_seconds != null
-                    ? `${Math.ceil(assignments.leg_seconds / 60)} min ${assignments.pickup_before_pe ? 'antes' : 'después'} del PE`
-                    : 'Horario a confirmar'}
-                </p>
-              </>
-            )}
-          </section>
+        {/* ── Vehicle cards ─────────────────────────────────────────── */}
+        {state.vehicles.length === 0 ? (
+          <p style={{ fontSize: 13, color: '#9ca3af', textAlign: 'center', marginTop: 24 }}>
+            Inicializando vehículos…
+          </p>
+        ) : (
+          state.vehicles.map((v) => (
+            <VehicleCard
+              key={v.id}
+              vehicle={v}
+              staffPool={staffPool}
+              dispatch={dispatch}
+              onPickupClick={handlePickupClick}
+            />
+          ))
         )}
 
-        {/* ── Uber section ─────────────────────────────────────────────── */}
-        <section style={{ marginBottom: 20 }}>
-          <SectionHeader>
-            Uber ({uberPassengers.length}{' '}
-            {uberPassengers.length === 1 ? 'pasajero' : 'pasajeros'})
-          </SectionHeader>
-
-          {uberPassengers.length === 0 ? (
-            <p style={{ fontSize: 13, color: '#9ca3af' }}>Sin pasajeros asignados</p>
-          ) : (
-            uberGroups.map((group, gi) => {
-              const groupNumber   = gi + 1
-              const isSoloWarning = showSoloChoice && group.length === 1
-              const override      = uberMeetingPointOverrides[groupNumber]
-              const isEditing     = uberPeEditMode === groupNumber
-
-              return (
-                <div
-                  key={gi}
-                  style={{
-                    marginBottom: 8,
-                    ...(isSoloWarning
-                      ? {
-                          border:       '1px solid #f59e0b',
-                          background:   '#fffbeb',
-                          borderRadius: 8,
-                          padding:      '8px 10px',
-                        }
-                      : {}),
-                  }}
-                >
-                  {uberGroups.length > 1 && (
-                    <p
-                      style={{
-                        fontSize:   12,
-                        fontWeight: isSoloWarning ? 700 : 500,
-                        color:      isSoloWarning ? '#b45309' : '#374151',
-                        margin:     '0 0 5px',
-                      }}
-                    >
-                      Uber {gi + 1}{isSoloWarning ? ' ⚠️' : ''}
-                    </p>
-                  )}
-                  {group.map((emp) => (
-                    <EmployeeRow
-                      key={fullName(emp)}
-                      name={fullName(emp)}
-                      profesion={emp.Profesion}
-                      dotColor={isSoloWarning ? '#f59e0b' : '#9ca3af'}
-                    />
-                  ))}
-
-                  {/* ── Custom PE display ─────────────────────────────── */}
-                  {override && !isEditing && (
-                    <p style={{ fontSize: 11, color: '#2563eb', marginLeft: 17, marginTop: 2, lineHeight: 1.4 }}>
-                      📍 {override.name || override.address}
-                    </p>
-                  )}
-
-                  {/* ── PE edit controls ──────────────────────────────── */}
-                  {!isEditing ? (
-                    <button
-                      onClick={() => {
-                        setUberAddressInputs((prev) => ({
-                          ...prev,
-                          [groupNumber]: override?.address ?? chosenMeetingPoint?.address ?? '',
-                        }))
-                        setUberGeoError(null)
-                        dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: groupNumber })
-                      }}
-                      style={{
-                        fontSize:   11,
-                        color:      '#6b7280',
-                        background: 'none',
-                        border:     'none',
-                        padding:    '2px 0 0 17px',
-                        cursor:     'pointer',
-                        textDecoration: 'underline',
-                      }}
-                    >
-                      Cambiar PE de Uber {groupNumber}
-                    </button>
-                  ) : (
-                    <div style={{ marginTop: 8, paddingLeft: 0 }}>
-                      <input
-                        value={uberAddressInputs[groupNumber] ?? ''}
-                        onChange={(e) => {
-                          setUberAddressInputs((prev) => ({ ...prev, [groupNumber]: e.target.value }))
-                          setUberGeoError(null)
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleUberGeocode(groupNumber) }}
-                        placeholder="Dirección del punto de encuentro"
-                        style={{
-                          width:        '100%',
-                          fontSize:     12,
-                          padding:      '5px 8px',
-                          border:       '1px solid #d1d5db',
-                          borderRadius: 6,
-                          outline:      'none',
-                          boxSizing:    'border-box',
-                        }}
-                      />
-                      {uberGeoError && uberGeocoding === null && (
-                        <p style={{ fontSize: 11, color: '#dc2626', margin: '2px 0 0' }}>{uberGeoError}</p>
-                      )}
-                      {/* Geocodify row */}
-                      <div style={{ display: 'flex', gap: 6, marginTop: 5 }}>
-                        <button
-                          onClick={() => handleUberGeocode(groupNumber)}
-                          disabled={uberGeocoding === groupNumber}
-                          style={{
-                            flex:         1,
-                            fontSize:     11,
-                            padding:      '5px 0',
-                            background:   uberGeocoding === groupNumber ? '#e5e7eb' : '#111827',
-                            color:        uberGeocoding === groupNumber ? '#9ca3af' : '#fff',
-                            border:       'none',
-                            borderRadius: 6,
-                            cursor:       uberGeocoding === groupNumber ? 'default' : 'pointer',
-                          }}
-                        >
-                          {uberGeocoding === groupNumber ? 'Geocodificando...' : 'Geocodificar'}
-                        </button>
-                      </div>
-                      {/* Actions row — Listo / Volver al PE / Cancelar */}
-                      <div style={{ display: 'flex', gap: 6, marginTop: 5 }}>
-                        <button
-                          onClick={() => {
-                            dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: null })
-                            setUberGeoError(null)
-                          }}
-                          style={{
-                            flex:         1,
-                            fontSize:     11,
-                            padding:      '5px 0',
-                            background:   '#fff',
-                            color:        '#374151',
-                            border:       '1px solid #d1d5db',
-                            borderRadius: 6,
-                            cursor:       'pointer',
-                          }}
-                        >
-                          Listo
-                        </button>
-                        {override && (
-                          <button
-                            onClick={() => {
-                              dispatch({ type: ACTIONS.CLEAR_UBER_MEETING_POINT, payload: { groupNumber } })
-                              dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: null })
-                              setUberGeoError(null)
-                            }}
-                            style={{
-                              flex:         1,
-                              fontSize:     11,
-                              padding:      '5px 0',
-                              background:   '#fff',
-                              color:        '#374151',
-                              border:       '1px solid #d1d5db',
-                              borderRadius: 6,
-                              cursor:       'pointer',
-                            }}
-                          >
-                            Volver al PE original
-                          </button>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => {
-                          dispatch({ type: ACTIONS.SET_UBER_PE_EDIT_MODE, payload: null })
-                          setUberGeoError(null)
-                        }}
-                        style={{
-                          display:        'block',
-                          width:          '100%',
-                          marginTop:      4,
-                          fontSize:       11,
-                          padding:        '3px 0',
-                          background:     'none',
-                          color:          '#9ca3af',
-                          border:         'none',
-                          cursor:         'pointer',
-                          textDecoration: 'underline',
-                          textAlign:      'center',
-                        }}
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )
-            })
-          )}
-        </section>
-
-        {/* ── Pickup section ───────────────────────────────────────────── */}
-        {/* Pickup employee is displayed inside the vehicle section above when confirmed. */}
-        {pickupPassengers.length === 0 && hasVehicle && !showSoloChoice && (
-          <section style={{ marginBottom: 20 }}>
-            <SectionHeader>Pickup en ruta</SectionHeader>
-            <button
-              onClick={() => dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: true })}
-              disabled={manualPickupMode}
-              style={{
-                display:      'flex',
-                alignItems:   'center',
-                gap:          6,
-                fontSize:     12,
-                color:        manualPickupMode ? '#9ca3af' : '#374151',
-                background:   '#f9fafb',
-                border:       '1px solid #e5e7eb',
-                borderRadius: 6,
-                padding:      '7px 12px',
-                cursor:       manualPickupMode ? 'default' : 'pointer',
-                width:        '100%',
-                transition:   'background 150ms ease',
-              }}
-              onMouseEnter={(e) => { if (!manualPickupMode) e.currentTarget.style.background = '#f3f4f6' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = '#f9fafb' }}
-            >
-              <span style={{ fontSize: 14 }}>📍</span>
-              Elegir pickup en mapa
-            </button>
-          </section>
-        )}
-
-        {/* ── Pending employee ─────────────────────────────────────────── */}
-        {pendingEmployee && (
-          <section
+        {/* ── Pending employee ──────────────────────────────────────── */}
+        {pendingEmployeeName && (
+          <div
             style={{
               marginBottom: 16,
               background:   '#fffbeb',
@@ -547,180 +475,98 @@ export default function AssignmentSummaryPanel({
             }}
           >
             <SectionHeader>Pendiente</SectionHeader>
-            <EmployeeRow
-              name={fullName(pendingEmployee)}
-              profesion={pendingEmployee.Profesion}
-              dotColor="#fbbf24"
-            />
+            <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 2px', color: '#111827' }}>
+              {pendingEmployeeName}
+            </p>
+            {pendingEmpObj?.Profesion && (
+              <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 6px' }}>
+                {pendingEmpObj.Profesion}
+              </p>
+            )}
             <p style={{ fontSize: 12, color: '#b45309', margin: 0 }}>
               Transporte alternativo a coordinar
             </p>
-          </section>
+          </div>
         )}
 
-        {/* ── Error ───────────────────────────────────────────────────── */}
-        {error && (
-          <p style={{ fontSize: 12, color: '#dc2626', marginBottom: 8 }}>{error}</p>
+        {/* ── API error ─────────────────────────────────────────────── */}
+        {state.error && (
+          <p style={{ fontSize: 12, color: '#dc2626', marginBottom: 8 }}>{state.error}</p>
         )}
       </div>
 
-      {/* ── Footer: validate button / solo-passenger choice ─────────────── */}
+      {/* ── Footer: validate button ─────────────────────────────────────── */}
       <div
         style={{
-          padding:    '12px 20px',
+          padding:    '12px 16px',
           borderTop:  '1px solid #e5e7eb',
           flexShrink: 0,
         }}
       >
-        {showSoloChoice ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {/* Amber warning banner */}
-            <div
-              style={{
-                background:  '#fffbeb',
-                border:      '1px solid #f59e0b',
-                borderLeft:  '4px solid #f59e0b',
-                borderRadius: 6,
-                padding:     '8px 10px',
-              }}
-            >
-              <p style={{ fontSize: 12, color: '#92400e', margin: 0 }}>
-                ⚠ Un pasajero quedó solo en Uber. ¿Qué hacemos?
+        {/* Reason text when disabled */}
+        {!valid && reasons.length > 0 && (
+          <div
+            style={{
+              marginBottom: 8,
+              background:   '#fffbeb',
+              border:       '1px solid #fde68a',
+              borderRadius: 6,
+              padding:      '7px 10px',
+            }}
+          >
+            {reasons.map((r, i) => (
+              <p key={i} style={{ fontSize: 11, color: '#92400e', margin: i > 0 ? '3px 0 0' : 0 }}>
+                ⚠ {r}
               </p>
-            </div>
-
-            <button
-              onClick={onPendiente}
-              disabled={validating}
-              style={{
-                width:        '100%',
-                padding:      '10px 16px',
-                background:   '#111827',
-                color:        '#fff',
-                border:       'none',
-                borderRadius: 8,
-                fontSize:     13,
-                fontWeight:   500,
-                cursor:       validating ? 'default' : 'pointer',
-                transition:   'background 150ms ease',
-              }}
-              onMouseEnter={(e) => { if (!validating) e.currentTarget.style.background = '#374151' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
-            >
-              Buscar alternativa y dejar pendiente
-            </button>
-
-            <button
-              onClick={onContinueWithSolo}
-              disabled={validating}
-              style={{
-                width:        '100%',
-                padding:      '10px 16px',
-                background:   '#fff',
-                color:        '#374151',
-                border:       '1px solid #d1d5db',
-                borderRadius: 8,
-                fontSize:     13,
-                fontWeight:   500,
-                cursor:       validating ? 'default' : 'pointer',
-                display:      'flex',
-                alignItems:   'center',
-                justifyContent: 'center',
-                gap:          8,
-                transition:   'background 150ms ease',
-              }}
-              onMouseEnter={(e) => { if (!validating) e.currentTarget.style.background = '#f9fafb' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = '#fff' }}
-            >
-              {validating ? (
-                <span
-                  className="animate-spin"
-                  style={{
-                    display:     'inline-block',
-                    width:       14,
-                    height:      14,
-                    border:      '2px solid #9ca3af',
-                    borderTopColor: 'transparent',
-                    borderRadius: '50%',
-                  }}
-                />
-              ) : (
-                'Continuar con 1 pasajero en Uber'
-              )}
-            </button>
+            ))}
           </div>
-        ) : (
-          unassigned.length > 0 && !uberAutoFilled ? (
-            <button
-              key="autofill"
-              onClick={onAutoFill}
-              style={{
-                width:          '100%',
-                padding:        '11px 16px',
-                background:     '#111827',
-                color:          '#fff',
-                border:         'none',
-                borderRadius:   8,
-                fontSize:       14,
-                fontWeight:     500,
-                cursor:         'pointer',
-                display:        'flex',
-                alignItems:     'center',
-                justifyContent: 'center',
-                transition:     'background 150ms ease',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = '#374151' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
-            >
-              Asignar {unassigned.length} restantes a Uber
-            </button>
-          ) : (
-            /* Phase 2: uber groups are shown — user can review/edit, then validate */
-            <button
-              key="validate"
-              onClick={onValidate}
-              disabled={validating}
-              style={{
-                width:          '100%',
-                padding:        '11px 16px',
-                background:     '#111827',
-                color:          '#fff',
-                border:         'none',
-                borderRadius:   8,
-                fontSize:       14,
-                fontWeight:     500,
-                cursor:         validating ? 'default' : 'pointer',
-                display:        'flex',
-                alignItems:     'center',
-                justifyContent: 'center',
-                gap:            8,
-                transition:     'background 150ms ease',
-                opacity:        validating ? 0.85 : 1,
-              }}
-              onMouseEnter={(e) => { if (!validating) e.currentTarget.style.background = '#374151' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
-            >
-              {validating ? (
-                <>
-                  <span
-                    className="animate-spin"
-                    style={{
-                      display:       'inline-block',
-                      width:         14,
-                      height:        14,
-                      border:        '2px solid rgba(255,255,255,0.4)',
-                      borderTopColor: '#fff',
-                      borderRadius:  '50%',
-                    }}
-                  />
-                  Validando...
-                </>
-              ) : (
-                'Validar asignaciones'
-              )}
-            </button>
-          )
         )}
+
+        <button
+          onClick={handleValidate}
+          disabled={!valid || validating}
+          style={{
+            width:          '100%',
+            padding:        '11px 16px',
+            background:     valid && !validating ? '#111827' : '#e5e7eb',
+            color:          valid && !validating ? '#fff'     : '#9ca3af',
+            border:         'none',
+            borderRadius:   8,
+            fontSize:       14,
+            fontWeight:     500,
+            cursor:         valid && !validating ? 'pointer' : 'default',
+            display:        'flex',
+            alignItems:     'center',
+            justifyContent: 'center',
+            gap:            8,
+            transition:     'background 150ms ease',
+          }}
+          onMouseEnter={(e) => {
+            if (valid && !validating) e.currentTarget.style.background = '#374151'
+          }}
+          onMouseLeave={(e) => {
+            if (valid && !validating) e.currentTarget.style.background = '#111827'
+          }}
+        >
+          {validating ? (
+            <>
+              <span
+                className="animate-spin"
+                style={{
+                  display:        'inline-block',
+                  width:          14,
+                  height:         14,
+                  border:         '2px solid rgba(255,255,255,0.4)',
+                  borderTopColor: '#fff',
+                  borderRadius:   '50%',
+                }}
+              />
+              Validando…
+            </>
+          ) : (
+            'Validar asignaciones y rutas'
+          )}
+        </button>
       </div>
     </div>
   )
