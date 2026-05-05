@@ -312,28 +312,27 @@ function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
 export default function AssignmentSummaryPanel() {
   const { state, dispatch } = useAppState()
   const [validating, setValidating] = useState(false)
+  // soloChoice: { vehicleId, employeeName } while the two-button choice is shown.
+  const [soloChoice,  setSoloChoice]  = useState(null)
 
   const pool         = state.remainingPool?.remaining_pool ?? []
   const staffPool    = state.excelData?.staff ?? []
   const unassigned   = getUnassignedEmployees(state)
   const assigned     = pool.length - unassigned.length
-  const { valid, reasons } = canValidate(state)
+  const { valid, reasons, soloUberWarning } = canValidate(state)
 
   const pendingEmployeeName = state.pending_employee
   const pendingEmpObj       = pendingEmployeeName
     ? pool.find((e) => `${e.Nombre} ${e.Apellido}` === pendingEmployeeName)
     : null
 
-  // Build and POST /validate-assignments, then advance to step 4.
-  async function handleValidate() {
-    if (!valid || validating) return
-
+  // Core POST — receives the already-built payload so callers can pass a
+  // pre-modified version without waiting for React state to flush.
+  async function doValidate(assignmentsInput) {
     const assignedRoles = (state.frescosResult?.assigned_names ?? []).map((name) => {
       const emp = staffPool.find((e) => `${e.Nombre} ${e.Apellido}` === name)
       return emp?.Profesion ?? name
     }).filter(Boolean)
-
-    const assignmentsInput = buildAssignmentsInput(state.vehicles, pendingEmployeeName)
 
     setValidating(true)
     dispatch({ type: ACTIONS.SET_ERROR, payload: null })
@@ -350,6 +349,37 @@ export default function AssignmentSummaryPanel() {
     } finally {
       setValidating(false)
     }
+  }
+
+  // Primary button click — intercepts for solo-Uber warning before API call.
+  function handleValidate() {
+    if (!valid || validating) return
+    if (soloUberWarning) {
+      setSoloChoice(soloUberWarning)
+      return
+    }
+    doValidate(buildAssignmentsInput(state.vehicles, pendingEmployeeName))
+  }
+
+  // "Continuar con Uber individual" — keep the solo assignment, validate as-is.
+  function handleContinueWithSolo() {
+    setSoloChoice(null)
+    doValidate(buildAssignmentsInput(state.vehicles, pendingEmployeeName))
+  }
+
+  // "Buscar alternativa y dejar pendiente" — remove from Uber + mark pending.
+  // The payload is built from the locally-modified vehicles array so the API
+  // receives correct data before React flushes the dispatched state changes.
+  function handleLeavePending(vehicleId, employeeName) {
+    const updatedVehicles = state.vehicles.map((v) => ({
+      ...v,
+      passengers_pe: v.passengers_pe.filter((n) => n !== employeeName),
+      pickup:        { ...v.pickup, passengers: v.pickup.passengers.filter((n) => n !== employeeName) },
+    }))
+    dispatch({ type: ACTIONS.UNASSIGN_EMPLOYEE,    payload: { employee_name: employeeName } })
+    dispatch({ type: ACTIONS.SET_PENDING_EMPLOYEE, payload: { name: employeeName } })
+    setSoloChoice(null)
+    doValidate(buildAssignmentsInput(updatedVehicles, employeeName))
   }
 
   function handlePickupClick(vehicleId) {
@@ -494,7 +524,7 @@ export default function AssignmentSummaryPanel() {
         )}
       </div>
 
-      {/* ── Footer: validate button ─────────────────────────────────────── */}
+      {/* ── Footer: validate button / solo-Uber choice ─────────────────── */}
       <div
         style={{
           padding:    '12px 16px',
@@ -502,70 +532,162 @@ export default function AssignmentSummaryPanel() {
           flexShrink: 0,
         }}
       >
-        {/* Reason text when disabled */}
-        {!valid && reasons.length > 0 && (
-          <div
-            style={{
-              marginBottom: 8,
-              background:   '#fffbeb',
-              border:       '1px solid #fde68a',
-              borderRadius: 6,
-              padding:      '7px 10px',
-            }}
-          >
-            {reasons.map((r, i) => (
-              <p key={i} style={{ fontSize: 11, color: '#92400e', margin: i > 0 ? '3px 0 0' : 0 }}>
-                ⚠ {r}
+        {soloChoice ? (
+          /* ── Two-button choice for solo Uber passenger ──────────────── */
+          <div>
+            <div
+              style={{
+                marginBottom: 10,
+                background:   '#fffbeb',
+                border:       '1px solid #fde68a',
+                borderLeft:   '4px solid #f59e0b',
+                borderRadius: 6,
+                padding:      '8px 10px',
+              }}
+            >
+              <p style={{ fontSize: 12, fontWeight: 600, color: '#92400e', margin: '0 0 2px' }}>
+                ⚠ Uber {soloChoice.vehicleId.replace('uber_', '')} tiene un solo pasajero
               </p>
-            ))}
-          </div>
-        )}
-
-        <button
-          onClick={handleValidate}
-          disabled={!valid || validating}
-          style={{
-            width:          '100%',
-            padding:        '11px 16px',
-            background:     valid && !validating ? '#111827' : '#e5e7eb',
-            color:          valid && !validating ? '#fff'     : '#9ca3af',
-            border:         'none',
-            borderRadius:   8,
-            fontSize:       14,
-            fontWeight:     500,
-            cursor:         valid && !validating ? 'pointer' : 'default',
-            display:        'flex',
-            alignItems:     'center',
-            justifyContent: 'center',
-            gap:            8,
-            transition:     'background 150ms ease',
-          }}
-          onMouseEnter={(e) => {
-            if (valid && !validating) e.currentTarget.style.background = '#374151'
-          }}
-          onMouseLeave={(e) => {
-            if (valid && !validating) e.currentTarget.style.background = '#111827'
-          }}
-        >
-          {validating ? (
-            <>
-              <span
-                className="animate-spin"
+              <p style={{ fontSize: 12, color: '#92400e', margin: 0 }}>
+                {soloChoice.employeeName}
+              </p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              <button
+                onClick={() => handleLeavePending(soloChoice.vehicleId, soloChoice.employeeName)}
+                disabled={validating}
                 style={{
-                  display:        'inline-block',
-                  width:          14,
-                  height:         14,
-                  border:         '2px solid rgba(255,255,255,0.4)',
-                  borderTopColor: '#fff',
-                  borderRadius:   '50%',
+                  width:          '100%',
+                  padding:        '10px 14px',
+                  background:     validating ? '#374151' : '#111827',
+                  color:          '#fff',
+                  border:         'none',
+                  borderRadius:   8,
+                  fontSize:       13,
+                  fontWeight:     600,
+                  cursor:         validating ? 'default' : 'pointer',
+                  display:        'flex',
+                  alignItems:     'center',
+                  justifyContent: 'center',
+                  gap:            8,
+                  transition:     'background 150ms ease',
                 }}
-              />
-              Validando…
-            </>
-          ) : (
-            'Validar asignaciones y rutas'
-          )}
-        </button>
+                onMouseEnter={(e) => {
+                  if (!validating) e.currentTarget.style.background = '#374151'
+                }}
+                onMouseLeave={(e) => {
+                  if (!validating) e.currentTarget.style.background = '#111827'
+                }}
+              >
+                {validating ? (
+                  <>
+                    <span
+                      style={{
+                        display: 'inline-block', width: 13, height: 13,
+                        border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff',
+                        borderRadius: '50%', animation: 'spin 0.8s linear infinite',
+                      }}
+                    />
+                    Validando…
+                  </>
+                ) : (
+                  'Buscar alternativa y dejar pendiente'
+                )}
+              </button>
+              <button
+                onClick={handleContinueWithSolo}
+                disabled={validating}
+                style={{
+                  width:          '100%',
+                  padding:        '10px 14px',
+                  background:     '#fff',
+                  color:          validating ? '#9ca3af' : '#374151',
+                  border:         '1px solid #d1d5db',
+                  borderRadius:   8,
+                  fontSize:       13,
+                  fontWeight:     500,
+                  cursor:         validating ? 'default' : 'pointer',
+                  transition:     'background 150ms ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (!validating) e.currentTarget.style.background = '#f9fafb'
+                }}
+                onMouseLeave={(e) => {
+                  if (!validating) e.currentTarget.style.background = '#fff'
+                }}
+              >
+                Continuar con Uber individual
+              </button>
+            </div>
+          </div>
+        ) : (
+          /* ── Normal: reason list + validate button ──────────────────── */
+          <>
+            {!valid && reasons.length > 0 && (
+              <div
+                style={{
+                  marginBottom: 8,
+                  background:   '#fffbeb',
+                  border:       '1px solid #fde68a',
+                  borderRadius: 6,
+                  padding:      '7px 10px',
+                }}
+              >
+                {reasons.map((r, i) => (
+                  <p key={i} style={{ fontSize: 11, color: '#92400e', margin: i > 0 ? '3px 0 0' : 0 }}>
+                    ⚠ {r}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={handleValidate}
+              disabled={!valid || validating}
+              style={{
+                width:          '100%',
+                padding:        '11px 16px',
+                background:     valid && !validating ? '#111827' : '#e5e7eb',
+                color:          valid && !validating ? '#fff'     : '#9ca3af',
+                border:         'none',
+                borderRadius:   8,
+                fontSize:       14,
+                fontWeight:     500,
+                cursor:         valid && !validating ? 'pointer' : 'default',
+                display:        'flex',
+                alignItems:     'center',
+                justifyContent: 'center',
+                gap:            8,
+                transition:     'background 150ms ease',
+              }}
+              onMouseEnter={(e) => {
+                if (valid && !validating) e.currentTarget.style.background = '#374151'
+              }}
+              onMouseLeave={(e) => {
+                if (valid && !validating) e.currentTarget.style.background = '#111827'
+              }}
+            >
+              {validating ? (
+                <>
+                  <span
+                    className="animate-spin"
+                    style={{
+                      display:        'inline-block',
+                      width:          14,
+                      height:         14,
+                      border:         '2px solid rgba(255,255,255,0.4)',
+                      borderTopColor: '#fff',
+                      borderRadius:   '50%',
+                    }}
+                  />
+                  Validando…
+                </>
+              ) : (
+                'Validar asignaciones y rutas'
+              )}
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

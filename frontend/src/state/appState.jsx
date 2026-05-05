@@ -675,12 +675,17 @@ export function isVehicleFull(vehicle) {
 
 /**
  * Checks whether the current vehicle state is ready for final validation.
- * Returns { valid: boolean, reasons: string[] }.
+ * Returns { valid: boolean, reasons: string[], soloUberWarning: object|null }.
  *
  * Rules:
  *   1. All pool employees must be assigned (or tracked as pending_employee).
  *   2. Every vehicle that has passengers must have a route.
  *   3. If any Uber vehicle exists, the personal vehicle must be full first.
+ *
+ * soloUberWarning — set only when all blocking rules pass AND one Uber has
+ * exactly 1 passenger.  The button stays enabled; the UI shows a two-button
+ * choice instead of calling the API directly.
+ * Shape: { vehicleId: string, employeeName: string } | null
  */
 export function canValidate(state) {
   const reasons = []
@@ -707,5 +712,23 @@ export function canValidate(state) {
     reasons.push('El vehículo personal debe estar lleno antes de usar Ubers')
   }
 
-  return { valid: reasons.length === 0, reasons }
+  // Solo-Uber warning: only evaluated when no blocking reasons exist.
+  // If the personal car still has empty seats the rule above already fires,
+  // so this check implicitly runs only after the car is full.
+  let soloUberWarning = null
+  if (reasons.length === 0) {
+    for (const v of state.vehicles) {
+      if (v.type !== 'uber') continue
+      const total = v.passengers_pe.length + v.pickup.passengers.length
+      if (total === 1) {
+        soloUberWarning = {
+          vehicleId:    v.id,
+          employeeName: v.passengers_pe[0] ?? v.pickup.passengers[0],
+        }
+        break  // surface one warning at a time
+      }
+    }
+  }
+
+  return { valid: reasons.length === 0, reasons, soloUberWarning }
 }
