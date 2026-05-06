@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /c/Users/54116/projects/app-traslado-personal && python -c \"\nimport sys\nsys.path.insert\\(0, '.'\\)\n# Test excel_reader imports\nfrom modules.excel_reader import read_excel\nprint\\('read_excel imported OK'\\)\n\n# Test maps_client imports \\(no API key needed for import\\)\nfrom modules.maps_client import geocode, geocode_staff, calculate_distances, nearest_meeting_point, MEETING_POINTS\nprint\\('maps_client imported OK'\\)\nprint\\('MEETING_POINTS:', [mp['label'] for mp in MEETING_POINTS]\\)\n\" 2>&1)",
+      "Bash(cd:*)",
+      "Bash(cd /c/Users/54116/projects/app-traslado-personal && ./venv/Scripts/python -c \"\nimport sys\nsys.path.insert\\(0, '.'\\)\nfrom modules.excel_reader import read_excel\nprint\\('read_excel OK'\\)\n\nfrom modules.maps_client import geocode, geocode_staff, calculate_distances, nearest_meeting_point, MEETING_POINTS\nprint\\('maps_client OK'\\)\nprint\\('Meeting points:', [mp['label'] for mp in MEETING_POINTS]\\)\n\n# Verify read_excel works end-to-end with the sample file\ndata = read_excel\\('sample_data/evento_prueba.xlsx'\\)\nprint\\('Excel sheets:', list\\(data.keys\\(\\)\\)\\)\nprint\\('Staff count:', len\\(data['staff']\\)\\)\nprint\\('First staff keys:', list\\(data['staff'][0].keys\\(\\)\\)\\)\n\" 2>&1)",
+      "Bash(./venv/Scripts/pip install:*)",
+      "Bash(python:*)",
+      "Bash(source:*)",
+      "Bash(cp:*)",
+      "Bash(venv/Scripts/python:*)",
+      "Bash(node:*)",
+      "Bash(npm create:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tailwindcss:*)",
+      "Bash(./node_modules/.bin/tailwindcss init:*)",
+      "Bash(npx shadcn@latest:*)",
+      "Bash(npm run:*)",
+      "Bash(npm:*)",
+      "Bash(./venv/Scripts/python:*)",
+      "Bash(tasklist:*)",
+      "Bash(taskkill:*)",
+      "Bash(netstat:*)",
+      "Bash(curl:*)",
+      "Bash(xargs grep:*)",
+      "Bash(grep:*)",
+      "Bash(cd /c/Users/54116/projects/app-traslado-personal && ./venv/Scripts/python.exe -c \"\nimport sys\nsys.path.insert\\(0, '.'\\)\nfrom modules.logistics import calculate_departure_time\nresult = calculate_departure_time\\('18:00', 1800, 4.0, 0, 45\\)\nprint\\('calculate_departure_time OK:', result\\)\nfrom config import PICKUP_KEYWORD, PICKUP_PLACE_TYPES, LOADING_TIME_MINUTES\nprint\\('config OK — PICKUP_KEYWORD:', PICKUP_KEYWORD, '| LOADING_TIME_MINUTES:', LOADING_TIME_MINUTES\\)\n\" 2>&1)",
+      "Bash(cd /c/Users/54116/projects/app-traslado-personal && ./venv/Scripts/python.exe -c \"import main; print\\('OK'\\)\" 2>&1)",
+      "Bash(cd \"C:\\\\Users\\\\54116\\\\projects\\\\app-traslado-personal\" && venv/Scripts/pip install python-multipart -q && echo \"installed\")",
+      "Bash(cd \"C:\\\\Users\\\\54116\\\\projects\\\\app-traslado-personal\" && venv/Scripts/pip install python-multipart -q 2>&1 | tail -3)",
+      "Bash(cd \"C:\\\\Users\\\\54116\\\\projects\\\\app-traslado-personal\" && venv/Scripts/pip show python-multipart 2>&1 | grep Version)",
+      "Bash(./venv/Scripts/python.exe -c \"import main; print\\('OK'\\)\")",
+      "Bash(./venv/Scripts/python.exe -c \"import main; print\\('main.py OK'\\)\")"
+    ]
+  }
+}

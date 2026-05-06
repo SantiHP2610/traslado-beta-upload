@@ -17,8 +17,6 @@ venues.json
 uploads/
 *.xlsx
 *.xls
-~$*.xlsx
-~$*.xls
 # Exception: keep the generated sample file
 !sample_data/evento_prueba.xlsx
 
