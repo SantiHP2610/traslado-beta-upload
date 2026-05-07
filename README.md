@@ -65,35 +65,16 @@ All business-rule thresholds (vehicle capacity, time buffers, pickup distances, 
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/app-traslado-personal.git
+git clone https://github.com/SantiHP2610/app-traslado-personal.git
 cd app-traslado-personal
 ```
 
-### 2. Backend setup
-
-```bash
-pip install -r requirements.txt
-```
+### 2. Create your environment files
 
 Create a `.env` file in the project root:
 
 ```env
 GOOGLE_MAPS_API_KEY=your_api_key_here
-```
-
-Start the server:
-
-```bash
-uvicorn main:app --reload
-```
-
-The API will be available at `http://localhost:8000`.
-
-### 3. Frontend setup
-
-```bash
-cd frontend
-npm install
 ```
 
 Create `frontend/.env`:
@@ -104,13 +85,19 @@ VITE_GOOGLE_MAPS_API_KEY=your_api_key_here
 VITE_GOOGLE_MAPS_MAP_ID=your_map_id_here
 ```
 
-Start the dev server:
+### 3. Run the setup script
 
-```bash
-npm run dev
+**Windows:**
+```
+setup.bat
 ```
 
-Open `http://localhost:5173`.
+**Mac / Linux:**
+```bash
+bash setup.sh
+```
+
+The script will automatically create a virtual environment, install all dependencies, and launch both the backend and frontend in separate terminal windows. Once ready, it opens `http://localhost:5173` in your default browser.
 
 ### 4. Load the test file
 
