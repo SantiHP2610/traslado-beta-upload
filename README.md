@@ -65,8 +65,9 @@ All business-rule thresholds (vehicle capacity, time buffers, pickup distances, 
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/SantiHP2610/app-traslado-personal.git
-cd app-traslado-personal
+git clone https://github.com/SantiHP2610/traslado-beta-upload.git
+cd traslado-beta-upload
+
 ```
 
 ### 2. Create your environment files
