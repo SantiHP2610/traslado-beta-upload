@@ -60,3 +60,7 @@ desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# --- Claude Code --------------------------------------------------------------
+.claude/
+CLAUDE.md
