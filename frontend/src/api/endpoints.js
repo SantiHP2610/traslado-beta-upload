@@ -293,15 +293,29 @@ export async function peaPlaceInfo(lat, lng, assignedRoles, meetingPointLat, mee
 // ---------------------------------------------------------------------------
 
 /**
- * Returns display info (name, address, types, opening hours) for a point the
- * user clicked on the map during manual pickup mode.
+ * Returns display info and nearby-place candidates for a double-clicked point
+ * on the map during manual pickup mode.
  * @param {number} lat
  * @param {number} lng
  * @returns {{ lat: number, lng: number, name: string|null, address: string,
- *             types: string[], opening_hours: string[] }}
+ *             types: string[], opening_hours: string[],
+ *             nearby_places: Array<{name,address,lat,lng,types,opening_hours}> }}
  */
 export async function pickupPlaceInfo(lat, lng) {
   const response = await client.post('/pickup-place-info', { lat, lng })
+  return response.data
+}
+
+/**
+ * Fetches full place details from the Places API (New) by place ID.
+ * Called when the user single-clicks a Google Maps POI during manual pickup mode.
+ * @param {string} placeId  Google Places place ID (e.g. "ChIJ...")
+ * @returns {{ name: string|null, address: string|null, lat: number|null,
+ *             lng: number|null, types: string[], primary_type: string|null,
+ *             opening_hours: string[], editorial_summary: string|null }}
+ */
+export async function placeDetails(placeId) {
+  const response = await client.get('/place-details', { params: { place_id: placeId } })
   return response.data
 }
 

@@ -912,7 +912,9 @@ def pickup_place_info(lat: float, lng: float) -> dict:
     if geo_data.get("status") == "OK" and geo_data.get("results"):
         result["address"] = geo_data["results"][0].get("formatted_address", result["address"])
 
-    # ── 2. Places API searchNearby (300m, no type filter) ───────────────────
+    # ── 2. Places API searchNearby (300m, no type filter, up to 5 candidates) ─
+    # Key uses "v2" suffix to avoid serving stale single-result cache entries
+    # from older deployments that used maxResultCount: 1.
     places_body = {
         "locationRestriction": {
             "circle": {
@@ -920,9 +922,9 @@ def pickup_place_info(lat: float, lng: float) -> dict:
                 "radius":  300.0,
             }
         },
-        "maxResultCount": 1,
+        "maxResultCount": 5,
     }
-    cache_key_places = ("nearby_click", round(lat, 5), round(lng, 5))
+    cache_key_places = ("nearby_click_v2", round(lat, 5), round(lng, 5))
     places_cached = cache_get("pickup_places", cache_key_places)
     if places_cached is not None:
         places_data = places_cached["data"]
@@ -943,15 +945,92 @@ def pickup_place_info(lat: float, lng: float) -> dict:
         cache_put("pickup_places", places_data, *cache_key_places)
 
     places = places_data.get("places", [])
-    if places:
-        p = places[0]
+    nearby = []
+    for p in places:
         display_name = p.get("displayName", {})
-        result["name"] = display_name.get("text") if isinstance(display_name, dict) else None
-        result["types"] = [p["primaryType"]] if p.get("primaryType") else []
+        name = display_name.get("text") if isinstance(display_name, dict) else None
+        location = p.get("location", {})
         hours = p.get("currentOpeningHours", {})
-        result["opening_hours"] = hours.get("weekdayDescriptions", [])
+        nearby.append({
+            "name":          name,
+            "address":       p.get("formattedAddress"),
+            "lat":           location.get("latitude"),
+            "lng":           location.get("longitude"),
+            "types":         [p["primaryType"]] if p.get("primaryType") else [],
+            "opening_hours": hours.get("weekdayDescriptions", []),
+        })
+
+    if nearby:
+        result["name"]          = nearby[0]["name"]
+        result["types"]         = nearby[0]["types"]
+        result["opening_hours"] = nearby[0]["opening_hours"]
+    result["nearby_places"] = nearby
 
     return result
+
+
+def get_place_details(place_id: str) -> dict:
+    """
+    Fetches full place details from the Places API (New) by place ID.
+
+    Called when the user single-clicks a Google Maps POI (gas station,
+    restaurant, etc.) during manual pickup selection.  The place ID comes
+    from the map click event; this function retrieves name, address,
+    coordinates, and opening hours.
+
+    Parameters:
+        place_id (str): A Google Places place ID, e.g. "ChIJ...".
+
+    Returns:
+        dict: {
+            "name":             str | None,
+            "address":          str | None,
+            "lat":              float | None,
+            "lng":              float | None,
+            "types":            list[str],
+            "primary_type":     str | None,
+            "opening_hours":    list[str],
+            "editorial_summary": str | None,
+        }
+    """
+    cache_key = ("place_id", place_id)
+    cached = cache_get("place_details", cache_key)
+    if cached is not None:
+        return cached["data"]
+
+    url     = f"https://places.googleapis.com/v1/places/{place_id}"
+    headers = {
+        "X-Goog-Api-Key":  GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": (
+            "displayName,"
+            "formattedAddress,"
+            "location,"
+            "types,"
+            "primaryType,"
+            "currentOpeningHours,"
+            "editorialSummary"
+        ),
+    }
+    resp = httpx.get(url, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    cache_put("place_details", data, *cache_key)
+
+    display_name = data.get("displayName", {})
+    editorial    = data.get("editorialSummary", {})
+    location     = data.get("location", {})
+    hours        = data.get("currentOpeningHours", {})
+
+    return {
+        "name":              display_name.get("text") if isinstance(display_name, dict) else None,
+        "address":           data.get("formattedAddress"),
+        "lat":               location.get("latitude"),
+        "lng":               location.get("longitude"),
+        "types":             data.get("types", []),
+        "primary_type":      data.get("primaryType"),
+        "opening_hours":     hours.get("weekdayDescriptions", []) if isinstance(hours, dict) else [],
+        "editorial_summary": editorial.get("text") if isinstance(editorial, dict) else None,
+    }
 
 
 def pea_place_info(

@@ -245,23 +245,32 @@ function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
               borderTop:    '1px solid #f3f4f6',
             }}
           >
-            <p
-              style={{
-                fontSize:   11,
-                fontWeight: 600,
-                color:      '#7B1FA2',
-                margin:     '0 0 6px',
-                textTransform: 'uppercase',
-                letterSpacing: '0.04em',
-              }}
-            >
-              Pickup{vehicle.pickup.point?.name ? `: ${vehicle.pickup.point.name}` : ''}
-            </p>
-            {vehicle.pickup.point?.address && (
-              <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 6px' }}>
-                {vehicle.pickup.point.address}
-              </p>
-            )}
+            {(() => {
+              const pt      = vehicle.pickup.point
+              const ptName  = pt?.place_name || pt?.place_address
+              const ptAddr  = pt?.place_address
+              return (
+                <>
+                  <p
+                    style={{
+                      fontSize:   11,
+                      fontWeight: 600,
+                      color:      colors.pickup,
+                      margin:     '0 0 2px',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    {ptName ? `Pickup — ${ptName}` : 'Pickup'}
+                  </p>
+                  {ptAddr && ptAddr !== ptName && (
+                    <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 6px', lineHeight: 1.4 }}>
+                      {ptAddr}
+                    </p>
+                  )}
+                </>
+              )
+            })()}
             {vehicle.pickup.passengers.map((name) => (
               <PassengerRow
                 key={name}

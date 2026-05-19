@@ -35,7 +35,7 @@ import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
 import { useAppState, ACTIONS, VEHICLE_COLORS }       from '../../state/appState'
-import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo } from '../../api/endpoints'
+import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo, placeDetails } from '../../api/endpoints'
 import { useStepTwo }                    from '../../hooks/useStepTwo'
 import MapBoundsController               from './MapBoundsController'
 import StaffMarkers                      from './StaffMarkers'
@@ -167,9 +167,14 @@ export default function AppMap() {
   const [backHover, setBackHover] = useState(false)
 
   // Manual pickup mode — InfoWindow state for a clicked point.
-  // Shape: { lat, lng, name, address, types, opening_hours, loading, error, tooFar }
+  // Shape: { lat, lng, name, address, types, opening_hours, nearby_places, loading,
+  //          error, tooFar, source }
+  // source: 'poi' (Method 1 — single click on POI) | 'dblclick' (Method 2 — double click)
   // null = no InfoWindow shown.
   const [manualPickupInfo, setManualPickupInfo] = useState(null)
+
+  // Temporary marker placed on double-click during pickup mode.  { lat, lng } or null.
+  const [dblClickMarker, setDblClickMarker] = useState(null)
 
   // Whether we're currently calling /recalculate-route-with-pickup.
   const [recalculating, setRecalculating] = useState(false)
@@ -189,54 +194,118 @@ export default function AppMap() {
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
 
+  // Clear pickup InfoWindow and temp marker whenever pickup mode is deactivated.
+  useEffect(() => {
+    if (!state.manualPickupMode?.active) {
+      setManualPickupInfo(null)
+      setDblClickMarker(null)
+    }
+  }, [state.manualPickupMode?.active])
+
   const bounds = useMemo(
     () => computeBounds(state.staffWithCoords, state.driverRoutes, state.eventCoords),
     [state.staffWithCoords, state.driverRoutes, state.eventCoords],
   )
 
-  // ── Manual pickup map click ───────────────────────────────────────────────
-  // When manualPickupMode is true, every click on the map is intercepted.
-  // We check proximity to the current route polyline; if the click is within
-  // PICKUP_REJECT_M metres we show an InfoWindow with place info.
+  // ── Route proximity check helper ─────────────────────────────────────────
+  // Returns { tooFar, offRoute } for a clicked point against the active vehicle
+  // route polyline.
+  const checkRouteProximity = useCallback((clickedPoint) => {
+    const vehicleId     = state.manualPickupMode?.vehicleId
+    const vehicle       = state.vehicles.find((v) => v.id === vehicleId)
+    const activePolyline = vehicle?.route?.encoded_polyline
+    if (!activePolyline) return { tooFar: false, offRoute: false }
+    const dist = distanceToPolylineMetres(clickedPoint, activePolyline)
+    return {
+      offRoute: dist > PICKUP_REJECT_M,
+      tooFar:   dist > PICKUP_WARNING_M && dist <= PICKUP_REJECT_M,
+    }
+  }, [state.manualPickupMode, state.vehicles])
+
+  // ── Method 1: single click on a Google Maps POI ───────────────────────────
+  // When the user clicks a named POI (gas station, restaurant, etc.) the map
+  // fires a click event that carries a placeId.  We intercept it, prevent the
+  // default Google Maps InfoWindow, and show our own with place details.
   const handleMapClick = useCallback(async (event) => {
+    if (!state.manualPickupMode?.active || state.currentStep !== 3) return
+
+    // placeId is on the native event (event.detail for vis.gl wrappers).
+    const placeId = event.detail?.placeId
+    if (!placeId) return   // empty-area single clicks are handled by dblclick
+
+    if (!event.detail?.latLng) return
+    const { lat, lng } = event.detail.latLng
+
+    // Prevent the default Google Maps POI InfoWindow.
+    event.stop?.()
+    event.detail?.stop?.()
+
+    const clickedPoint = { lat, lng }
+    const { tooFar, offRoute } = checkRouteProximity(clickedPoint)
+    if (offRoute) return
+
+    setDblClickMarker(null)
+    setManualPickupInfo({
+      lat, lng, loading: true, tooFar, source: 'poi',
+      name: null, address: null, types: [], opening_hours: [], nearby_places: [],
+    })
+
+    try {
+      const details = await placeDetails(placeId)
+      // Use the place's own coordinates as the pickup point (more accurate than
+      // the click location which may land on the POI icon, not its centre).
+      const pickupLat = details.lat ?? lat
+      const pickupLng = details.lng ?? lng
+      setManualPickupInfo({ ...details, lat: pickupLat, lng: pickupLng, loading: false, tooFar, source: 'poi', nearby_places: [] })
+    } catch {
+      setManualPickupInfo({
+        lat, lng, loading: false, tooFar, source: 'poi',
+        name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        types: [], opening_hours: [], nearby_places: [],
+        error: 'No se pudo obtener info del lugar.',
+      })
+    }
+  }, [state.manualPickupMode, state.currentStep, checkRouteProximity])
+
+  // ── Method 2: double click on empty road ─────────────────────────────────
+  // The user double-clicks a spot on the road (not on a POI).  We place a
+  // temporary marker, reverse-geocode the point, and show nearby candidates.
+  const handleMapDblClick = useCallback(async (event) => {
     if (!state.manualPickupMode?.active || state.currentStep !== 3) return
     if (!event.detail?.latLng) return
 
     const { lat, lng } = event.detail.latLng
     const clickedPoint = { lat, lng }
 
-    // Use the route polyline of the specific vehicle requesting the pickup.
-    const vehicleId    = state.manualPickupMode?.vehicleId
-    const vehicle      = state.vehicles.find((v) => v.id === vehicleId)
-    const activePolyline = vehicle?.route?.encoded_polyline
+    const { tooFar, offRoute } = checkRouteProximity(clickedPoint)
+    if (offRoute) return
 
-    let tooFar = false
-    let offRoute = false
-    if (activePolyline) {
-      const dist = distanceToPolylineMetres(clickedPoint, activePolyline)
-      if (dist > PICKUP_REJECT_M) {
-        offRoute = true
-      } else if (dist > PICKUP_WARNING_M) {
-        tooFar = true
-      }
-    }
-
-    if (offRoute) return   // silently ignore clicks far from route
-
-    // Show InfoWindow immediately with loading state, then fetch place info.
-    setManualPickupInfo({ lat, lng, loading: true, tooFar, name: null, address: null, types: [], opening_hours: [] })
+    // Place temporary marker and show loading InfoWindow.
+    setDblClickMarker({ lat, lng })
+    setManualPickupInfo({
+      lat, lng, loading: true, tooFar, source: 'dblclick',
+      name: null, address: null, types: [], opening_hours: [], nearby_places: [],
+    })
 
     try {
       const info = await pickupPlaceInfo(lat, lng)
-      setManualPickupInfo({ ...info, loading: false, tooFar })
+      setManualPickupInfo({ ...info, loading: false, tooFar, source: 'dblclick' })
     } catch {
-      setManualPickupInfo({ lat, lng, loading: false, tooFar, name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, types: [], opening_hours: [], error: 'No se pudo obtener info del lugar.' })
+      setManualPickupInfo({
+        lat, lng, loading: false, tooFar, source: 'dblclick',
+        name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        types: [], opening_hours: [], nearby_places: [],
+        error: 'No se pudo obtener info del lugar.',
+      })
     }
-  }, [state.manualPickupMode, state.currentStep, state.vehicles])
+  }, [state.manualPickupMode, state.currentStep, checkRouteProximity])
 
-  // When the user confirms a manually clicked pickup point.
-  const handleConfirmManualPickup = useCallback(async () => {
-    if (!manualPickupInfo || recalculating) return
+  // When the user confirms a manually selected pickup point.
+  // pickupDataOverride can be passed when the user chooses a specific candidate
+  // from the nearby-places list (Method 2), bypassing the InfoWindow's lat/lng.
+  const handleConfirmManualPickup = useCallback(async (pickupDataOverride = null) => {
+    const pickupData = pickupDataOverride ?? manualPickupInfo
+    if (!pickupData || recalculating) return
     setRecalculating(true)
 
     const vehicleId = state.manualPickupMode?.vehicleId ?? 'personal'
@@ -264,7 +333,7 @@ export default function AppMap() {
     }
 
     const meetingPt = { lat: vehicle.meeting_point.lat, lng: vehicle.meeting_point.lng }
-    const pickupPt  = { lat: manualPickupInfo.lat, lng: manualPickupInfo.lng }
+    const pickupPt  = { lat: pickupData.lat, lng: pickupData.lng }
     const baseRoutePolyline = vehicle.route?.encoded_polyline ?? ''
 
     try {
@@ -289,10 +358,10 @@ export default function AppMap() {
         payload: {
           vehicle_id: vehicleId,
           point: {
-            place_name:    manualPickupInfo.name ?? manualPickupInfo.address,
-            place_address: manualPickupInfo.address,
-            lat:           manualPickupInfo.lat,
-            lng:           manualPickupInfo.lng,
+            place_name:    pickupData.name ?? pickupData.address,
+            place_address: pickupData.address,
+            lat:           pickupData.lat,
+            lng:           pickupData.lng,
           },
         },
       })
@@ -308,10 +377,11 @@ export default function AppMap() {
         },
       })
 
+      setDblClickMarker(null)
       dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: { active: false, vehicleId: null } })
       setManualPickupInfo(null)
     } catch {
-      setManualPickupInfo((prev) => ({ ...prev, error: 'Error al recalcular la ruta.' }))
+      setManualPickupInfo((prev) => prev ? { ...prev, error: 'Error al recalcular la ruta.' } : prev)
     } finally {
       setRecalculating(false)
     }
@@ -413,6 +483,7 @@ export default function AppMap() {
           mapId={mapId}
           gestureHandling="greedy"
           disableDefaultUI={false}
+          disableDoubleClickZoom={state.manualPickupMode?.active && state.currentStep === 3}
           style={{
             width:  '100%',
             height: '100%',
@@ -423,6 +494,10 @@ export default function AppMap() {
           onClick={
             (state.manualPickupMode?.active && state.currentStep === 3) ? handleMapClick :
             (state.manualPeaMode    && state.currentStep === 2) ? handleMapClickPea :
+            undefined
+          }
+          onDblClick={
+            (state.manualPickupMode?.active && state.currentStep === 3) ? handleMapDblClick :
             undefined
           }
         >
@@ -443,6 +518,21 @@ export default function AppMap() {
           {state.activePickupResult && <PickupCandidateMarkers />}
 
           <PickupHoverIndicator />
+
+          {/* Temporary marker placed on double-click during pickup mode (Method 2) */}
+          {dblClickMarker && state.manualPickupMode?.active && (
+            <AdvancedMarker
+              position={{ lat: dblClickMarker.lat, lng: dblClickMarker.lng }}
+              title="Punto de pickup seleccionado"
+            >
+              <Pin
+                background="#7B1FA2"
+                borderColor="#ffffff"
+                glyphColor="#ffffff"
+                scale={1.0}
+              />
+            </AdvancedMarker>
+          )}
 
           {/* Per-vehicle pickup markers — one for each vehicle that has a pickup point */}
           {state.currentStep >= 3 && state.vehicles
@@ -549,16 +639,20 @@ export default function AppMap() {
             )
           })()}
 
-          {/* Manual pickup InfoWindow — shown when user clicks during pickup mode */}
+          {/* Manual pickup InfoWindow — shown for both Method 1 (POI click) and Method 2 (dblclick) */}
           {manualPickupInfo && (
             <InfoWindow
               position={{ lat: manualPickupInfo.lat, lng: manualPickupInfo.lng }}
-              onCloseClick={() => setManualPickupInfo(null)}
+              onCloseClick={() => {
+                setManualPickupInfo(null)
+                setDblClickMarker(null)
+              }}
             >
-              <div style={{ minWidth: 200, maxWidth: 260, fontFamily: 'sans-serif' }}>
+              <div style={{ minWidth: 200, maxWidth: 280, fontFamily: 'sans-serif' }}>
                 {manualPickupInfo.loading ? (
                   <p style={{ fontSize: 13, color: '#374151', margin: 0 }}>Cargando…</p>
-                ) : (
+                ) : manualPickupInfo.source === 'poi' ? (
+                  /* ── Method 1: POI single-click ── */
                   <>
                     {manualPickupInfo.name && (
                       <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 4px', color: '#111827' }}>
@@ -569,9 +663,16 @@ export default function AppMap() {
                       {manualPickupInfo.address}
                     </p>
                     {manualPickupInfo.opening_hours?.length > 0 && (
-                      <p style={{ fontSize: 11, color: '#374151', margin: '0 0 6px' }}>
-                        {manualPickupInfo.opening_hours[0]}
-                      </p>
+                      <details style={{ margin: '0 0 8px', fontSize: 11 }}>
+                        <summary style={{ cursor: 'pointer', color: '#374151', userSelect: 'none' }}>
+                          Ver horarios
+                        </summary>
+                        <div style={{ paddingTop: 4 }}>
+                          {manualPickupInfo.opening_hours.map((h, i) => (
+                            <p key={i} style={{ fontSize: 10, color: '#374151', margin: '2px 0', lineHeight: 1.4 }}>{h}</p>
+                          ))}
+                        </div>
+                      </details>
                     )}
                     {manualPickupInfo.tooFar && (
                       <p style={{ fontSize: 11, color: '#b45309', margin: '0 0 8px', background: '#fffbeb', padding: '4px 6px', borderRadius: 4 }}>
@@ -584,22 +685,90 @@ export default function AppMap() {
                       </p>
                     )}
                     <button
-                      onClick={handleConfirmManualPickup}
+                      onClick={() => handleConfirmManualPickup()}
                       disabled={recalculating}
                       style={{
-                        width:        '100%',
-                        padding:      '7px 12px',
-                        background:   recalculating ? '#374151' : '#111827',
-                        color:        '#fff',
-                        border:       'none',
-                        borderRadius: 6,
-                        fontSize:     12,
-                        fontWeight:   600,
-                        cursor:       recalculating ? 'default' : 'pointer',
+                        width: '100%', padding: '7px 12px',
+                        background: recalculating ? '#374151' : '#111827',
+                        color: '#fff', border: 'none', borderRadius: 6,
+                        fontSize: 12, fontWeight: 600,
+                        cursor: recalculating ? 'default' : 'pointer',
                       }}
                     >
-                      {recalculating ? 'Recalculando…' : 'Confirmar como pickup'}
+                      {recalculating ? 'Recalculando…' : 'Elegir como punto de pickup'}
                     </button>
+                  </>
+                ) : (
+                  /* ── Method 2: double-click (empty road) ── */
+                  <>
+                    <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 4px', color: '#111827' }}>
+                      Punto personalizado
+                    </p>
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 8px', lineHeight: 1.4 }}>
+                      {manualPickupInfo.address}
+                    </p>
+                    {manualPickupInfo.tooFar && (
+                      <p style={{ fontSize: 11, color: '#b45309', margin: '0 0 8px', background: '#fffbeb', padding: '4px 6px', borderRadius: 4 }}>
+                        ⚠ Este punto está a más de 500m de la ruta — se agregará un desvío.
+                      </p>
+                    )}
+                    {manualPickupInfo.error && (
+                      <p style={{ fontSize: 11, color: '#dc2626', margin: '0 0 8px' }}>
+                        {manualPickupInfo.error}
+                      </p>
+                    )}
+                    {manualPickupInfo.nearby_places?.length > 0 ? (
+                      /* Nearby candidates — each has an "Elegir" button */
+                      <div>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: '#374151', margin: '0 0 6px' }}>
+                          Lugares cercanos:
+                        </p>
+                        {manualPickupInfo.nearby_places.map((place, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 8,
+                              marginBottom: 6, padding: '5px 8px',
+                              background: '#f9fafb', borderRadius: 5,
+                              border: '1px solid #e5e7eb',
+                            }}
+                          >
+                            <span style={{ flex: 1, fontSize: 12, color: '#111827', lineHeight: 1.3 }}>
+                              {place.name ?? place.address}
+                            </span>
+                            <button
+                              onClick={() => handleConfirmManualPickup(place)}
+                              disabled={recalculating}
+                              style={{
+                                flexShrink: 0, padding: '4px 10px',
+                                background: recalculating ? '#6b7280' : '#7B1FA2',
+                                color: '#fff', border: 'none', borderRadius: 5,
+                                fontSize: 11, fontWeight: 600,
+                                cursor: recalculating ? 'default' : 'pointer',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {recalculating ? '…' : 'Elegir'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      /* No nearby places — confirm raw coordinates */
+                      <button
+                        onClick={() => handleConfirmManualPickup()}
+                        disabled={recalculating}
+                        style={{
+                          width: '100%', padding: '7px 12px',
+                          background: recalculating ? '#374151' : '#111827',
+                          color: '#fff', border: 'none', borderRadius: 6,
+                          fontSize: 12, fontWeight: 600,
+                          cursor: recalculating ? 'default' : 'pointer',
+                        }}
+                      >
+                        {recalculating ? 'Recalculando…' : 'Confirmar esta ubicación'}
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -687,6 +856,50 @@ export default function AppMap() {
         {/* Center-bottom card showing the chosen meeting point (step 3) */}
         {state.currentStep >= 3 && state.chosenMeetingPoint && (
           <MeetingPointCard />
+        )}
+
+        {/* Floating pickup mode banner — visible while manual pickup mode is active */}
+        {state.manualPickupMode?.active && state.currentStep === 3 && (
+          <div
+            style={{
+              position:        'absolute',
+              top:             68,
+              left:            '50%',
+              transform:       'translateX(-50%)',
+              zIndex:          20,
+              background:      'rgba(17, 24, 39, 0.88)',
+              color:           '#fff',
+              padding:         '9px 16px',
+              borderRadius:    8,
+              fontSize:        12,
+              fontWeight:      500,
+              boxShadow:       '0 2px 10px rgba(0,0,0,0.28)',
+              display:         'flex',
+              alignItems:      'center',
+              gap:             12,
+              whiteSpace:      'nowrap',
+              pointerEvents:   'auto',
+            }}
+          >
+            <span>
+              Click en un lugar para elegirlo como pickup, o doble click en la calle para buscar opciones.
+            </span>
+            <button
+              onClick={() => dispatch({ type: ACTIONS.SET_MANUAL_PICKUP_MODE, payload: { active: false, vehicleId: null } })}
+              style={{
+                background:     'none',
+                border:         'none',
+                color:          '#93c5fd',
+                cursor:         'pointer',
+                fontSize:       12,
+                textDecoration: 'underline',
+                padding:        0,
+                flexShrink:     0,
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
         )}
 
         {/*

@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
-from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, pea_place_info, recalculate_route_with_pickup, simple_route
+from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, pea_place_info, recalculate_route_with_pickup, simple_route, get_place_details
 from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, assign_uber_only, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
@@ -2715,3 +2715,29 @@ def endpoint_simple_route(
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Route calculation failed")
+
+
+# =============================================================================
+# Place details endpoint (POI click — manual pickup selection)
+# =============================================================================
+
+@app.get(
+    "/place-details",
+    summary="Fetch full place details from Places API (New) by place ID",
+    description=(
+        "Called when the user single-clicks a Google Maps POI (gas station, "
+        "restaurant, etc.) during manual pickup selection mode.  The place ID "
+        "comes from the map click event.  Returns name, address, coordinates, "
+        "opening hours, and editorial summary so the frontend can show a "
+        "custom InfoWindow instead of the default Google Maps POI popup."
+    ),
+)
+def endpoint_place_details(
+    place_id: str = Query(..., description="Google Places place ID (e.g. ChIJ...)"),
+):
+    import traceback
+    try:
+        return get_place_details(place_id)
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Could not fetch place details")
