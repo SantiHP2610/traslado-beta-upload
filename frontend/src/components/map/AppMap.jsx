@@ -30,8 +30,8 @@
  * there can conflict with its internal rendering.
  */
 
-import { useMemo, useEffect, useState, useCallback, Fragment } from 'react'
-import { Map, AdvancedMarker, Pin, InfoWindow }      from '@vis.gl/react-google-maps'
+import { useMemo, useEffect, useRef, useState, useCallback, Fragment } from 'react'
+import { Map, AdvancedMarker, Pin, InfoWindow, useMap } from '@vis.gl/react-google-maps'
 import { ChevronLeft }                               from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
 import { useAppState, ACTIONS, VEHICLE_COLORS }       from '../../state/appState'
@@ -153,6 +153,29 @@ function vehicleLabel(v) {
 }
 
 // ---------------------------------------------------------------------------
+// DblClickGateway — native dblclick listener
+// ---------------------------------------------------------------------------
+// Must live inside <Map> to call useMap().  handlerRef.current is swapped on
+// every render so the listener itself (registered once per map instance) always
+// calls the latest handler without re-registering.
+
+function DblClickGateway({ handlerRef }) {
+  const map = useMap()
+  useEffect(() => {
+    if (!map) return
+    const listener = map.addListener('dblclick', (nativeEvent) => {
+      const handler = handlerRef.current
+      if (!handler) return
+      const latLng = nativeEvent.latLng?.toJSON()
+      if (!latLng) return
+      handler({ detail: { latLng, placeId: null } })
+    })
+    return () => google.maps.event.removeListener(listener)
+  }, [map, handlerRef])
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -190,6 +213,10 @@ export default function AppMap() {
 
   // Pickup InfoWindow — stores vehicle id when the user clicks a pickup marker.
   const [pickupIw, setPickupIw] = useState(null)
+
+  // Passed to DblClickGateway; swapped each render so the native listener
+  // always calls the latest handler without re-registering.
+  const dblClickHandlerRef = useRef(null)
 
   // Trigger automatic backend calls on the step 1→2 transition.
   useStepTwo()
@@ -299,6 +326,11 @@ export default function AppMap() {
       })
     }
   }, [state.manualPickupMode, state.currentStep, checkRouteProximity])
+
+  // Keep the ref current so DblClickGateway always invokes the latest handler.
+  dblClickHandlerRef.current = (state.manualPickupMode?.active && state.currentStep === 3)
+    ? handleMapDblClick
+    : null
 
   // When the user confirms a manually selected pickup point.
   // pickupDataOverride can be passed when the user chooses a specific candidate
@@ -496,11 +528,11 @@ export default function AppMap() {
             (state.manualPeaMode    && state.currentStep === 2) ? handleMapClickPea :
             undefined
           }
-          onDblClick={
-            (state.manualPickupMode?.active && state.currentStep === 3) ? handleMapDblClick :
-            undefined
-          }
         >
+          {/* Registers a native dblclick listener on the map — always mounted so
+              the listener is added once and kept alive; the ref gates it. */}
+          <DblClickGateway handlerRef={dblClickHandlerRef} />
+
           <MapBoundsController bounds={bounds} />
 
           {state.staffWithCoords && (

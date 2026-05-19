@@ -67,6 +67,12 @@ function splitAtPE(points, peCoords) {
   return [points.slice(0, splitIdx + 1), points.slice(splitIdx)]
 }
 
+// All polylines are non-clickable so that click/dblclick events on the route
+// pass through to the underlying Map, where the pickup-mode handlers live.
+function makePolyline(opts) {
+  return new google.maps.Polyline({ clickable: false, ...opts })
+}
+
 /**
  * Draws the step-2 preview from state.driverRoutes.
  * Returns an array of created Polyline objects.
@@ -77,11 +83,11 @@ function drawStep2Preview(map, driverRoutes, chosenMeetingPoint, meetingPoint) {
 
   if (!chosenMeetingPoint) {
     // Both routes visible: blue base + red direct
-    lines.push(new google.maps.Polyline({
+    lines.push(makePolyline({
       path: decodePath(base_route.encoded_polyline),
       strokeColor: '#4285F4', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map,
     }))
-    lines.push(new google.maps.Polyline({
+    lines.push(makePolyline({
       path: decodePath(direct_route.encoded_polyline),
       strokeColor: '#EA4335', strokeWeight: PERSONAL_STROKE, strokeOpacity: 0.6, map,
     }))
@@ -96,14 +102,14 @@ function drawStep2Preview(map, driverRoutes, chosenMeetingPoint, meetingPoint) {
     const split  = splitAtPE(points, chosenMeetingPoint)
     if (split) {
       const [leg0, leg1] = split
-      lines.push(new google.maps.Polyline({ path: leg0, strokeColor: '#F9D976', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
-      lines.push(new google.maps.Polyline({ path: leg1, strokeColor: '#E8A317', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
+      lines.push(makePolyline({ path: leg0, strokeColor: '#F9D976', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
+      lines.push(makePolyline({ path: leg1, strokeColor: '#E8A317', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
     } else {
-      lines.push(new google.maps.Polyline({ path: points, strokeColor: '#FBBC04', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
+      lines.push(makePolyline({ path: points, strokeColor: '#FBBC04', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
     }
   } else {
     // PEA chosen: orange direct route
-    lines.push(new google.maps.Polyline({
+    lines.push(makePolyline({
       path: decodePath(direct_route.encoded_polyline),
       strokeColor: '#FF6D00', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map,
     }))
@@ -132,14 +138,14 @@ function drawVehicleRoute(map, vehicle, chosenMeetingPoint, meetingPoint) {
       const split  = splitAtPE(points, chosenMeetingPoint)
       if (split) {
         const [leg0, leg1] = split
-        lines.push(new google.maps.Polyline({ path: leg0, strokeColor: '#F9D976', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
-        lines.push(new google.maps.Polyline({ path: leg1, strokeColor: '#E8A317', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
+        lines.push(makePolyline({ path: leg0, strokeColor: '#F9D976', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
+        lines.push(makePolyline({ path: leg1, strokeColor: '#E8A317', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
       } else {
-        lines.push(new google.maps.Polyline({ path: points, strokeColor: '#FBBC04', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
+        lines.push(makePolyline({ path: points, strokeColor: '#FBBC04', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map }))
       }
     } else {
       // PEA scenario: single orange line
-      lines.push(new google.maps.Polyline({
+      lines.push(makePolyline({
         path: decodePath(encoded),
         strokeColor: '#FF6D00', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map,
       }))
@@ -147,7 +153,7 @@ function drawVehicleRoute(map, vehicle, chosenMeetingPoint, meetingPoint) {
   } else {
     // Uber vehicle: single line in its assigned color
     const color = (VEHICLE_COLORS[vehicle.id] ?? VEHICLE_COLORS.uber_1).route
-    lines.push(new google.maps.Polyline({
+    lines.push(makePolyline({
       path: decodePath(encoded),
       strokeColor: color, strokeWeight: UBER_STROKE, strokeOpacity: 0.8, map,
     }))
