@@ -912,12 +912,12 @@ def pickup_place_info(lat: float, lng: float) -> dict:
     if geo_data.get("status") == "OK" and geo_data.get("results"):
         result["address"] = geo_data["results"][0].get("formatted_address", result["address"])
 
-    # ── 2. Places API searchNearby (100m, no type filter) ───────────────────
+    # ── 2. Places API searchNearby (300m, no type filter) ───────────────────
     places_body = {
         "locationRestriction": {
             "circle": {
                 "center":  {"latitude": lat, "longitude": lng},
-                "radius":  100.0,
+                "radius":  300.0,
             }
         },
         "maxResultCount": 1,

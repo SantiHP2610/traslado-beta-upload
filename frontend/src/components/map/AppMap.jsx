@@ -43,6 +43,7 @@ import RoutePolylines                    from './RoutePolylines'
 import MeetingPointMarkers               from './MeetingPointMarkers'
 import EventMarker                       from './EventMarker'
 import PickupCandidateMarkers            from './PickupCandidateMarkers'
+import PickupHoverIndicator              from './PickupHoverIndicator'
 import Sidebar                           from '../panels/Sidebar'
 import UnassignedPanel                   from '../panels/UnassignedPanel'
 import AssignmentSummaryPanel            from '../panels/AssignmentSummaryPanel'
@@ -440,6 +441,8 @@ export default function AppMap() {
           {state.staffWithCoords && <EventMarker />}
 
           {state.activePickupResult && <PickupCandidateMarkers />}
+
+          <PickupHoverIndicator />
 
           {/* Per-vehicle pickup markers — one for each vehicle that has a pickup point */}
           {state.currentStep >= 3 && state.vehicles
