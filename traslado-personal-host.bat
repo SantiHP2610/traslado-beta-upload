@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 echo.
 echo  ============================================
-echo   App Traslado Personal -- Setup y arranque
+echo   App Traslado Personal -- Desarrollo
 echo  ============================================
 echo.
 
@@ -46,7 +46,7 @@ if not exist "venv\" (
     echo [1/4] Creando entorno virtual...
     python -m venv venv
 ) else (
-    echo [1/4] Entorno virtual ya existe, omitiendo creacion.
+    echo [1/4] Entorno virtual OK.
 )
 
 :: Activar venv
@@ -54,15 +54,15 @@ call venv\Scripts\activate.bat
 
 :: Instalar dependencias Python
 echo.
-echo [2/4] Instalando dependencias de Python...
-pip install -r requirements.txt
+echo [2/4] Verificando dependencias de Python...
+pip install -r requirements.txt --quiet
 if errorlevel 1 ( echo [ERROR] Fallo pip install. & pause & exit /b 1 )
 
 :: Instalar dependencias frontend
 echo.
-echo [3/4] Instalando dependencias del frontend...
+echo [3/4] Verificando dependencias del frontend...
 cd frontend
-call npm install
+call npm install --silent
 if errorlevel 1 ( echo [ERROR] Fallo npm install. & pause & exit /b 1 )
 cd ..
 
@@ -71,7 +71,7 @@ echo.
 echo [4/4] Generando Excel de prueba...
 python _generar_excel.py
 
-:: Arrancar backend en ventana nueva (con venv activado)
+:: Arrancar backend en ventana nueva
 echo.
 echo  Abriendo backend (uvicorn)...
 start "Backend - App Traslado" cmd /k "call venv\Scripts\activate.bat && uvicorn main:app --reload"
@@ -80,12 +80,14 @@ start "Backend - App Traslado" cmd /k "call venv\Scripts\activate.bat && uvicorn
 echo  Abriendo frontend (npm dev)...
 start "Frontend - App Traslado" cmd /k "cd frontend && npm run dev"
 
-:: Esperar a que el frontend levante y abrir el navegador
+:: Esperar y abrir navegador
 echo  Esperando que el frontend levante...
 timeout /t 5 /nobreak >nul
 start http://localhost:5173
 
 echo.
-echo  Todo listo.
+echo  Todo listo. Modo desarrollo activo.
+echo  Backend: http://localhost:8000
+echo  Frontend: http://localhost:5173
 echo.
 pause

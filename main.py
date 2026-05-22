@@ -2741,3 +2741,11 @@ def endpoint_place_details(
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Could not fetch place details")
+
+import os as _os
+from pathlib import Path as _Path
+
+_dist = _Path(__file__).parent / "frontend" / "dist"
+if _dist.exists() and _os.getenv("SERVE_FRONTEND", "false").lower() == "true":
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")

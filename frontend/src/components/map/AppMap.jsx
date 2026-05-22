@@ -733,11 +733,10 @@ export default function AppMap() {
                 ) : (
                   /* ── Method 2: double-click (empty road) ── */
                   <>
-                    <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 4px', color: '#111827' }}>
-                      Punto personalizado
-                    </p>
-                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 8px', lineHeight: 1.4 }}>
-                      {manualPickupInfo.address}
+                    {/* Primary action: exact clicked point */}
+                    <p style={{ fontSize: 13, fontWeight: 500, margin: '0 0 8px', color: '#111827', lineHeight: 1.4 }}>
+                      📍 {manualPickupInfo.address
+                            || `${manualPickupInfo.lat.toFixed(5)}, ${manualPickupInfo.lng.toFixed(5)}`}
                     </p>
                     {manualPickupInfo.tooFar && (
                       <p style={{ fontSize: 11, color: '#b45309', margin: '0 0 8px', background: '#fffbeb', padding: '4px 6px', borderRadius: 4 }}>
@@ -749,12 +748,33 @@ export default function AppMap() {
                         {manualPickupInfo.error}
                       </p>
                     )}
+                    <button
+                      onClick={() => handleConfirmManualPickup({ ...manualPickupInfo, name: 'Punto personalizado' })}
+                      disabled={recalculating}
+                      style={{
+                        width: '100%', padding: '8px 12px',
+                        background: recalculating ? '#374151' : '#111827',
+                        color: '#fff', border: 'none', borderRadius: 6,
+                        fontSize: 13, fontWeight: 600,
+                        cursor: recalculating ? 'default' : 'pointer',
+                        marginBottom: 12,
+                      }}
+                    >
+                      {recalculating ? 'Recalculando…' : 'Elegir esta ubicación'}
+                    </button>
+
+                    {/* Divider with "Lugares cercanos" label */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <div style={{ flex: 1, height: 1, background: '#e5e7eb' }} />
+                      <span style={{ fontSize: 10, color: '#9ca3af', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                        Lugares cercanos
+                      </span>
+                      <div style={{ flex: 1, height: 1, background: '#e5e7eb' }} />
+                    </div>
+
+                    {/* Secondary: nearby places or empty state */}
                     {manualPickupInfo.nearby_places?.length > 0 ? (
-                      /* Nearby candidates — each has an "Elegir" button */
                       <div>
-                        <p style={{ fontSize: 11, fontWeight: 600, color: '#374151', margin: '0 0 6px' }}>
-                          Lugares cercanos:
-                        </p>
                         {manualPickupInfo.nearby_places.map((place, i) => (
                           <div
                             key={i}
@@ -786,20 +806,9 @@ export default function AppMap() {
                         ))}
                       </div>
                     ) : (
-                      /* No nearby places — confirm raw coordinates */
-                      <button
-                        onClick={() => handleConfirmManualPickup()}
-                        disabled={recalculating}
-                        style={{
-                          width: '100%', padding: '7px 12px',
-                          background: recalculating ? '#374151' : '#111827',
-                          color: '#fff', border: 'none', borderRadius: 6,
-                          fontSize: 12, fontWeight: 600,
-                          cursor: recalculating ? 'default' : 'pointer',
-                        }}
-                      >
-                        {recalculating ? 'Recalculando…' : 'Confirmar esta ubicación'}
-                      </button>
+                      <p style={{ fontSize: 12, color: '#9ca3af', margin: 0, textAlign: 'center' }}>
+                        No se encontraron lugares cercanos
+                      </p>
                     )}
                   </>
                 )}

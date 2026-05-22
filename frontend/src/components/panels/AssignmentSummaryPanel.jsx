@@ -264,7 +264,7 @@ function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
                     {ptName ? `Pickup — ${ptName}` : 'Pickup'}
                   </p>
                   {ptAddr && ptAddr !== ptName && (
-                    <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 6px', lineHeight: 1.4 }}>
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 6px', lineHeight: 1.4 }}>
                       {ptAddr}
                     </p>
                   )}
