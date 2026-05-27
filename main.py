@@ -167,6 +167,22 @@ _excel_path        = _DEFAULT_EXCEL_PATH
 # Used to skip cache_clear() when the same file is uploaded again.
 _current_file_hash: str | None = None
 
+# Directory containing bundled test Excel files.
+_SAMPLE_DIR = BASE_DIR / "sample_data"
+
+# Ordered list of test cases available from sample_data/.
+# Each entry maps a filename to the display label shown in the frontend dropdown.
+_TEST_CASES = [
+    {"filename": "evento_prueba.xlsx",     "label": "Evento de prueba (base)"},
+    {"filename": "caso_charter.xlsx",      "label": "Caso: grupo grande (charter)"},
+    {"filename": "caso_equipo_chico.xlsx", "label": "Caso: equipo chico"},
+    {"filename": "caso_pe_norte.xlsx",     "label": "Caso: PE Norte (Puente Saavedra)"},
+    {"filename": "caso_pe_sur.xlsx",       "label": "Caso: PE Sur (Caballito)"},
+    {"filename": "caso_random_1.xlsx",     "label": "Caso aleatorio 1"},
+    {"filename": "caso_random_2.xlsx",     "label": "Caso aleatorio 2"},
+    {"filename": "caso_sin_auto.xlsx",     "label": "Caso: sin auto personal"},
+]
+
 
 # -----------------------------------------------------------------------------
 # Internal helpers shared by all endpoints that need the Excel data
@@ -259,6 +275,18 @@ def endpoint_cache_clear():
     return {"deleted": deleted, "message": f"Cleared {deleted} cached entries."}
 
 
+@app.get(
+    "/test-files",
+    summary="List available test Excel files",
+    description="Returns the ordered list of bundled test cases that exist on disk.",
+)
+def endpoint_test_files():
+    return [
+        tc for tc in _TEST_CASES
+        if (_SAMPLE_DIR / tc["filename"]).exists()
+    ]
+
+
 @app.post(
     "/upload-excel",
     summary="Upload an event Excel file (or reset to the test file)",
@@ -271,7 +299,8 @@ def endpoint_cache_clear():
 )
 async def endpoint_upload_excel(
     file: Optional[UploadFile] = File(None),
-    use_test_file: bool = Query(False, description="Reset to the bundled test Excel instead of uploading"),
+    use_test_file: bool = Query(False, description="Reset to the bundled default test Excel"),
+    test_file: Optional[str] = Query(None, description="Filename of a specific test case in sample_data/"),
 ):
     """
     Workflow when file is provided:
@@ -284,14 +313,45 @@ async def endpoint_upload_excel(
            and routes change per event; same file re-uploaded keeps cache valid).
         6. Return a brief event_summary for the frontend to display.
 
+    Workflow when test_file=<filename> (no file body):
+        1. Validate the filename (no path traversal, must exist in sample_data/).
+        2. Set _excel_path to that specific test case.
+        3. Do NOT clear the API cache — test files are stable.
+        4. Return the same event_summary format.
+
     Workflow when use_test_file=true (no file):
-        1. Reset _excel_path to the bundled test Excel.
+        1. Reset _excel_path to the bundled default test Excel.
         2. Do NOT clear the API cache — test file is always the same.
         3. Return the same event_summary format from the test file.
     """
     global _excel_path, _current_file_hash
 
-    # ── Reset to test file ────────────────────────────────────────────────
+    # ── Load a specific named test case ──────────────────────────────────
+    if test_file is not None:
+        # Reject path traversal attempts: no separators, no "..", must be .xlsx/.xls
+        if "/" in test_file or "\\" in test_file or ".." in test_file:
+            raise HTTPException(status_code=422, detail="Nombre de archivo inválido.")
+        if not test_file.lower().endswith((".xlsx", ".xls")):
+            raise HTTPException(status_code=422, detail="Solo se aceptan archivos .xlsx o .xls")
+        full_path = _SAMPLE_DIR / test_file
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail=f"Archivo de prueba no encontrado: {test_file}")
+        _excel_path = full_path
+        data  = _load_excel()
+        event = data["event"]
+        return {
+            "status": "ok",
+            "source": "test_file",
+            "event_summary": {
+                "tipo":        event.get("tipo"),
+                "fecha":       event.get("fecha"),
+                "hora_inicio": event.get("hora_inicio"),
+                "comensales":  event.get("comensales"),
+                "staff_count": len(data["staff"]),
+            },
+        }
+
+    # ── Reset to default test file ────────────────────────────────────────
     if use_test_file or file is None:
         _excel_path = _DEFAULT_EXCEL_PATH
         # Do NOT call cache_clear() here: the test file never changes, so all

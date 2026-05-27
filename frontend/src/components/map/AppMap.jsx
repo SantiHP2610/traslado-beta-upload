@@ -32,7 +32,7 @@
 
 import { useMemo, useEffect, useRef, useState, useCallback, Fragment } from 'react'
 import { Map, AdvancedMarker, Pin, InfoWindow, useMap } from '@vis.gl/react-google-maps'
-import { ChevronLeft }                               from 'lucide-react'
+import { ChevronLeft, Car }                           from 'lucide-react'
 import polyline                                      from '@mapbox/polyline'
 import { useAppState, ACTIONS, VEHICLE_COLORS }       from '../../state/appState'
 import { pickupPlaceInfo, recalculateRouteWithPickup, peaPlaceInfo, placeDetails } from '../../api/endpoints'
@@ -47,6 +47,7 @@ import PickupHoverIndicator              from './PickupHoverIndicator'
 import Sidebar                           from '../panels/Sidebar'
 import UnassignedPanel                   from '../panels/UnassignedPanel'
 import AssignmentSummaryPanel            from '../panels/AssignmentSummaryPanel'
+import CharterPanel                      from '../panels/CharterPanel'
 import MeetingPointCard                  from '../panels/MeetingPointCard'
 import ConfirmationModal                 from '../panels/ConfirmationModal'
 import FinalOutputBlocks                 from '../panels/FinalOutputBlocks'
@@ -480,6 +481,7 @@ export default function AppMap() {
   const overlayActive   = state.showModal || state.showOutput
   const showSidebar     = state.currentStep <= 2 && !overlayActive
   const showStep3Panels = state.currentStep === 3 && !overlayActive
+  const isCharter       = state.remainingPool?.status === 'charter'
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -494,7 +496,7 @@ export default function AppMap() {
     >
       {/* ── Left panel slot ──────────────────────────────────────────────── */}
       {showSidebar     && <Sidebar />}
-      {showStep3Panels && <UnassignedPanel />}
+      {showStep3Panels && (isCharter ? <CharterPanel /> : <UnassignedPanel />)}
 
       {/* ── Map area (always present, flex:1) ────────────────────────────── */}
       {/*
@@ -552,19 +554,26 @@ export default function AppMap() {
           <PickupHoverIndicator />
 
           {/* Temporary marker placed on double-click during pickup mode (Method 2) */}
-          {dblClickMarker && state.manualPickupMode?.active && (
-            <AdvancedMarker
-              position={{ lat: dblClickMarker.lat, lng: dblClickMarker.lng }}
-              title="Punto de pickup seleccionado"
-            >
-              <Pin
-                background="#7B1FA2"
-                borderColor="#ffffff"
-                glyphColor="#ffffff"
-                scale={1.0}
-              />
-            </AdvancedMarker>
-          )}
+          {dblClickMarker && state.manualPickupMode?.active && (() => {
+            const vid = state.manualPickupMode.vehicleId ?? 'personal'
+            const tempColor = (VEHICLE_COLORS[vid] ?? VEHICLE_COLORS.uber_1).pickup
+            return (
+              <AdvancedMarker
+                position={{ lat: dblClickMarker.lat, lng: dblClickMarker.lng }}
+                title="Punto de pickup seleccionado"
+              >
+                <div style={{
+                  width: 36, height: 36, borderRadius: 8,
+                  backgroundColor: tempColor,
+                  border: '2px solid white',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Car size={18} color="white" />
+                </div>
+              </AdvancedMarker>
+            )
+          })()}
 
           {/* Per-vehicle pickup markers — one for each vehicle that has a pickup point */}
           {state.currentStep >= 3 && state.vehicles
@@ -579,12 +588,15 @@ export default function AppMap() {
                     title={`Pickup: ${pt.place_name}`}
                     onClick={() => setPickupIw(v.id)}
                   >
-                    <Pin
-                      background={pickupColor}
-                      borderColor="#ffffff"
-                      glyphColor="#ffffff"
-                      scale={1.3}
-                    />
+                    <div style={{
+                      width: 36, height: 36, borderRadius: 8,
+                      backgroundColor: pickupColor,
+                      border: '2px solid white',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <Car size={18} color="white" />
+                    </div>
                   </AdvancedMarker>
 
                   {pickupIw === v.id && (
@@ -997,7 +1009,7 @@ export default function AppMap() {
       </div>
 
       {/* ── Right panel slot ─────────────────────────────────────────────── */}
-      {showStep3Panels && <AssignmentSummaryPanel />}
+      {showStep3Panels && !isCharter && <AssignmentSummaryPanel />}
 
       {/* ── Step 4 overlays (position:fixed — independent of flex layout) ── */}
       {state.showModal  && <ConfirmationModal />}

@@ -45,8 +45,9 @@
  */
 
 import { useEffect, useState }              from 'react'
-import { AdvancedMarker, InfoWindow, Pin,
+import { AdvancedMarker, InfoWindow,
          useMapsLibrary }                   from '@vis.gl/react-google-maps'
+import { Star }                             from 'lucide-react'
 import polyline                             from '@mapbox/polyline'
 import { useAppState, ACTIONS }             from '../../state/appState'
 import { Card, CardContent }               from '@/components/ui/card'
@@ -181,27 +182,34 @@ export default function EventMarker() {
   return (
     <>
       {/*
-        Red pin (#EA4335) — standard Google Maps destination red.
-        Immediately identifies the event venue as the destination.
-        title is the tooltip shown on desktop hover.
+        Diamond shape (#EA4335) — immediately identifies the event venue.
+        The 44×44 wrapper ensures the bottom vertex of the rotated square
+        aligns with the AdvancedMarker's default bottom-center anchor point.
+        The Star icon is counter-rotated so it reads upright.
       */}
       <AdvancedMarker
         position={state.eventCoords}
         title="Evento"
         onClick={() => setIsOpen((v) => !v)}
       >
-        <Pin
-          background="#EA4335"
-          borderColor="#c5221f"
-          glyphColor="#ffffff"
-        />
+        <div style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{
+            width: 32, height: 32,
+            transform: 'rotate(45deg)',
+            backgroundColor: '#EA4335',
+            border: '2px solid white',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Star size={16} color="white" style={{ transform: 'rotate(-45deg)', flexShrink: 0 }} />
+          </div>
+        </div>
       </AdvancedMarker>
 
       {isOpen && (
         <InfoWindow
           position={state.eventCoords}
-          // pixelOffset shifts the card above the pin so it doesn't overlap it.
-          pixelOffset={[0, -40]}
+          pixelOffset={[0, -48]}
           onCloseClick={() => setIsOpen(false)}
           shouldFocus={false}
         >

@@ -155,3 +155,12 @@ LOADING_TIME_MINUTES = 50  # Default suggested loading time at the CP (minutes).
 LONG_EVENT_EXTRA_HOURS = 2
 LONG_EVENT_DURATION_THRESHOLD = 8   # event duration in hours that triggers extra prep
 PICADA_GUEST_THRESHOLD = 100        # guest count that triggers extra prep
+
+# --- Charter service contacts ---
+# Shown in CharterPanel when the remaining staff pool exceeds CHARTER_THRESHOLD.
+# Each entry has a display name and a phone number.
+CHARTER_PHONE_LIST = [
+    {"name": "Transfer Express",    "phone": "(011) 4555-0100"},
+    {"name": "Buenos Aires Bus",    "phone": "(011) 4314-5555"},
+    {"name": "Chevallier Integral", "phone": "(011) 4000-5255"},
+]

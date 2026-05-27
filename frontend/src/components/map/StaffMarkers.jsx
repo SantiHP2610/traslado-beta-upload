@@ -54,7 +54,8 @@
  */
 
 import { useState, useMemo, useEffect, useRef }  from 'react'
-import { AdvancedMarker, InfoWindow, Pin }        from '@vis.gl/react-google-maps'
+import { AdvancedMarker, InfoWindow }             from '@vis.gl/react-google-maps'
+import { User }                                   from 'lucide-react'
 import { useAppState, ACTIONS, isVehicleFull }    from '../../state/appState'
 import { geocodeAddress as geocodeAddressApi }    from '../../api/endpoints'
 import { Card, CardContent }                      from '@/components/ui/card'
@@ -92,42 +93,21 @@ function capacityInfo(v) {
 // ---------------------------------------------------------------------------
 
 /**
- * Derives { background, borderColor, glyphColor } from a hex background.
- * Border is 72% brightness of the background.
- * Glyph is dark (#1a1a1a) on light backgrounds, white on dark.
- */
-function pinColorsFromHex(hex) {
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  const luminance  = 0.299 * r + 0.587 * g + 0.114 * b
-  const glyphColor = luminance > 128 ? '#1a1a1a' : '#ffffff'
-  const dr = Math.round(r * 0.72).toString(16).padStart(2, '0')
-  const dg = Math.round(g * 0.72).toString(16).padStart(2, '0')
-  const db = Math.round(b * 0.72).toString(16).padStart(2, '0')
-  return { background: hex, borderColor: `#${dr}${dg}${db}`, glyphColor }
-}
-
-const BLUE_COLORS   = { background: '#4285F4', borderColor: '#2a6dd9', glyphColor: '#ffffff' }
-const GREEN_COLORS  = { background: '#34A853', borderColor: '#1a6e2e', glyphColor: '#ffffff' }
-const FRESCOS_COLORS = { background: '#B0C4DE', borderColor: '#8aabbf', glyphColor: '#ffffff' }
-
-/**
- * Returns Pin color props for an employee based on the current vehicles model.
+ * Returns the background hex color for an employee marker based on the current vehicles model.
  * Only called in step 3+ when vehicles is non-empty.
  */
-function getMarkerColors(employee, vehicles) {
+function getMarkerBg(employee, vehicles) {
   const name = fullName(employee)
 
   const personal = vehicles.find(v => v.type === 'personal')
-  if (personal?.driver === name) return GREEN_COLORS
+  if (personal?.driver === name) return '#34A853'
 
   for (const v of vehicles) {
-    if (v.pickup.passengers.includes(name)) return pinColorsFromHex(v.color.pickup)
-    if (v.passengers_pe.includes(name))     return pinColorsFromHex(v.color.passengers)
+    if (v.pickup.passengers.includes(name)) return v.color.pickup
+    if (v.passengers_pe.includes(name))     return v.color.passengers
   }
 
-  return BLUE_COLORS
+  return '#4285F4'
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +289,7 @@ function StaffMarker({
   override,         // { lat, lng, source } | undefined
   isEditing,        // bool — true when this is the active edit-mode marker
   isFrescosAssigned,
-  colors,
+  bgColor,
   onMarkerClick,    // (name: string) => void
   dispatch,
 }) {
@@ -331,23 +311,24 @@ function StaffMarker({
     })
   }
 
-  // ── Pin element ──────────────────────────────────────────────────────────
-  // Three variants:
-  //   1. Frescos-assigned: 0.6 opacity wrapper (non-interactive feel)
-  //   2. Overridden:       normal Pin + small white badge dot (signals move)
-  //   3. Default:          normal Pin, no decoration
-  // All three branches share the same root element type (<div>) so React can
-  // reconcile between states without unmounting.  If the default branch used
-  // a bare <Pin/> (no wrapper), switching from override→default would change
-  // the root element type inside AdvancedMarker, forcing React to unmount and
-  // remount the node — which conflicts with AdvancedMarker's own DOM management
-  // and causes the "removeChild on Node" crash.
+  // ── Marker element ────────────────────────────────────────────────────────
+  // Circular div with a User icon. Root is always a <div> so React can
+  // reconcile across all state variants without unmounting the AdvancedMarker
+  // node (which would trigger the "removeChild on Node" crash in the Maps API).
   const pinEl = (
     <div style={{
       position: 'relative', display: 'inline-block',
       opacity: isFrescosAssigned ? 0.6 : 1,
     }}>
-      <Pin background={colors.background} borderColor={colors.borderColor} glyphColor={colors.glyphColor} />
+      <div style={{
+        width: 32, height: 32, borderRadius: '50%',
+        backgroundColor: bgColor,
+        border: '2px solid white',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <User size={16} color="white" />
+      </div>
       {/* Override indicator — white dot with dark border, top-right badge */}
       {override && (
         <div style={{
@@ -473,7 +454,7 @@ function VehicleSubMenu({ vehicle, employeeName, expanded, onToggle, dispatch, o
               }}
               style={{
                 fontSize:   12,
-                color:      '#7B1FA2',
+                color:      vehicle.color.pickup,
                 background: 'none',
                 border:     'none',
                 cursor:     'pointer',
@@ -644,13 +625,13 @@ export default function StaffMarkers({ staff }) {
         const isFrescosAssigned = isStep3Plus && frescosAssignedNames.has(key.toLowerCase().trim())
         const override        = coordinateOverrides?.[key]
 
-        let colors
+        let bgColor
         if (isFrescosAssigned) {
-          colors = FRESCOS_COLORS
+          bgColor = '#B0C4DE'
         } else if (isStep3Plus && vehicles.length > 0) {
-          colors = getMarkerColors(employee, vehicles)
+          bgColor = getMarkerBg(employee, vehicles)
         } else {
-          colors = BLUE_COLORS
+          bgColor = '#4285F4'
         }
 
         return (
@@ -660,7 +641,7 @@ export default function StaffMarkers({ staff }) {
             override={override}
             isEditing={editingMarker === key}
             isFrescosAssigned={isFrescosAssigned}
-            colors={colors}
+            bgColor={bgColor}
             onMarkerClick={handleMarkerClick}
             dispatch={dispatch}
           />

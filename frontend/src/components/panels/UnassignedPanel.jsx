@@ -125,7 +125,7 @@ function VehicleOption({ vehicle, employeeName, dispatch, onClose }) {
               }}
               style={{
                 fontSize:   12,
-                color:      '#7B1FA2',
+                color:      vehicle.color.pickup,
                 background: 'none',
                 border:     'none',
                 cursor:     'pointer',

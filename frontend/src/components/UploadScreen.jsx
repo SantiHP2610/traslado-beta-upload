@@ -20,12 +20,12 @@
  *   "error"         — red X, error message, "Intentar nuevamente" link
  */
 
-import { useRef, useState }        from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { Upload, FolderOpen,
-         CheckCircle2, XCircle }   from 'lucide-react'
-import { useAppState, ACTIONS }    from '../state/appState'
-import { uploadExcel, useTestExcel } from '../api/endpoints'
-import { Button }                  from '@/components/ui/button'
+         CheckCircle2, XCircle }       from 'lucide-react'
+import { useAppState, ACTIONS }        from '../state/appState'
+import { uploadExcel, getTestFiles, loadTestCase } from '../api/endpoints'
+import { Button }                      from '@/components/ui/button'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,10 +103,21 @@ export default function UploadScreen() {
   const [errorMessage, setErrorMessage] = useState(null)
   const [successData,  setSuccessData]  = useState(null)
 
-  // Separate loading flag for the "test file" button so it doesn't conflict
-  // with the main drop-zone state machine
-  const [testLoading,  setTestLoading]  = useState(false)
-  const [testError,    setTestError]    = useState(null)
+  // Test-case dropdown state — separate from the main drop-zone state machine
+  const [testCases,         setTestCases]         = useState([])
+  const [selectedTestFile,  setSelectedTestFile]  = useState('')
+  const [testCaseLoading,   setTestCaseLoading]   = useState(false)
+  const [testCaseError,     setTestCaseError]     = useState(null)
+
+  // Load available test cases from the backend on mount.
+  useEffect(() => {
+    getTestFiles()
+      .then((cases) => {
+        setTestCases(cases)
+        if (cases.length > 0) setSelectedTestFile(cases[0].filename)
+      })
+      .catch(() => {})   // non-critical — the section simply won't render
+  }, [])
 
   // ── Core upload logic ────────────────────────────────────────────────────
 
@@ -184,27 +195,28 @@ export default function UploadScreen() {
     e.target.value = ''
   }
 
-  // ── Test file ────────────────────────────────────────────────────────────
+  // ── Test case loader ──────────────────────────────────────────────────────
 
-  async function handleTestFile() {
-    setTestLoading(true)
-    setTestError(null)
+  async function handleLoadTestCase() {
+    if (!selectedTestFile) return
+    setTestCaseLoading(true)
+    setTestCaseError(null)
     try {
-      const result = await useTestExcel()
-      // On success, skip the upload-screen summary and go directly to map
+      const result = await loadTestCase(selectedTestFile)
+      // Skip the upload-screen summary and go directly to map
       dispatch({
         type:    ACTIONS.SET_FILE_UPLOADED,
         payload: { uploaded: true, summary: result.event_summary ?? null },
       })
     } catch (err) {
       const detail = err?.response?.data?.detail
-      setTestError(
+      setTestCaseError(
         typeof detail === 'string'
           ? detail
           : (err?.message ?? 'Error al cargar el archivo de prueba.')
       )
     } finally {
-      setTestLoading(false)
+      setTestCaseLoading(false)
     }
   }
 
@@ -368,24 +380,46 @@ export default function UploadScreen() {
             <div className="flex-1 border-t border-gray-200" />
           </div>
 
-          {/* Test file button */}
-          <div className="text-center">
-            <button
-              disabled={testLoading}
-              onClick={handleTestFile}
-              className="
-                rounded border border-gray-200 px-3 py-1.5
-                text-xs text-gray-500 transition-colors
-                hover:border-gray-300 hover:text-gray-700
-                disabled:cursor-default disabled:opacity-50
-              "
-            >
-              {testLoading ? 'Cargando...' : 'Usar Excel de prueba'}
-            </button>
-            {testError && (
-              <p className="mt-1 text-xs text-red-600">{testError}</p>
-            )}
-          </div>
+          {/* Test case dropdown — only shown when test cases loaded from backend */}
+          {testCases.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-center text-xs text-gray-400">o usá un caso de prueba</p>
+              <div className="flex gap-2">
+                <select
+                  value={selectedTestFile}
+                  onChange={(e) => setSelectedTestFile(e.target.value)}
+                  disabled={testCaseLoading}
+                  className="
+                    flex-1 rounded border border-gray-200 bg-white px-2 py-1.5
+                    text-xs text-gray-600
+                    focus:border-blue-300 focus:outline-none
+                    disabled:cursor-default disabled:opacity-50
+                  "
+                >
+                  {testCases.map((tc) => (
+                    <option key={tc.filename} value={tc.filename}>
+                      {tc.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  disabled={testCaseLoading || !selectedTestFile}
+                  onClick={handleLoadTestCase}
+                  className="
+                    rounded border border-gray-200 px-3 py-1.5
+                    text-xs text-gray-600 transition-colors
+                    hover:border-gray-300 hover:bg-gray-50
+                    disabled:cursor-default disabled:opacity-50
+                  "
+                >
+                  {testCaseLoading ? 'Cargando...' : 'Cargar'}
+                </button>
+              </div>
+              {testCaseError && (
+                <p className="text-xs text-red-600">{testCaseError}</p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

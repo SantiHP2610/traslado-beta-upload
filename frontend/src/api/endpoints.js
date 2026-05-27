@@ -61,6 +61,29 @@ export async function useTestExcel() {
   return response.data
 }
 
+/**
+ * Returns the ordered list of available test cases from sample_data/.
+ * Only files that actually exist on disk are returned.
+ * @returns {Array<{ filename: string, label: string }>}
+ */
+export async function getTestFiles() {
+  const response = await client.get('/test-files')
+  return response.data
+}
+
+/**
+ * Loads a specific bundled test case by filename and sets it as the active Excel.
+ * Skips the upload summary screen — goes directly to the map flow.
+ * @param {string} filename  e.g. "caso_charter.xlsx"
+ * @returns {{ status: string, source: string, event_summary: object }}
+ */
+export async function loadTestCase(filename) {
+  const response = await client.post('/upload-excel', null, {
+    params: { test_file: filename },
+  })
+  return response.data
+}
+
 // ---------------------------------------------------------------------------
 // Step 1 — Excel data
 // ---------------------------------------------------------------------------

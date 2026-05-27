@@ -292,7 +292,7 @@ export default function MeetingPointMarkers() {
               // map must always be findable at a glance.
               borderColor={peChosen ? '#ffffff' : peColors.border}
               glyphColor={peColors.glyph}
-              glyph={peChosen ? '✓' : ''}
+              glyph={peChosen ? '✓' : 'PE'}
               scale={peChosen ? 1.4 : 1.0}
             />
           </AdvancedMarker>
