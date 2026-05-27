@@ -23,7 +23,7 @@ RUN cd frontend && npm install
 
 COPY . .
 
-RUN cd frontend && npm run build
+RUN echo "VITE_KEY=${VITE_GOOGLE_MAPS_API_KEY}" && cd frontend && npm run build
 
 EXPOSE 8080
 
