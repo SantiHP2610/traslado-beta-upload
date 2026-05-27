@@ -2746,6 +2746,11 @@ import os as _os
 from pathlib import Path as _Path
 
 _dist = _Path(__file__).parent / "frontend" / "dist"
+print(f"[STARTUP] frontend/dist exists: {_dist.exists()}")
+print(f"[STARTUP] SERVE_FRONTEND: {_os.getenv('SERVE_FRONTEND', 'NOT SET')}")
 if _dist.exists() and _os.getenv("SERVE_FRONTEND", "false").lower() == "true":
     from fastapi.staticfiles import StaticFiles
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")
+    print("[STARTUP] Static frontend mounted on /")
+else:
+    print("[STARTUP] Static frontend NOT mounted")
