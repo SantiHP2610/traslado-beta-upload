@@ -103,10 +103,14 @@ function FrescosSummary({ frescosResult, secondMiniflete, remainingPool, persona
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Segundo miniflete
         </p>
-        <p className={secondMiniflete.needs_second_miniflete ? 'font-medium text-amber-600' : 'text-muted-foreground'}>
-          {secondMiniflete.needs_second_miniflete ? 'Sí requerido' : 'No requerido'}
-        </p>
-        <p className="text-xs text-muted-foreground">{secondMiniflete.reason}</p>
+        {secondMiniflete && (
+          <>
+            <p className={secondMiniflete.needs_second_miniflete ? 'font-medium text-amber-600' : 'text-muted-foreground'}>
+              {secondMiniflete.needs_second_miniflete ? 'Sí requerido' : 'No requerido'}
+            </p>
+            <p className="text-xs text-muted-foreground">{secondMiniflete.reason}</p>
+          </>
+        )}
       </div>
 
       {/* Remaining pool */}
