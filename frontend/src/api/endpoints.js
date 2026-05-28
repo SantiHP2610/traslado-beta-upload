@@ -132,11 +132,14 @@ export async function geocodeAddress(address) {
 
 /**
  * Returns the nearest of the 3 fixed staging points (PE) to the event venue.
- * @returns {{ name: string, address: string, lat: number, lng: number,
- *             duration_seconds: number, distance_meters: number, ... }}
+ * When all=true, returns { recommended, alternatives[] } with all 3 PEs sorted
+ * by travel time so the manager can choose when the event is inside CABA.
+ * @param {boolean} [all=false]
+ * @returns {{ name, address, lat, lng, duration_seconds, ... } | { recommended, alternatives[] }}
  */
-export async function nearestMeetingPoint() {
-  const response = await client.get('/nearest-meeting-point')
+export async function nearestMeetingPoint(all = false) {
+  const params = all ? { all: true } : {}
+  const response = await client.get('/nearest-meeting-point', { params })
   return response.data
 }
 

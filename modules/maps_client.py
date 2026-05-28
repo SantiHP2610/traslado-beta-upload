@@ -435,7 +435,7 @@ def compute_route_matrix(
     return result
 
 
-def nearest_meeting_point(event_coordinates: dict) -> dict:
+def nearest_meeting_point(event_coordinates: dict, return_all: bool = False) -> dict:
     """
     Finds which of the three predefined CABA meeting points is closest
     (by driving time) to the event venue.
@@ -507,20 +507,35 @@ def nearest_meeting_point(event_coordinates: dict) -> dict:
             "No reachable meeting point found for the given event coordinates."
         )
 
-    # Build the result by merging the meeting point's metadata with the
-    # travel data the API returned for that specific origin/destination pair
-    winning_point   = MEETING_POINTS[best_index]
-    winning_element = elements[best_index]
+    def _enrich(mp, elem):
+        return {
+            "name":             mp["name"],
+            "address":          mp["address"],
+            "lat":              mp["lat"],
+            "lng":              mp["lng"],
+            "duration_seconds": elem["duration"]["value"],
+            "duration_text":    elem["duration"]["text"],
+            "distance_meters":  elem["distance"]["value"],
+            "distance_text":    elem["distance"]["text"],
+        }
 
+    if not return_all:
+        # Default: return only the nearest meeting point (existing behaviour).
+        return _enrich(MEETING_POINTS[best_index], elements[best_index])
+
+    # return_all=True: return all reachable points sorted nearest-first,
+    # with the recommended one (nearest) separated from the rest.
+    all_points = sorted(
+        [
+            _enrich(MEETING_POINTS[i], elements[i])
+            for i, elem in enumerate(elements)
+            if elem["status"] == "OK"
+        ],
+        key=lambda x: x["duration_seconds"],
+    )
     return {
-        "name":             winning_point["name"],
-        "address":          winning_point["address"],
-        "lat":              winning_point["lat"],
-        "lng":              winning_point["lng"],
-        "duration_seconds": winning_element["duration"]["value"],
-        "duration_text":    winning_element["duration"]["text"],
-        "distance_meters":  winning_element["distance"]["value"],
-        "distance_text":    winning_element["distance"]["text"],
+        "recommended":  all_points[0],
+        "alternatives": all_points[1:],
     }
 
 

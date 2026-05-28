@@ -156,6 +156,38 @@ LONG_EVENT_EXTRA_HOURS = 2
 LONG_EVENT_DURATION_THRESHOLD = 8   # event duration in hours that triggers extra prep
 PICADA_GUEST_THRESHOLD = 100        # guest count that triggers extra prep
 
+# --- Night warning threshold ---
+# Hour (24h format) at or after which a calculated return time triggers a
+# safety warning in the CABA panel ("Evaluar seguridad de la zona").
+NIGHT_WARNING_HOUR = 23
+
+# --- Event duration ---
+# When no explicit duration indicator is found in the Excel, this default
+# is used for the departure-time formula and the CABA return-time estimate.
+DEFAULT_EVENT_DURATION_HOURS = 4   # standard event without a duration tag
+LONG_SERVICE_DURATION_HOURS  = 8   # duration when "(8hs)" appears in Menu or Detalle
+PREP_HOURS_BEFORE_EVENT      = 4   # hours staff must arrive before event start for setup
+
+# --- CABA (Ciudad Autónoma de Buenos Aires) neighborhood and common names ---
+# Used by is_event_in_caba() to decide whether staff can self-commute.
+# Comparison is done after strip().lower().rstrip(".") on the ciudad_evento field.
+CABA_NAMES = {
+    "caba", "capital federal", "c.a.b.a.", "ciudad de buenos aires",
+    "ciudad autonoma de buenos aires", "ciudad autónoma de buenos aires",
+    "palermo", "belgrano", "nuñez", "núñez", "recoleta", "retiro",
+    "san telmo", "san nicolás", "san nicolas", "monserrat", "montserrat",
+    "puerto madero", "la boca", "barracas", "constitución", "constitucion",
+    "san cristóbal", "san cristobal", "balvanera", "almagro", "boedo",
+    "caballito", "flores", "floresta", "vélez sársfield", "velez sarsfield",
+    "liniers", "mataderos", "parque avellaneda", "villa lugano",
+    "villa soldati", "villa riachuelo", "nueva pompeya", "parque patricios",
+    "parque chacabuco", "villa del parque", "villa devoto", "villa pueyrredón",
+    "villa pueyrredon", "villa urquiza", "saavedra", "coghlan", "colegiales",
+    "chacarita", "villa crespo", "paternal", "villa ortúzar", "villa ortuzar",
+    "agronomía", "agronomia", "parque chas", "villa real", "versalles",
+    "villa luro", "monte castro", "villa santa rita", "villa general mitre",
+}
+
 # --- Charter service contacts ---
 # Shown in CharterPanel when the remaining staff pool exceeds CHARTER_THRESHOLD.
 # Each entry has a display name and a phone number.

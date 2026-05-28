@@ -71,6 +71,9 @@ import {
 export function useStepTwo() {
   const { state, dispatch } = useAppState()
 
+  // Whether the event venue is in CABA — staff typically commutes independently.
+  const isCaba = !!state.excelData?.event?.is_caba
+
   // Derive driver identity and coordinates here so both effects can reference
   // stable primitives in their dependency arrays.
   const driver     = state.personalVehicle?.driver
@@ -93,12 +96,16 @@ export function useStepTwo() {
   const effectiveLng = driverOverride?.lng ?? driverOriginalCoords?.lng ?? null
 
   // ── Effect 1: initial step 2 computation (1→2 transition) ──────────────────
+  // Also re-fires when cabaDecisionToTransport changes (false → true) so the
+  // CABA path can fetch all meeting points once the manager decides to transport.
   useEffect(() => {
-    // Only fire on the exact 1→2 transition.
-    // Guard against null personalVehicle — step 2 starts only after step 1
-    // completes, so personalVehicle should always be set here.  The guard
-    // is purely defensive and prevents a crash if the hook fires unexpectedly.
+    // Only fire on step 2 with a populated personalVehicle.
     if (state.currentStep !== 2 || !state.personalVehicle) return
+
+    // CABA gate: if the event is in CABA and the manager hasn't yet decided to
+    // plan transport, show CabaPanel and do nothing here.  The effect will re-fire
+    // when cabaDecisionToTransport is set to true (dep array includes it).
+    if (isCaba && !state.cabaDecisionToTransport) return
 
     let cancelled = false
 
@@ -106,6 +113,20 @@ export function useStepTwo() {
       dispatch({ type: ACTIONS.SET_ERROR, payload: null })
 
       try {
+        // ── CABA transport path ────────────────────────────────────────────────
+        // Fetch all 3 PEs so CabaPeSelectionPanel can display them.
+        // Skip driver routes and PEA — for CABA the manager picks a PE directly;
+        // no route optimisation is needed at this stage.
+        if (isCaba && state.cabaDecisionToTransport) {
+          dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'meeting_point' })
+          const allPoints = await nearestMeetingPoint(true)
+          if (cancelled) return
+          dispatch({ type: ACTIONS.SET_ALL_MEETING_POINTS, payload: allPoints })
+          dispatch({ type: ACTIONS.SET_MEETING_POINT,      payload: allPoints.recommended })
+          dispatch({ type: ACTIONS.SET_LOADING_STEP,       payload: null })
+          return
+        }
+
         // ── Phase 1: find the nearest predefined meeting point (PE) ────────────
         // This call is always made regardless of vehicle availability.
         // Even in the Uber-only path, we need the PE to set chosenMeetingPoint.
@@ -168,7 +189,7 @@ export function useStepTwo() {
     return () => {
       cancelled = true
     }
-  }, [state.currentStep]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [state.currentStep, state.cabaDecisionToTransport]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Effect 2: re-run routes + PEA when the driver's effective position changes ─
   // Deps are effectiveLat/effectiveLng, not the raw override, so this fires for

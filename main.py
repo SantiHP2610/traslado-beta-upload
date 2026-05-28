@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 # Import our data-reading and maps functions from the local modules package
 from modules.excel_reader import read_excel
 from modules.maps_client import geocode, geocode_staff, nearest_meeting_point, calculate_distances, calculate_driver_route, compute_route_matrix, pickup_place_info, pea_place_info, recalculate_route_with_pickup, simple_route, get_place_details
-from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, assign_uber_only, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
+from modules.logistics import determine_frescos_vehicle, determine_second_miniflete, calculate_departure_time, get_remaining_pool, detect_personal_vehicle, is_event_in_caba, evaluate_pea_candidates, find_pickup_candidate, assign_vehicle_passengers, assign_uber_only, validate_assignments, build_assignment_summary, calculate_pe_departure_time, build_final_output
 
 # CP coordinates are fixed constants defined in config.py — imported here
 # so the endpoint can pass them directly to the Distance Matrix API.
@@ -34,6 +34,7 @@ from config import (
     CP_LAT, CP_LNG,
     DEPARTURE_PREP_HOURS, LONG_EVENT_EXTRA_HOURS,
     LONG_EVENT_DURATION_THRESHOLD, PICADA_GUEST_THRESHOLD,
+    MAX_PASSENGERS_PER_CAR, DEFAULT_EVENT_DURATION_HOURS,
 )
 
 # Module references held for runtime constant propagation (see _sync_runtime).
@@ -491,6 +492,7 @@ def endpoint_read_excel():
     """
     # Delegate to the shared helper and let FastAPI serialize the dict to JSON
     data = _load_excel()
+    data["event"]["is_caba"] = is_event_in_caba(data["event"].get("ciudad_evento", ""))
     return data
 
 
@@ -567,7 +569,9 @@ def endpoint_geocode_address(address: str):
         "constants inside modules/maps_client.py."
     ),
 )
-def endpoint_nearest_meeting_point():
+def endpoint_nearest_meeting_point(
+    all: bool = Query(False, description="When true, returns all 3 PEs sorted by travel time"),
+):
     """
     Workflow:
         1. Read event data from the Excel file.
@@ -577,7 +581,7 @@ def endpoint_nearest_meeting_point():
         4. Call nearest_meeting_point() which queries the Distance Matrix API
            and picks the point with the shortest driving time.
 
-    Returns a JSON object:
+    Returns (all=false, default):
     {
         "name":             "North - Puente Saavedra",
         "address":          "Av. General Paz y Av. Cabildo, Saavedra, Buenos Aires",
@@ -587,6 +591,12 @@ def endpoint_nearest_meeting_point():
         "duration_text":    "9 mins",
         "distance_meters":  4200,
         "distance_text":    "4.2 km"
+    }
+
+    Returns (all=true):
+    {
+        "recommended":  { ...same shape... },
+        "alternatives": [ { ...same shape... }, ... ]
     }
     """
     data = _load_excel()
@@ -598,7 +608,7 @@ def endpoint_nearest_meeting_point():
 
     # Find the nearest predefined meeting point and return its travel data
     try:
-        result = nearest_meeting_point(event_coords)
+        result = nearest_meeting_point(event_coords, return_all=all)
     except ValueError as exc:
         # nearest_meeting_point() raises ValueError when no route is reachable
         raise HTTPException(status_code=422, detail=str(exc))
@@ -826,9 +836,25 @@ def endpoint_get_remaining_pool(body: RemainingPoolRequest):
     """
     data = _load_excel()
 
-    # "staff" maps to the 'equipo' sheet — each dict has at least "Profesion",
-    # which is what get_remaining_pool() uses for role matching.
-    return get_remaining_pool(data["staff"], body.assigned_roles)
+    # First pass: build pool without vehicle capacity to get the pool members.
+    preliminary = get_remaining_pool(data["staff"], body.assigned_roles)
+    remaining_pool = preliminary["remaining_pool"]
+
+    # Detect the personal vehicle among the remaining pool members.
+    # If one is found, it seats MAX_PASSENGERS_PER_CAR + 1 (driver included),
+    # so those seats count against the charter threshold.
+    vehicle_info = detect_personal_vehicle(remaining_pool)
+    personal_vehicle_capacity = (
+        MAX_PASSENGERS_PER_CAR + 1
+        if vehicle_info["has_personal_vehicle"]
+        else 0
+    )
+
+    # Second pass: apply the correct capacity so the charter/proceed/alternative
+    # status reflects how many people still need external transport.
+    result = get_remaining_pool(data["staff"], body.assigned_roles, personal_vehicle_capacity)
+    result["personal_vehicle"] = vehicle_info
+    return result
 
 
 @app.get(
@@ -1996,11 +2022,10 @@ def endpoint_final_output(body: FinalOutputRequest):
 
     prestaciones = data["services"]
 
-    # TODO: read event_duration_hours from the Excel 'evento' sheet once the
-    # field is added.  The planned event duration affects the extra-prep block
-    # in both departure formulas.  Until the Excel is finalised, 5.0 hours is
-    # used as a reasonable default for a mid-size catering event.
-    event_duration_hours = 5.0
+    # event_duration_hours is now parsed directly from the Excel by excel_reader.py
+    # (_parse_event_duration inspects the Menu field and Prestaciones Detalle column).
+    # Falls back to DEFAULT_EVENT_DURATION_HOURS (4) when no marker is found.
+    event_duration_hours = float(event.get("event_duration_hours", DEFAULT_EVENT_DURATION_HOURS))
 
     # -------------------------------------------------------------------------
     # Step 2: geocode all staff.

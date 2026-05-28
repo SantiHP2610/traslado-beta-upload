@@ -10,8 +10,14 @@
 # =============================================================================
 
 import datetime
+import re
 
 import openpyxl
+
+from config import DEFAULT_EVENT_DURATION_HOURS, LONG_SERVICE_DURATION_HOURS
+
+# Matches "(8hs)", "(8 hs)", "(8h)", "(8 h)" — parentheses required.
+_LONG_DURATION_RE = re.compile(r'\(\s*8\s*h\s*s?\s*\)', re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -61,11 +67,16 @@ def read_excel(path: str) -> dict:
     # instead of raw formula strings.
     workbook = openpyxl.load_workbook(path, data_only=True)
 
-    return {
-        "event":    _read_event(workbook["Evento"]),
-        "staff":    _read_staff(workbook["Equipo"]),
-        "services": _read_services(workbook["Prestaciones"]),
-    }
+    event    = _read_event(workbook["Evento"])
+    staff    = _read_staff(workbook["Equipo"])
+    services = _read_services(workbook["Prestaciones"])
+
+    # Parse event duration from the Menu field or the Prestaciones Detalle column.
+    # Adding it here keeps all Excel-derived data in one dict so every endpoint
+    # that calls _load_excel() gets the duration without a separate computation.
+    event["event_duration_hours"] = _parse_event_duration(event.get("tipo", ""), services)
+
+    return {"event": event, "staff": staff, "services": services}
 
 
 # =============================================================================
@@ -240,6 +251,26 @@ def _read_staff(sheet) -> list[dict]:
         result.append(cleaned)
 
     return result
+
+
+def _parse_event_duration(tipo: str, services: list) -> int:
+    """
+    Returns the planned event duration in hours.
+
+    Looks for "(8hs)", "(8 hs)", "(8h)" in:
+      1. The event "tipo" field (Menu column on the Evento sheet).
+      2. The "Detalle" column of every row in the Prestaciones sheet.
+
+    Returns LONG_SERVICE_DURATION_HOURS (8) if the marker is found anywhere,
+    DEFAULT_EVENT_DURATION_HOURS (4) otherwise.
+    """
+    if _LONG_DURATION_RE.search(tipo or ""):
+        return LONG_SERVICE_DURATION_HOURS
+    for row in services:
+        detalle = str(row.get("Detalle") or "")
+        if _LONG_DURATION_RE.search(detalle):
+            return LONG_SERVICE_DURATION_HOURS
+    return DEFAULT_EVENT_DURATION_HOURS
 
 
 def _read_services(sheet) -> list[dict]:

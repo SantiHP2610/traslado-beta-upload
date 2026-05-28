@@ -21,6 +21,7 @@ import polyline as polyline_lib
 # Using named constants instead of magic numbers makes the rules self-documenting
 # and easy to change in one place without hunting through logic code.
 from config import (
+    CABA_NAMES,
     CHARTER_THRESHOLD,
     CLUSTER_RADIUS_KM,
     DEPARTURE_BUFFER_MINUTES,
@@ -551,7 +552,30 @@ def calculate_departure_time(
     }
 
 
-def get_remaining_pool(staff: list[dict], assigned_roles: list[str]) -> dict:
+def is_event_in_caba(ciudad_evento: str) -> bool:
+    """
+    Returns True when the event city matches a known CABA neighbourhood or
+    synonym, indicating that staff can self-commute and a dedicated transport
+    plan may be optional.
+
+    Normalisation applied before the lookup:
+      - strip() + lower() to collapse case and surrounding whitespace.
+      - rstrip(".") to remove the trailing period that Access sometimes appends.
+
+    The reference set CABA_NAMES is defined in config.py so it can be tuned
+    without touching this logic.
+    """
+    if not ciudad_evento:
+        return False
+    normalised = ciudad_evento.strip().lower().rstrip(".")
+    return normalised in CABA_NAMES
+
+
+def get_remaining_pool(
+    staff: list[dict],
+    assigned_roles: list[str],
+    personal_vehicle_capacity: int = 0,
+) -> dict:
     """
     Builds the remaining staff pool after the frescos and second-miniflete
     assignments have been committed.
@@ -578,13 +602,20 @@ def get_remaining_pool(staff: list[dict], assigned_roles: list[str]) -> dict:
         assigned_roles (list[str]):  Role strings already committed to the
                                      frescos vehicle or second miniflete
                                      (e.g. ["Manager Senior", "Jefe de Parrilla Senior"]).
+        personal_vehicle_capacity (int): Number of pool members that can travel
+                                     in the personal vehicle (driver + passengers).
+                                     Pass MAX_PASSENGERS_PER_CAR + 1 when a car is
+                                     confirmed in the pool; default 0 means Uber-only.
+                                     Subtracted from remaining_count before the charter
+                                     check so that having a car raises the effective
+                                     threshold before a bus is required.
 
     Returns:
         dict: {
             "remaining_pool":      list[dict], # staff not yet assigned to any vehicle
             "remaining_count":     int,
             "assigned_to_frescos": list[dict], # staff removed from pool (matched roles)
-            "charter_required":    bool,        # True if remaining_count > CHARTER_THRESHOLD
+            "charter_required":    bool,        # True if people needing external transport > CHARTER_THRESHOLD
             "alternative_required": bool,       # True if remaining_count == 1
             "status":              str,         # "charter" | "alternative" | "proceed"
         }
@@ -611,7 +642,12 @@ def get_remaining_pool(staff: list[dict], assigned_roles: list[str]) -> dict:
     # We derive a single "status" string so the frontend can branch cleanly
     # without inspecting two separate boolean flags.
     # -------------------------------------------------------------------------
-    charter_required     = remaining_count > CHARTER_THRESHOLD
+    # Subtract personal-vehicle slots before the charter check: if there is a
+    # car in the pool that can carry personal_vehicle_capacity people, that many
+    # people do NOT need Uber or a charter bus.  Clamping at 0 prevents negative
+    # values when the pool is smaller than the car's capacity.
+    people_needing_transport = max(0, remaining_count - personal_vehicle_capacity)
+    charter_required     = people_needing_transport > CHARTER_THRESHOLD
     alternative_required = remaining_count == 1
 
     if charter_required:

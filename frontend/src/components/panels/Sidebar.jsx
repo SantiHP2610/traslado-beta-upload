@@ -22,6 +22,8 @@ import { useAppState, ACTIONS, VEHICLE_COLORS } from '../../state/appState'
 import { simpleRoute, geocodeAddress }      from '../../api/endpoints'
 import FrescosPanel                         from './FrescosPanel'
 import PeaPanel                             from './PeaPanel'
+import { CabaPanel }                        from './CabaPanel'
+import { CabaPeSelectionPanel }             from './CabaPeSelectionPanel'
 
 // ---------------------------------------------------------------------------
 // EventInfoSection — compact event summary at the top of the sidebar
@@ -399,6 +401,7 @@ export default function Sidebar() {
   const fr        = state.frescosResult
   const event     = state.excelData?.event
   const services  = state.excelData?.services ?? []
+  const isCaba    = !!event?.is_caba
 
   // ── INIT_VEHICLES trigger ────────────────────────────────────────────────
   // Fires once when the manager confirms a PE or PEA (chosenMeetingPoint set)
@@ -529,7 +532,14 @@ export default function Sidebar() {
         {/* ── Step 2: Punto de encuentro ───────────────────────────────── */}
         {state.currentStep >= 2 && (
           <div style={{ padding: '16px 20px', animation: 'fadeIn 200ms ease-out' }}>
-            <PeaPanel />
+            {isCaba && !state.cabaDecisionToTransport
+              ? <CabaPanel />
+              : isCaba && state.cabaDecisionToTransport && !state.chosenMeetingPoint
+                ? <CabaPeSelectionPanel />
+                : !isCaba
+                  ? <PeaPanel />
+                  : null
+            }
           </div>
         )}
 

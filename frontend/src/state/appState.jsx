@@ -172,6 +172,14 @@ const initialState = {
   manualPickupMode: { active: false, vehicleId: null },
   manualPeaMode:    false,   // true while the user is clicking the map to manually select a PEA
 
+  // CABA flow — set during step 2 when the event is inside CABA.
+  // cabaDecisionToTransport: false until the manager clicks "Planificar traslado de todas formas".
+  // allMeetingPoints: { recommended, alternatives[] } from /nearest-meeting-point?all=true,
+  //   populated only when isCaba && cabaDecisionToTransport so the CabaPeSelectionPanel can
+  //   show all 3 PEs for the manager to choose from.
+  cabaDecisionToTransport: false,
+  allMeetingPoints: null,
+
   // Snapshot of driverRoutes taken before the first pickup confirmation.
   // Kept as a legacy field (no longer written) — see originalDriverRoutes note above.
 }
@@ -220,6 +228,10 @@ export const ACTIONS = {
   SET_UBER_PE_DRAG_MODE:      'SET_UBER_PE_DRAG_MODE',
   SET_ORIGINAL_DRIVER_ROUTES:     'SET_ORIGINAL_DRIVER_ROUTES',
   RESTORE_ORIGINAL_DRIVER_ROUTES: 'RESTORE_ORIGINAL_DRIVER_ROUTES',
+
+  // ── CABA flow actions ─────────────────────────────────────────────────────
+  SET_CABA_DECISION_TO_TRANSPORT: 'SET_CABA_DECISION_TO_TRANSPORT',
+  SET_ALL_MEETING_POINTS:         'SET_ALL_MEETING_POINTS',
 
   // ── new vehicles-model actions ────────────────────────────────────────────
   INIT_VEHICLES:              'INIT_VEHICLES',
@@ -304,6 +316,12 @@ function appReducer(state, action) {
 
     case ACTIONS.SET_MANUAL_PEA_MODE:
       return { ...state, manualPeaMode: action.payload }
+
+    case ACTIONS.SET_CABA_DECISION_TO_TRANSPORT:
+      return { ...state, cabaDecisionToTransport: action.payload }
+
+    case ACTIONS.SET_ALL_MEETING_POINTS:
+      return { ...state, allMeetingPoints: action.payload }
 
     // ── legacy no-ops ─────────────────────────────────────────────────────
     // Old components may still dispatch these. Returning state unchanged
@@ -505,14 +523,16 @@ function appReducer(state, action) {
           manualPickupMode: { active: false, vehicleId: null },
         })
       } else if (state.currentStep >= 2) {
-        // Leaving step 2 → step 1: undo routes, PEA evaluation, and meeting
-        // point data so useStepTwo will recompute them if user re-advances.
+        // Leaving step 2 → step 1: undo routes, PEA evaluation, meeting point
+        // data, and any CABA-specific decisions so useStepTwo recomputes cleanly.
         Object.assign(clearing, {
           meetingPoint: null,
           driverRoutes: null,
           peaEvaluation: null,
           chosenMeetingPoint: null,
           manualPeaMode: false,
+          cabaDecisionToTransport: false,
+          allMeetingPoints: null,
         })
       } else if (state.currentStep >= 1) {
         // Leaving step 1 → step 0: undo the "van question" (frescos panel).
