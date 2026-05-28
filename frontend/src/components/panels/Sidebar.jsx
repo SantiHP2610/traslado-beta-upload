@@ -545,9 +545,9 @@ export default function Sidebar() {
         {/* ── Step 2: Punto de encuentro ───────────────────────────────── */}
         {state.currentStep >= 2 && (
           <div style={{ padding: '16px 20px', animation: 'fadeIn 200ms ease-out' }}>
-            {isCaba && state.cabaDecisionToTransport && !state.chosenMeetingPoint
+            {isCaba && state.cabaDecisionToTransport && !state.meetingPoint
               ? <CabaPeSelectionPanel />
-              : !isCaba
+              : (!isCaba || state.meetingPoint)
                 ? <PeaPanel />
                 : null
             }

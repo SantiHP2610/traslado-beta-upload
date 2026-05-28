@@ -53,8 +53,7 @@ export function CabaPeSelectionPanel() {
   const allSorted = [allPoints.recommended, ...(allPoints.alternatives ?? [])]
 
   function handleSelect(point) {
-    dispatch({ type: ACTIONS.SET_MEETING_POINT,        payload: point })
-    dispatch({ type: ACTIONS.SET_CHOSEN_MEETING_POINT, payload: point })
+    dispatch({ type: ACTIONS.SET_MEETING_POINT, payload: point })
   }
 
   return (

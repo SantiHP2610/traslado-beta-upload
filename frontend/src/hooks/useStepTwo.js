@@ -122,7 +122,6 @@ export function useStepTwo() {
           const allPoints = await nearestMeetingPoint(true)
           if (cancelled) return
           dispatch({ type: ACTIONS.SET_ALL_MEETING_POINTS, payload: allPoints })
-          dispatch({ type: ACTIONS.SET_MEETING_POINT,      payload: allPoints.recommended })
           dispatch({ type: ACTIONS.SET_LOADING_STEP,       payload: null })
           return
         }
@@ -253,4 +252,66 @@ export function useStepTwo() {
       cancelled = true
     }
   }, [effectiveLat, effectiveLng]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Effect 3: run driver routes + PEA after CABA PE selection ──────────────
+  // Fires when state.meetingPoint changes.  For non-CABA this is a no-op
+  // (isCaba guard returns early immediately).  For CABA it fires once when the
+  // manager selects a PE from CabaPeSelectionPanel (meetingPoint null → chosen).
+  // Computes the same routes and PEA that Effect 1 computes in the normal path,
+  // using the user-selected PE instead of an auto-nearest one.
+  //
+  // Uber-only CABA: no route computation is possible without a driver; the
+  // selected PE is automatically confirmed so the flow continues to step 2b.
+  //
+  // state.driverRoutes / state.chosenMeetingPoint guards prevent double-runs.
+  useEffect(() => {
+    if (!isCaba || !state.cabaDecisionToTransport) return
+    if (!state.meetingPoint) return                              // PE not picked yet
+    if (state.driverRoutes || state.chosenMeetingPoint) return  // already completed
+
+    const hasPersonalVehicle = state.personalVehicle?.has_personal_vehicle
+
+    // Uber-only path: no driver route exists; confirm the PE automatically.
+    if (!hasPersonalVehicle) {
+      dispatch({ type: ACTIONS.SET_CHOSEN_MEETING_POINT, payload: state.meetingPoint })
+      return
+    }
+
+    let cancelled = false
+
+    async function runCabaRoutes() {
+      dispatch({ type: ACTIONS.SET_ERROR, payload: null })
+
+      try {
+        dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
+
+        const driverRoutes = await calculateDriverRoute(effectiveLat, effectiveLng)
+        if (cancelled) return
+        dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
+
+        dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'pea' })
+
+        const peaResult = await evaluatePea(effectiveLat, effectiveLng)
+        if (cancelled) return
+        dispatch({ type: ACTIONS.SET_PEA_EVALUATION, payload: peaResult.pea_evaluation })
+
+        dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: null })
+
+      } catch (err) {
+        if (!cancelled) {
+          dispatch({
+            type:    ACTIONS.SET_ERROR,
+            payload: err?.response?.data?.detail ??
+                     err?.message ??
+                     'Error al calcular rutas del chofer.',
+          })
+          dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: null })
+        }
+      }
+    }
+
+    runCabaRoutes()
+
+    return () => { cancelled = true }
+  }, [state.meetingPoint]) // eslint-disable-line react-hooks/exhaustive-deps
 }
