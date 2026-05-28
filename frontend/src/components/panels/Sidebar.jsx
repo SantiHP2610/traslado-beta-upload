@@ -397,7 +397,9 @@ export default function Sidebar() {
   const { state, dispatch } = useAppState()
   const [step1Open, setStep1Open] = useState(true)
 
-  const step1Done = state.currentStep > 1
+  // Use frescosResult (not currentStep > 1) so the step-1 header collapses after
+  // the frescos API calls complete, even when the step-2 transition is deferred (CABA).
+  const step1Done = !!state.frescosResult
   const fr        = state.frescosResult
   const event     = state.excelData?.event
   const services  = state.excelData?.services ?? []
@@ -518,6 +520,17 @@ export default function Sidebar() {
                   <FrescosPanel />
                 </div>
               )}
+              {isCaba && state.currentStep === 1 && (
+                <div
+                  style={{
+                    padding:      '16px 20px',
+                    borderBottom: '1px solid #e5e7eb',
+                    animation:    'fadeIn 200ms ease-out',
+                  }}
+                >
+                  <CabaPanel />
+                </div>
+              )}
             </>
           ) : (
             <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
@@ -532,13 +545,11 @@ export default function Sidebar() {
         {/* ── Step 2: Punto de encuentro ───────────────────────────────── */}
         {state.currentStep >= 2 && (
           <div style={{ padding: '16px 20px', animation: 'fadeIn 200ms ease-out' }}>
-            {isCaba && !state.cabaDecisionToTransport
-              ? <CabaPanel />
-              : isCaba && state.cabaDecisionToTransport && !state.chosenMeetingPoint
-                ? <CabaPeSelectionPanel />
-                : !isCaba
-                  ? <PeaPanel />
-                  : null
+            {isCaba && state.cabaDecisionToTransport && !state.chosenMeetingPoint
+              ? <CabaPeSelectionPanel />
+              : !isCaba
+                ? <PeaPanel />
+                : null
             }
           </div>
         )}

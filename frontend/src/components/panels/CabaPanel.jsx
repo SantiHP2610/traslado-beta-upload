@@ -30,7 +30,11 @@ export function CabaPanel() {
   const nightWarning     = returnHour !== null && returnHour >= 23
 
   function handlePlanTransport() {
+    // Both dispatches are batched by React 18, so useStepTwo's Effect 1 fires
+    // once with currentStep=2 AND cabaDecisionToTransport=true simultaneously,
+    // which takes the CABA transport path (fetch all PEs, skip driver routes/PEA).
     dispatch({ type: ACTIONS.SET_CABA_DECISION_TO_TRANSPORT, payload: true })
+    dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 2 })
   }
 
   return (

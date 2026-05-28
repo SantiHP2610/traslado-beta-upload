@@ -677,6 +677,12 @@ export function getUnassignedEmployees(state) {
     ? state.remainingPool
     : state.remainingPool.remaining_pool ?? []
   const assigned = getAssignedEmployees(state)
+  // pending_employee is accounted for separately (shown in a dedicated panel),
+  // so exclude them from the unassigned list to avoid the duplicate display
+  // that would otherwise appear when returning from the confirmation modal.
+  if (state.pending_employee) {
+    assigned.add(state.pending_employee)
+  }
   return pool.filter(emp => {
     const name = `${emp.Nombre} ${emp.Apellido}`
     return !assigned.has(name)
