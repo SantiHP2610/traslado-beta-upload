@@ -175,7 +175,8 @@ _SAMPLE_DIR = BASE_DIR / "sample_data"
 # Each entry maps a filename to the display label shown in the frontend dropdown.
 _TEST_CASES = [
     {"filename": "evento_prueba.xlsx",     "label": "Evento de prueba (base)"},
-    {"filename": "caso_charter.xlsx",      "label": "Caso: grupo grande (charter)"},
+    {"filename": "caso_caba_pool_grande.xlsx", "label": "CABA pool grande — con auto (12)"},
+    {"filename": "caso_charter_real.xlsx",     "label": "Charter real — sin auto (12 personas)"},
     {"filename": "caso_equipo_chico.xlsx", "label": "Caso: equipo chico"},
     {"filename": "caso_pe_norte.xlsx",     "label": "Caso: PE Norte (Puente Saavedra)"},
     {"filename": "caso_pe_sur.xlsx",       "label": "Caso: PE Sur (Caballito)"},

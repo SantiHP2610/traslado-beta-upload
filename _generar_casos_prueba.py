@@ -161,9 +161,9 @@ def save(wb, name):
 
 
 # ============================================================
-# CASO 1: Charter — 12 empleados, pool > 8 after frescos
+# CASO 1: CABA pool grande — 12 empleados, con auto, pool > 8
 # ============================================================
-def caso_charter():
+def caso_caba_pool_grande():
     wb = openpyxl.Workbook()
     _write_event(wb.active, [
         ("Menu", "Asado Finger Food"),
@@ -185,7 +185,35 @@ def caso_charter():
         ["Traslado", "Estacion de fuegos", 1],
         ["Postre", "Torta 3 pisos", 150],
     ])
-    save(wb, "caso_charter.xlsx")
+    save(wb, "caso_caba_pool_grande.xlsx")
+
+
+# ============================================================
+# CASO 1b: Charter real — 12 empleados, nadie tiene auto
+# ============================================================
+def caso_charter_real():
+    wb = openpyxl.Workbook()
+    _write_event(wb.active, [
+        ("Menu", "Asado Finger Food"),
+        ("Evento", "Corporativo"),
+        ("Locacion", "Ruta 8 km 28, Pilar"),
+        ("DescripcionLocacion", "Salón de eventos con estacionamiento amplio"),
+        ("Empresa", "MegaCorp SA"),
+        ("Observaciones", "Evento grande, acceso por colectora."),
+        ("Fecha", date(2026, 8, 10)),
+        ("Horario", time(20, 0)),
+        ("Comensales carne", 160),
+        ("Comensales veggie", 10),
+    ])
+    # 12 employees, NOBODY has car. After frescos (2): pool = 10 > 8 → charter
+    _write_staff(wb, _gen_staff(12, "oeste", with_car_index=None))
+    _write_services(wb, [
+        ["Menu principal", "Asado Finger Food", 160],
+        ["Traslado", "Personal", 1],
+        ["Traslado", "Estacion de fuegos", 1],
+        ["Postre", "Torta + shots", 160],
+    ])
+    save(wb, "caso_charter_real.xlsx")
 
 
 # ============================================================
@@ -341,7 +369,8 @@ def caso_random(n, zona, filename):
 if __name__ == "__main__":
     print("Generando casos de prueba...\n")
     random.seed(42)  # reproducible
-    caso_charter()
+    caso_caba_pool_grande()
+    caso_charter_real()
     caso_sin_auto()
     caso_pe_norte()
     caso_pe_sur()
