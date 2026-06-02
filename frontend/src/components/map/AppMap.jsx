@@ -48,6 +48,7 @@ import Sidebar                           from '../panels/Sidebar'
 import UnassignedPanel                   from '../panels/UnassignedPanel'
 import AssignmentSummaryPanel            from '../panels/AssignmentSummaryPanel'
 import CharterPanel                      from '../panels/CharterPanel'
+import CharterStep3Panel                 from '../panels/CharterStep3Panel'
 import MeetingPointCard                  from '../panels/MeetingPointCard'
 import ConfirmationModal                 from '../panels/ConfirmationModal'
 import FinalOutputBlocks                 from '../panels/FinalOutputBlocks'
@@ -229,6 +230,14 @@ export default function AppMap() {
       setDblClickMarker(null)
     }
   }, [state.manualPickupMode?.active])
+
+  // ── Charter pickup mode ─────────────────────────────────────────────────
+  // Tracks the InfoWindow shown when the manager clicks the map in charter mode.
+  const [charterPickupInfo, setCharterPickupInfo] = useState(null)
+
+  useEffect(() => {
+    if (!state.charterPickupMode?.active) setCharterPickupInfo(null)
+  }, [state.charterPickupMode?.active])
 
   const bounds = useMemo(
     () => computeBounds(state.staffWithCoords, state.driverRoutes, state.eventCoords),
@@ -420,6 +429,43 @@ export default function AppMap() {
     }
   }, [manualPickupInfo, recalculating, state, dispatch])
 
+  // ── Charter pickup map click ────────────────────────────────────────────
+  // Any map click during charter pickup mode reverse-geocodes the point and
+  // shows a minimal InfoWindow with a "Confirmar" button.  No route-proximity
+  // check — charter buses can detour freely.
+  const handleMapClickCharterPickup = useCallback(async (event) => {
+    if (!state.charterPickupMode?.active || state.currentStep !== 3) return
+    if (!event.detail?.latLng) return
+    const { lat, lng } = event.detail.latLng
+    setCharterPickupInfo({ lat, lng, loading: true, name: null, address: null })
+    try {
+      const info = await pickupPlaceInfo(lat, lng)
+      setCharterPickupInfo({ ...info, loading: false })
+    } catch {
+      setCharterPickupInfo({ lat, lng, loading: false, name: null,
+        address: `${lat.toFixed(5)}, ${lng.toFixed(5)}` })
+    }
+  }, [state.charterPickupMode, state.currentStep])
+
+  const handleConfirmCharterPickup = useCallback(() => {
+    if (!charterPickupInfo || charterPickupInfo.loading) return
+    const slotIndex = state.charterPickupMode?.slotIndex ?? 0
+    dispatch({
+      type:    ACTIONS.SET_CHARTER_PICKUP_POINT,
+      payload: {
+        slotIndex,
+        point: {
+          lat:     charterPickupInfo.lat,
+          lng:     charterPickupInfo.lng,
+          name:    charterPickupInfo.name,
+          address: charterPickupInfo.address,
+        },
+      },
+    })
+    dispatch({ type: ACTIONS.SET_CHARTER_PICKUP_MODE, payload: { active: false, slotIndex: null } })
+    setCharterPickupInfo(null)
+  }, [charterPickupInfo, state.charterPickupMode, dispatch])
+
   // ── Manual PEA map click ─────────────────────────────────────────────────
   // When manualPeaMode is true (step 2), every map click is intercepted.
   // We check proximity to the direct-route polyline (home→event, the red line);
@@ -494,9 +540,14 @@ export default function AppMap() {
         overflow: 'hidden',
       }}
     >
+      {/* ── Charter overlay — centered card at step 1 when charter detected ── */}
+      {isCharter && state.currentStep === 1 && state.frescosResult && (
+        <CharterPanel />
+      )}
+
       {/* ── Left panel slot ──────────────────────────────────────────────── */}
       {showSidebar     && <Sidebar />}
-      {showStep3Panels && (isCharter ? <CharterPanel /> : <UnassignedPanel />)}
+      {showStep3Panels && (isCharter ? <CharterStep3Panel /> : <UnassignedPanel />)}
 
       {/* ── Map area (always present, flex:1) ────────────────────────────── */}
       {/*
@@ -522,12 +573,14 @@ export default function AppMap() {
             width:  '100%',
             height: '100%',
             cursor: (state.manualPickupMode?.active && state.currentStep === 3) ||
-                    (state.manualPeaMode    && state.currentStep === 2)
+                    (state.manualPeaMode             && state.currentStep === 2) ||
+                    (state.charterPickupMode?.active  && state.currentStep === 3)
               ? 'crosshair' : undefined,
           }}
           onClick={
-            (state.manualPickupMode?.active && state.currentStep === 3) ? handleMapClick :
-            (state.manualPeaMode    && state.currentStep === 2) ? handleMapClickPea :
+            (state.manualPickupMode?.active  && state.currentStep === 3) ? handleMapClick :
+            (state.manualPeaMode             && state.currentStep === 2) ? handleMapClickPea :
+            (state.charterPickupMode?.active && state.currentStep === 3) ? handleMapClickCharterPickup :
             undefined
           }
         >
@@ -822,6 +875,75 @@ export default function AppMap() {
                         No se encontraron lugares cercanos
                       </p>
                     )}
+                  </>
+                )}
+              </div>
+            </InfoWindow>
+          )}
+
+          {/* Charter pickup markers — one per confirmed pickup point */}
+          {isCharter && state.currentStep === 3 &&
+            (state.charterPickupPoints ?? []).map((pt, i) => pt && (
+              <AdvancedMarker
+                key={`charter-pickup-${i}`}
+                position={{ lat: pt.lat, lng: pt.lng }}
+                title={`Pickup ${i + 1}: ${pt.name ?? pt.address}`}
+              >
+                <div style={{
+                  width:           36,
+                  height:          36,
+                  borderRadius:    8,
+                  background:      '#111827',
+                  border:          '2px solid white',
+                  boxShadow:       '0 2px 8px rgba(0,0,0,0.25)',
+                  display:         'flex',
+                  alignItems:      'center',
+                  justifyContent:  'center',
+                  color:           'white',
+                  fontSize:        14,
+                  fontWeight:      700,
+                }}>
+                  {i + 1}
+                </div>
+              </AdvancedMarker>
+            ))
+          }
+
+          {/* Charter pickup InfoWindow — shown while charter pickup mode is active */}
+          {charterPickupInfo && (
+            <InfoWindow
+              position={{ lat: charterPickupInfo.lat, lng: charterPickupInfo.lng }}
+              onCloseClick={() => setCharterPickupInfo(null)}
+            >
+              <div style={{ minWidth: 180, maxWidth: 260, fontFamily: 'sans-serif' }}>
+                {charterPickupInfo.loading ? (
+                  <p style={{ fontSize: 13, color: '#374151', margin: 0 }}>Cargando…</p>
+                ) : (
+                  <>
+                    {charterPickupInfo.name && (
+                      <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 2px', color: '#111827' }}>
+                        {charterPickupInfo.name}
+                      </p>
+                    )}
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 8px', lineHeight: 1.4 }}>
+                      {charterPickupInfo.address ?? `${charterPickupInfo.lat?.toFixed(5)}, ${charterPickupInfo.lng?.toFixed(5)}`}
+                    </p>
+                    <button
+                      onClick={handleConfirmCharterPickup}
+                      style={{
+                        width:        '100%',
+                        padding:      '7px 12px',
+                        background:   '#111827',
+                        color:        '#fff',
+                        border:       'none',
+                        borderRadius: 6,
+                        fontSize:     12,
+                        fontWeight:   600,
+                        cursor:       'pointer',
+                      }}
+                    >
+                      Confirmar como punto de recogida
+                    </button>
                   </>
                 )}
               </div>

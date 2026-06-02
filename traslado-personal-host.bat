@@ -66,10 +66,15 @@ call npm install --silent
 if errorlevel 1 ( echo [ERROR] Fallo npm install. & pause & exit /b 1 )
 cd ..
 
-:: Generar Excel de prueba
+:: Generar Excel de prueba (solo si no existe)
 echo.
-echo [4/4] Generando Excel de prueba...
-python _generar_excel.py
+if not exist "sample_data\evento_prueba.xlsx" (
+    echo [4/4] Generando Excel de prueba...
+    python _generar_excel.py
+    python _generar_casos_prueba.py
+) else (
+    echo [4/4] Excel de prueba ya existe, omitiendo generacion.
+)
 
 :: Arrancar backend en ventana nueva
 echo.

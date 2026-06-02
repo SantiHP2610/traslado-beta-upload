@@ -180,6 +180,14 @@ const initialState = {
   cabaDecisionToTransport: false,
   allMeetingPoints: null,
 
+  // Charter flow — set when remainingPool.status === 'charter'.
+  // charterPickupPoints: up to 2 pickup stops on the PE→event route selected by the manager.
+  //   Sparse array; slots are null/undefined when unused. Max index = 1.
+  // charterPickupMode: { active, slotIndex } — active while the manager is clicking
+  //   the map to select a charter pickup point.
+  charterPickupPoints: [],
+  charterPickupMode: { active: false, slotIndex: null },
+
   // Snapshot of driverRoutes taken before the first pickup confirmation.
   // Kept as a legacy field (no longer written) — see originalDriverRoutes note above.
 }
@@ -232,6 +240,11 @@ export const ACTIONS = {
   // ── CABA flow actions ─────────────────────────────────────────────────────
   SET_CABA_DECISION_TO_TRANSPORT: 'SET_CABA_DECISION_TO_TRANSPORT',
   SET_ALL_MEETING_POINTS:         'SET_ALL_MEETING_POINTS',
+
+  // ── charter flow actions ──────────────────────────────────────────────────
+  SET_CHARTER_PICKUP_MODE:  'SET_CHARTER_PICKUP_MODE',
+  SET_CHARTER_PICKUP_POINT: 'SET_CHARTER_PICKUP_POINT',
+  REMOVE_CHARTER_PICKUP:    'REMOVE_CHARTER_PICKUP',
 
   // ── new vehicles-model actions ────────────────────────────────────────────
   INIT_VEHICLES:              'INIT_VEHICLES',
@@ -322,6 +335,26 @@ function appReducer(state, action) {
 
     case ACTIONS.SET_ALL_MEETING_POINTS:
       return { ...state, allMeetingPoints: action.payload }
+
+    case ACTIONS.SET_CHARTER_PICKUP_MODE:
+      // payload: { active: boolean, slotIndex: 0|1|null }
+      return { ...state, charterPickupMode: action.payload }
+
+    case ACTIONS.SET_CHARTER_PICKUP_POINT: {
+      // payload: { slotIndex: 0|1, point: { lat, lng, name, address } }
+      const { slotIndex, point } = action.payload
+      const newPoints = [...(state.charterPickupPoints ?? [])]
+      newPoints[slotIndex] = point
+      return { ...state, charterPickupPoints: newPoints }
+    }
+
+    case ACTIONS.REMOVE_CHARTER_PICKUP: {
+      // payload: { slotIndex: 0|1 }
+      const { slotIndex } = action.payload
+      const newPoints = [...(state.charterPickupPoints ?? [])]
+      newPoints[slotIndex] = undefined
+      return { ...state, charterPickupPoints: newPoints }
+    }
 
     // ── legacy no-ops ─────────────────────────────────────────────────────
     // Old components may still dispatch these. Returning state unchanged
@@ -511,16 +544,17 @@ function appReducer(state, action) {
         // Leaving step 4 → step 3: undo confirmation and final output.
         Object.assign(clearing, { showModal: false, showOutput: false, finalOutput: null })
       } else if (state.currentStep >= 3) {
-        // Leaving step 3 → step 2: undo all vehicle assignments.  Clearing
-        // vehicles[] discards per-vehicle routes, pickups, and meeting point
-        // overrides in one shot — no need for a separate originalDriverRoutes
-        // snapshot since driverRoutes (set in step 2) is untouched.
+        // Leaving step 3 → step 2 (normal) or step 1 (charter, which skips 2).
+        // Clearing vehicles[] discards per-vehicle routes, pickups, and meeting
+        // point overrides in one shot.  Charter pickup state is also cleared.
         Object.assign(clearing, {
           vehicles: [],
           pending_employee: null,
           activePickupResult: null,
           chosenMeetingPoint: null,
           manualPickupMode: { active: false, vehicleId: null },
+          charterPickupPoints: [],
+          charterPickupMode: { active: false, slotIndex: null },
         })
       } else if (state.currentStep >= 2) {
         // Leaving step 2 → step 1: undo routes, PEA evaluation, meeting point
@@ -536,12 +570,16 @@ function appReducer(state, action) {
         })
       } else if (state.currentStep >= 1) {
         // Leaving step 1 → step 0: undo the "van question" (frescos panel).
-        // Clears the four slices that were set when the user answered it.
+        // meetingPoint is included because the charter overlay fetches it at
+        // step 1 and dispatches SET_MEETING_POINT before advancing to step 3.
         Object.assign(clearing, {
           frescosResult: null,
           secondMinifleteResult: null,
           remainingPool: null,
           personalVehicle: null,
+          meetingPoint: null,
+          charterPickupPoints: [],
+          charterPickupMode: { active: false, slotIndex: null },
         })
       }
 

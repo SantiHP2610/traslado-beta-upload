@@ -243,11 +243,13 @@ export default function FrescosPanel() {
 
       dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: null })
 
-      // For CABA events, stay in step 1 — the CabaPanel will appear in the
-      // sidebar below the frescos summary and the manager decides next.
-      // For all other events, advance immediately to step 2 (PEA flow).
-      const isCaba = state.excelData?.event?.is_caba
-      if (!isCaba) {
+      // Stay at step 1 in two special cases:
+      //   CABA — CabaPanel appears in the sidebar and the manager decides next.
+      //   Charter — CharterPanel overlay appears and the manager confirms the PE.
+      // All other events advance immediately to step 2 (PEA flow).
+      const isCaba    = state.excelData?.event?.is_caba
+      const isCharter = remainingPool.status === 'charter'
+      if (!isCaba && !isCharter) {
         dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 2 })
       }
     } catch (err) {
