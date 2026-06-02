@@ -56,7 +56,7 @@
 import { useState, useMemo, useEffect, useRef }  from 'react'
 import { AdvancedMarker, InfoWindow }             from '@vis.gl/react-google-maps'
 import { User }                                   from 'lucide-react'
-import { useAppState, ACTIONS, isVehicleFull }    from '../../state/appState'
+import { useAppState, ACTIONS, isVehicleFull, getCharterUnassigned } from '../../state/appState'
 import { geocodeAddress as geocodeAddressApi }    from '../../api/endpoints'
 import { Card, CardContent }                      from '@/components/ui/card'
 import { Button }                                 from '@/components/ui/button'
@@ -107,6 +107,21 @@ function getMarkerBg(employee, vehicles) {
     if (v.passengers_pe.includes(name))     return v.color.passengers
   }
 
+  return '#4285F4'
+}
+
+/**
+ * Returns the background hex color for an employee in charter mode.
+ * Yellow  (#FBBC04) → at PE
+ * Dark    (#444444) → at a pickup point
+ * Blue    (#4285F4) → unassigned
+ */
+function getCharterMarkerBg(employee, charterAssignment) {
+  const name = fullName(employee)
+  if (charterAssignment.pe_passengers.includes(name)) return '#FBBC04'
+  for (const pu of charterAssignment.pickups) {
+    if (pu.passengers?.includes(name)) return '#444444'
+  }
   return '#4285F4'
 }
 
@@ -472,6 +487,87 @@ function VehicleSubMenu({ vehicle, employeeName, expanded, onToggle, dispatch, o
 }
 
 // ---------------------------------------------------------------------------
+// CharterContextMenu — step 3+ context menu for charter mode employees
+// Uses inline styles (lives inside Google Maps InfoWindow DOM).
+// ---------------------------------------------------------------------------
+
+function CharterContextMenu({ employee, charterAssignment, dispatch, onClose }) {
+  const name = fullName(employee)
+  const ca   = charterAssignment
+
+  const isAssigned = ca.pe_passengers.includes(name) ||
+    ca.pickups.some((pu) => pu.passengers?.includes(name))
+
+  return (
+    <Card className="min-w-[200px] shadow-none border-0">
+      <CardContent className="p-3 space-y-2">
+        <div>
+          <p className="font-semibold text-sm leading-tight">{name}</p>
+          <p className="text-xs text-muted-foreground">{employee.Profesion}</p>
+        </div>
+
+        {isAssigned ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="w-full text-xs text-destructive hover:text-destructive"
+            onClick={() => {
+              dispatch({ type: ACTIONS.UNASSIGN_CHARTER_EMPLOYEE, payload: { employee_name: name } })
+              onClose()
+            }}
+          >
+            Quitar asignación
+          </Button>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {/* PE option */}
+            <button
+              onClick={() => {
+                dispatch({ type: ACTIONS.ASSIGN_TO_CHARTER_PE, payload: { employee_name: name } })
+                onClose()
+              }}
+              style={{
+                fontSize:   12,
+                color:      '#1d4ed8',
+                background: 'none',
+                border:     'none',
+                cursor:     'pointer',
+                padding:    '3px 0',
+                textAlign:  'left',
+              }}
+            >
+              → Punto de encuentro{ca.meeting_point ? ` (${ca.meeting_point.name})` : ''}
+            </button>
+
+            {/* Pickup options */}
+            {ca.pickups.map((pu, i) => pu?.point && (
+              <button
+                key={i}
+                onClick={() => {
+                  dispatch({ type: ACTIONS.ASSIGN_TO_CHARTER_PICKUP, payload: { employee_name: name, pickup_index: i } })
+                  onClose()
+                }}
+                style={{
+                  fontSize:   12,
+                  color:      '#374151',
+                  background: 'none',
+                  border:     'none',
+                  cursor:     'pointer',
+                  padding:    '3px 0',
+                  textAlign:  'left',
+                }}
+              >
+                → Pickup {i + 1} ({pu.point.name ?? pu.point.address})
+              </button>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // VehicleAssignmentMenu — step 3+ context menu for one employee
 // ---------------------------------------------------------------------------
 
@@ -563,6 +659,8 @@ export default function StaffMarkers({ staff }) {
     secondMinifleteResult,
     coordinateOverrides,
     editingMarker,
+    charterMode,
+    charterAssignment,
   } = state
 
   const frescosAssignedNames = useMemo(() => {
@@ -628,6 +726,8 @@ export default function StaffMarkers({ staff }) {
         let bgColor
         if (isFrescosAssigned) {
           bgColor = '#B0C4DE'
+        } else if (isStep3Plus && charterMode) {
+          bgColor = getCharterMarkerBg(employee, charterAssignment)
         } else if (isStep3Plus && vehicles.length > 0) {
           bgColor = getMarkerBg(employee, vehicles)
         } else {
@@ -674,6 +774,13 @@ export default function StaffMarkers({ staff }) {
             <>
               {selIsFrescosAssigned ? (
                 <FrescosInfoContent employee={selectedEmployee} />
+              ) : isStep3Plus && charterMode ? (
+                <CharterContextMenu
+                  employee={selectedEmployee}
+                  charterAssignment={charterAssignment}
+                  dispatch={dispatch}
+                  onClose={handleInfoClose}
+                />
               ) : isStep3Plus ? (
                 <VehicleAssignmentMenu
                   employee={selectedEmployee}

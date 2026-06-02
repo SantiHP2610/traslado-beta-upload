@@ -181,12 +181,20 @@ const initialState = {
   allMeetingPoints: null,
 
   // Charter flow — set when remainingPool.status === 'charter'.
-  // charterPickupPoints: up to 2 pickup stops on the PE→event route selected by the manager.
-  //   Sparse array; slots are null/undefined when unused. Max index = 1.
-  // charterPickupMode: { active, slotIndex } — active while the manager is clicking
-  //   the map to select a charter pickup point.
-  charterPickupPoints: [],
-  charterPickupMode: { active: false, slotIndex: null },
+  // charterMode: true when the pool triggers the charter path.
+  // charterAssignment: structured assignment object for the charter bus.
+  // charterPickupMode: { active, index } — active while the manager is clicking
+  //   the map to add a charter pickup point.
+  charterMode: false,
+  charterAssignment: {
+    meeting_point:    null,   // { name, lat, lng, address }
+    custom_departure: null,   // override departure address (same shape), or null
+    pickups:          [],     // [{ point: {name,lat,lng,address}, passengers: [] }] max 2
+    pe_passengers:    [],     // string[] names at PE
+    selected_company: null,   // string — charter company name
+    route:            null,   // { encoded_polyline, duration_seconds }
+  },
+  charterPickupMode: { active: false, index: 0 },
 
   // Snapshot of driverRoutes taken before the first pickup confirmation.
   // Kept as a legacy field (no longer written) — see originalDriverRoutes note above.
@@ -242,9 +250,18 @@ export const ACTIONS = {
   SET_ALL_MEETING_POINTS:         'SET_ALL_MEETING_POINTS',
 
   // ── charter flow actions ──────────────────────────────────────────────────
-  SET_CHARTER_PICKUP_MODE:  'SET_CHARTER_PICKUP_MODE',
-  SET_CHARTER_PICKUP_POINT: 'SET_CHARTER_PICKUP_POINT',
-  REMOVE_CHARTER_PICKUP:    'REMOVE_CHARTER_PICKUP',
+  SET_CHARTER_MODE:              'SET_CHARTER_MODE',
+  SET_CHARTER_MEETING_POINT:     'SET_CHARTER_MEETING_POINT',
+  SET_CHARTER_CUSTOM_DEPARTURE:  'SET_CHARTER_CUSTOM_DEPARTURE',
+  ADD_CHARTER_PICKUP:            'ADD_CHARTER_PICKUP',
+  REMOVE_CHARTER_PICKUP:         'REMOVE_CHARTER_PICKUP',
+  ASSIGN_TO_CHARTER_PE:          'ASSIGN_TO_CHARTER_PE',
+  ASSIGN_TO_CHARTER_PICKUP:      'ASSIGN_TO_CHARTER_PICKUP',
+  UNASSIGN_CHARTER_EMPLOYEE:     'UNASSIGN_CHARTER_EMPLOYEE',
+  SET_CHARTER_ROUTE:             'SET_CHARTER_ROUTE',
+  SET_CHARTER_COMPANY:           'SET_CHARTER_COMPANY',
+  SET_CHARTER_PICKUP_MODE:       'SET_CHARTER_PICKUP_MODE',
+  RESET_CHARTER_ASSIGNMENT:      'RESET_CHARTER_ASSIGNMENT',
 
   // ── new vehicles-model actions ────────────────────────────────────────────
   INIT_VEHICLES:              'INIT_VEHICLES',
@@ -336,25 +353,117 @@ function appReducer(state, action) {
     case ACTIONS.SET_ALL_MEETING_POINTS:
       return { ...state, allMeetingPoints: action.payload }
 
-    case ACTIONS.SET_CHARTER_PICKUP_MODE:
-      // payload: { active: boolean, slotIndex: 0|1|null }
-      return { ...state, charterPickupMode: action.payload }
+    case ACTIONS.SET_CHARTER_MODE:
+      // payload: boolean
+      return { ...state, charterMode: action.payload }
 
-    case ACTIONS.SET_CHARTER_PICKUP_POINT: {
-      // payload: { slotIndex: 0|1, point: { lat, lng, name, address } }
-      const { slotIndex, point } = action.payload
-      const newPoints = [...(state.charterPickupPoints ?? [])]
-      newPoints[slotIndex] = point
-      return { ...state, charterPickupPoints: newPoints }
+    case ACTIONS.SET_CHARTER_MEETING_POINT:
+      // payload: { meeting_point: { name, lat, lng, address } }
+      return {
+        ...state,
+        charterAssignment: { ...state.charterAssignment, meeting_point: action.payload.meeting_point },
+      }
+
+    case ACTIONS.SET_CHARTER_CUSTOM_DEPARTURE:
+      // payload: { address: { name, lat, lng, address } | null }
+      return {
+        ...state,
+        charterAssignment: { ...state.charterAssignment, custom_departure: action.payload.address },
+      }
+
+    case ACTIONS.ADD_CHARTER_PICKUP: {
+      // payload: { point: { name, lat, lng, address } }
+      const currentPickups = state.charterAssignment.pickups
+      if (currentPickups.length >= 2) return state  // hard cap at 2
+      const newPickup = { point: action.payload.point, passengers: [] }
+      return {
+        ...state,
+        charterAssignment: {
+          ...state.charterAssignment,
+          pickups: [...currentPickups, newPickup],
+        },
+      }
     }
 
     case ACTIONS.REMOVE_CHARTER_PICKUP: {
-      // payload: { slotIndex: 0|1 }
-      const { slotIndex } = action.payload
-      const newPoints = [...(state.charterPickupPoints ?? [])]
-      newPoints[slotIndex] = undefined
-      return { ...state, charterPickupPoints: newPoints }
+      // payload: { index: 0|1 }
+      const { index } = action.payload
+      const filtered = state.charterAssignment.pickups.filter((_, i) => i !== index)
+      // Also remove passengers from this pickup from no other slot
+      return {
+        ...state,
+        charterAssignment: { ...state.charterAssignment, pickups: filtered },
+      }
     }
+
+    case ACTIONS.ASSIGN_TO_CHARTER_PE: {
+      // payload: { employee_name }
+      const { employee_name } = action.payload
+      if (state.charterAssignment.pe_passengers.includes(employee_name)) return state
+      return {
+        ...state,
+        charterAssignment: {
+          ...state.charterAssignment,
+          pe_passengers: [...state.charterAssignment.pe_passengers, employee_name],
+        },
+      }
+    }
+
+    case ACTIONS.ASSIGN_TO_CHARTER_PICKUP: {
+      // payload: { employee_name, pickup_index: 0|1 }
+      const { employee_name, pickup_index } = action.payload
+      const pickups = state.charterAssignment.pickups.map((pu, i) => {
+        if (i !== pickup_index) return pu
+        if (pu.passengers.includes(employee_name)) return pu
+        return { ...pu, passengers: [...pu.passengers, employee_name] }
+      })
+      return { ...state, charterAssignment: { ...state.charterAssignment, pickups } }
+    }
+
+    case ACTIONS.UNASSIGN_CHARTER_EMPLOYEE: {
+      // payload: { employee_name } — removes from pe_passengers and all pickups
+      const { employee_name } = action.payload
+      return {
+        ...state,
+        charterAssignment: {
+          ...state.charterAssignment,
+          pe_passengers: state.charterAssignment.pe_passengers.filter((n) => n !== employee_name),
+          pickups: state.charterAssignment.pickups.map((pu) => ({
+            ...pu,
+            passengers: pu.passengers.filter((n) => n !== employee_name),
+          })),
+        },
+      }
+    }
+
+    case ACTIONS.SET_CHARTER_ROUTE:
+      // payload: { route: { encoded_polyline, duration_seconds } }
+      return {
+        ...state,
+        charterAssignment: { ...state.charterAssignment, route: action.payload.route },
+      }
+
+    case ACTIONS.SET_CHARTER_COMPANY:
+      // payload: { company_name }
+      return {
+        ...state,
+        charterAssignment: { ...state.charterAssignment, selected_company: action.payload.company_name },
+      }
+
+    case ACTIONS.SET_CHARTER_PICKUP_MODE:
+      // payload: { active: boolean, index: 0|1 }
+      return { ...state, charterPickupMode: action.payload }
+
+    case ACTIONS.RESET_CHARTER_ASSIGNMENT:
+      // Clears all assignment data but keeps pickups structure (points stay, passengers cleared)
+      return {
+        ...state,
+        charterAssignment: {
+          ...state.charterAssignment,
+          pe_passengers: [],
+          pickups: state.charterAssignment.pickups.map((pu) => ({ ...pu, passengers: [] })),
+        },
+      }
 
     // ── legacy no-ops ─────────────────────────────────────────────────────
     // Old components may still dispatch these. Returning state unchanged
@@ -544,42 +653,72 @@ function appReducer(state, action) {
         // Leaving step 4 → step 3: undo confirmation and final output.
         Object.assign(clearing, { showModal: false, showOutput: false, finalOutput: null })
       } else if (state.currentStep >= 3) {
-        // Leaving step 3 → step 2 (normal) or step 1 (charter, which skips 2).
-        // Clearing vehicles[] discards per-vehicle routes, pickups, and meeting
-        // point overrides in one shot.  Charter pickup state is also cleared.
-        Object.assign(clearing, {
-          vehicles: [],
-          pending_employee: null,
-          activePickupResult: null,
-          chosenMeetingPoint: null,
-          manualPickupMode: { active: false, vehicleId: null },
-          charterPickupPoints: [],
-          charterPickupMode: { active: false, slotIndex: null },
-        })
+        if (state.charterMode) {
+          // Charter step 3 → step 2: clear only assignment data, keep meeting_point/pickups/route.
+          Object.assign(clearing, {
+            charterAssignment: {
+              ...state.charterAssignment,
+              pe_passengers: [],
+              pickups: state.charterAssignment.pickups.map((pu) => ({ ...pu, passengers: [] })),
+            },
+          })
+        } else {
+          // Normal step 3 → step 2: clear all vehicle state.
+          Object.assign(clearing, {
+            vehicles: [],
+            pending_employee: null,
+            activePickupResult: null,
+            chosenMeetingPoint: null,
+            manualPickupMode: { active: false, vehicleId: null },
+          })
+        }
       } else if (state.currentStep >= 2) {
-        // Leaving step 2 → step 1: undo routes, PEA evaluation, meeting point
-        // data, and any CABA-specific decisions so useStepTwo recomputes cleanly.
-        Object.assign(clearing, {
-          meetingPoint: null,
-          driverRoutes: null,
-          peaEvaluation: null,
-          chosenMeetingPoint: null,
-          manualPeaMode: false,
-          cabaDecisionToTransport: false,
-          allMeetingPoints: null,
-        })
+        if (state.charterMode) {
+          // Charter step 2 → step 1: clear all charter assignment state.
+          Object.assign(clearing, {
+            charterAssignment: {
+              meeting_point:    null,
+              custom_departure: null,
+              pickups:          [],
+              pe_passengers:    [],
+              selected_company: null,
+              route:            null,
+            },
+            charterPickupMode: { active: false, index: 0 },
+            meetingPoint:      null,
+            chosenMeetingPoint: null,
+          })
+        } else {
+          // Normal step 2 → step 1: undo routes, PEA evaluation, meeting point
+          // data, and any CABA-specific decisions so useStepTwo recomputes cleanly.
+          Object.assign(clearing, {
+            meetingPoint: null,
+            driverRoutes: null,
+            peaEvaluation: null,
+            chosenMeetingPoint: null,
+            manualPeaMode: false,
+            cabaDecisionToTransport: false,
+            allMeetingPoints: null,
+          })
+        }
       } else if (state.currentStep >= 1) {
         // Leaving step 1 → step 0: undo the "van question" (frescos panel).
-        // meetingPoint is included because the charter overlay fetches it at
-        // step 1 and dispatches SET_MEETING_POINT before advancing to step 3.
         Object.assign(clearing, {
           frescosResult: null,
           secondMinifleteResult: null,
           remainingPool: null,
           personalVehicle: null,
           meetingPoint: null,
-          charterPickupPoints: [],
-          charterPickupMode: { active: false, slotIndex: null },
+          charterMode: false,
+          charterAssignment: {
+            meeting_point:    null,
+            custom_departure: null,
+            pickups:          [],
+            pe_passengers:    [],
+            selected_company: null,
+            route:            null,
+          },
+          charterPickupMode: { active: false, index: 0 },
         })
       }
 
@@ -725,6 +864,21 @@ export function getUnassignedEmployees(state) {
     const name = `${emp.Nombre} ${emp.Apellido}`
     return !assigned.has(name)
   })
+}
+
+/**
+ * Returns employees from remainingPool not yet assigned to any charter slot
+ * (neither pe_passengers nor any pickup's passengers list).
+ * Returns [] when remainingPool is not populated.
+ */
+export function getCharterUnassigned(state) {
+  const pool = state.remainingPool?.remaining_pool ?? []
+  const ca   = state.charterAssignment
+  const assigned = new Set([
+    ...ca.pe_passengers,
+    ...ca.pickups.flatMap((p) => p.passengers),
+  ])
+  return pool.filter((e) => !assigned.has(`${e.Nombre} ${e.Apellido}`))
 }
 
 /**

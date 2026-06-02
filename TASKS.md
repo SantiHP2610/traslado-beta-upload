@@ -13,6 +13,6 @@ next_estimated_delivery: 2026-06-04
 - [ ] pickup_place siempre null en build_final_output: pasar el pickup confirmado al endpoint /final-output y propagarlo en transport_block.personal_vehicle
 - [ ] assigned_roles hardcodeados en /evaluate-pea: reemplazar la lista fija por los roles reales recibidos como parámetro desde el frontend
 - [ ] Routing de regreso para eventos en CABA: paso post-evento que calcula rutas de regreso desde el venue hasta el domicilio de cada empleado, agrupadas por tránsito o Uber
-- [ ] Planificación de pickup para charter: cuando remainingPool.status === 'charter', agregar paso para definir punto de concentración central y calcular tiempos de tránsito desde cada domicilio
-
 ## Done
+
+- [x] Planificación de pickup para charter: cuando remainingPool.status === 'charter', rediseño completo del flujo de charter con nuevo modelo de estado (charterAssignment), selección de PE en paso 2, asignación de empleados por PE/pickup en paso 3, modal de confirmación y output final específicos para charter

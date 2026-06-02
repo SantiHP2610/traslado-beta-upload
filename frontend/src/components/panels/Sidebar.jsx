@@ -24,6 +24,7 @@ import FrescosPanel                         from './FrescosPanel'
 import PeaPanel                             from './PeaPanel'
 import { CabaPanel }                        from './CabaPanel'
 import { CabaPeSelectionPanel }             from './CabaPeSelectionPanel'
+import CharterPeSelectionPanel              from './CharterPeSelectionPanel'
 
 // ---------------------------------------------------------------------------
 // EventInfoSection — compact event summary at the top of the sidebar
@@ -399,17 +400,20 @@ export default function Sidebar() {
 
   // Use frescosResult (not currentStep > 1) so the step-1 header collapses after
   // the frescos API calls complete, even when the step-2 transition is deferred (CABA).
-  const step1Done = !!state.frescosResult
-  const fr        = state.frescosResult
-  const event     = state.excelData?.event
-  const services  = state.excelData?.services ?? []
-  const isCaba    = !!event?.is_caba
+  const step1Done  = !!state.frescosResult
+  const fr         = state.frescosResult
+  const event      = state.excelData?.event
+  const services   = state.excelData?.services ?? []
+  const isCaba     = !!event?.is_caba
+  const isCharter  = state.charterMode
 
   // ── INIT_VEHICLES trigger ────────────────────────────────────────────────
   // Fires once when the manager confirms a PE or PEA (chosenMeetingPoint set)
   // while vehicles is still empty.  Builds the vehicles array and immediately
   // sets the personal vehicle's route from the already-computed driverRoutes.
+  // Skipped for charter — charter does not use the vehicles model.
   useEffect(() => {
+    if (state.charterMode)         return  // charter uses charterAssignment, not vehicles
     if (!state.chosenMeetingPoint) return
     if (state.vehicles.length > 0) return
     if (!state.remainingPool)      return
@@ -542,21 +546,24 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* ── Step 2: Punto de encuentro ───────────────────────────────── */}
+        {/* ── Step 2: Punto de encuentro / Charter PE selection ────────── */}
         {state.currentStep >= 2 && (
           <div style={{ padding: '16px 20px', animation: 'fadeIn 200ms ease-out' }}>
-            {isCaba && state.cabaDecisionToTransport && !state.meetingPoint
-              ? <CabaPeSelectionPanel />
-              : (!isCaba || state.meetingPoint)
-                ? <PeaPanel />
-                : null
+            {isCharter
+              ? <CharterPeSelectionPanel />
+              : isCaba && state.cabaDecisionToTransport && !state.meetingPoint
+                ? <CabaPeSelectionPanel />
+                : (!isCaba || state.meetingPoint)
+                  ? <PeaPanel />
+                  : null
             }
           </div>
         )}
 
         {/* ── Step 2b: Uber route tracing ───────────────────────────────── */}
         {/* Shown once chosenMeetingPoint is confirmed and vehicles are ready. */}
-        {state.currentStep >= 2 && state.chosenMeetingPoint && state.vehicles.length > 0 && (
+        {/* Skipped for charter — charter does not use the vehicles/Uber model.  */}
+        {state.currentStep >= 2 && state.chosenMeetingPoint && state.vehicles.length > 0 && !isCharter && (
           <UberRoutesSection />
         )}
       </div>
