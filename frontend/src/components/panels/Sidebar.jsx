@@ -456,19 +456,26 @@ function haversineKm(a, b) {
 
 // ---------------------------------------------------------------------------
 // CharterPeSelectionSection — shown in step 2 when charterMode is true
-// Fetches all 3 PEs, shows selectable cards with distance info, and
-// dispatches SET_CHOSEN_MEETING_POINT + auto-advances to step 3 on confirm.
+//
+// Three-phase interaction:
+//   1. Card click   → setSelectedPe (local) + SET_HIGHLIGHTED_PE (map preview)
+//   2. "Elegir" btn → handleConfirmPe: dispatches INIT_VEHICLES, computes
+//                     PE→event route via /simple-route, then advances to step 3.
+//
+// Route is computed BEFORE advancing so canValidate's route check passes.
+// INIT_VEHICLES and SET_CURRENT_STEP are NOT delegated to Sidebar's useEffect
+// (that effect now skips charter to avoid re-triggering on STEP_BACK).
 // ---------------------------------------------------------------------------
 
 function CharterPeSelectionSection() {
   const { state, dispatch } = useAppState()
-  const [allPes,   setAllPes]   = useState(null)
-  const [loading,  setLoading]  = useState(true)
-  const [error,    setError]    = useState(null)
-  const [choosing, setChoosing] = useState(false)
+  const [allPes,     setAllPes]     = useState(null)
+  const [loading,    setLoading]    = useState(true)
+  const [error,      setError]      = useState(null)
+  const [selectedPe, setSelectedPe] = useState(null)
+  const [choosing,   setChoosing]   = useState(false)
 
   const staffWithCoords = state.staffWithCoords ?? []
-  const eventCoords     = state.eventCoords
 
   useEffect(() => {
     nearestMeetingPoint(true)
@@ -486,13 +493,36 @@ function CharterPeSelectionSection() {
     return dists.reduce((s, d) => s + d, 0) / dists.length
   }
 
-  async function handleChoose(pe) {
+  // Card click — preview only (map marker + "Elegir" button reveal)
+  function handleCardClick(pe) {
+    setSelectedPe(pe)
+    dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })
+  }
+
+  // "Elegir este PE" button — full confirmation: vehicles init + route + step advance
+  async function handleConfirmPe(pe) {
     if (choosing) return
     setChoosing(true)
+
+    const pool_count = state.remainingPool?.remaining_pool?.length ?? 0
+
     dispatch({ type: ACTIONS.SET_MEETING_POINT,        payload: pe })
     dispatch({ type: ACTIONS.SET_CHOSEN_MEETING_POINT, payload: pe })
     dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE,       payload: null })
-    // INIT_VEHICLES and auto-advance to step 3 happen in Sidebar's useEffect
+    dispatch({
+      type:    ACTIONS.INIT_VEHICLES,
+      payload: { pool_count, charter: true, chosenMeetingPoint: pe },
+    })
+
+    // Compute PE→event route before advancing so canValidate passes.
+    if (state.eventCoords) {
+      try {
+        const route = await simpleRoute(pe.lat, pe.lng, state.eventCoords.lat, state.eventCoords.lng)
+        dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'charter_1', route } })
+      } catch {}
+    }
+
+    dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 3 })
   }
 
   if (loading) return (
@@ -508,7 +538,6 @@ function CharterPeSelectionSection() {
     ...(allPes.alternatives ?? []),
   ].filter(Boolean)
 
-  // Determine which PE has the smallest avg staff distance
   const staffAvgs = peList.map((pe) => avgStaffDistanceKm(pe))
   const minAvgIdx = staffAvgs.reduce(
     (minI, d, i) => (d !== null && (staffAvgs[minI] === null || d < staffAvgs[minI])) ? i : minI,
@@ -526,20 +555,22 @@ function CharterPeSelectionSection() {
           const isRecommended = i === 0
           const avgDist       = staffAvgs[i]
           const isNearTeam    = i === minAvgIdx && minAvgIdx !== 0
+          const isSelected    = selectedPe?.name === pe.name
 
           return (
             <div
               key={pe.name}
+              onClick={() => !choosing && handleCardClick(pe)}
               style={{
                 padding:      '12px 14px',
-                background:   '#f9fafb',
-                border:       isRecommended ? '1.5px solid #FBBC04' : '1px solid #e5e7eb',
+                background:   isSelected ? '#f0f9ff' : '#f9fafb',
+                border:       isSelected
+                  ? '2px solid #111827'
+                  : isRecommended ? '1.5px solid #FBBC04' : '1px solid #e5e7eb',
                 borderRadius: 10,
-                cursor:       'pointer',
-                transition:   'border-color 120ms ease, box-shadow 120ms ease',
+                cursor:       choosing ? 'default' : 'pointer',
+                transition:   'border-color 120ms ease, background 120ms ease',
               }}
-              onMouseEnter={() => dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })}
-              onMouseLeave={() => dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null })}
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 4 }}>
                 <p style={{ fontSize: 13, fontWeight: 700, color: '#111827', margin: 0, flex: 1, marginRight: 8 }}>
@@ -574,31 +605,40 @@ function CharterPeSelectionSection() {
                 </p>
               )}
 
-              <button
-                onClick={() => handleChoose(pe)}
-                disabled={choosing}
-                style={{
-                  marginTop:    8,
-                  width:        '100%',
-                  padding:      '8px 12px',
-                  background:   choosing ? '#e5e7eb' : '#111827',
-                  color:        choosing ? '#9ca3af' : '#fff',
-                  border:       'none',
-                  borderRadius: 6,
-                  fontSize:     12,
-                  fontWeight:   500,
-                  cursor:       choosing ? 'default' : 'pointer',
-                  transition:   'background 150ms ease',
-                }}
-                onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#374151' }}
-                onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#111827' }}
-              >
-                {choosing ? 'Configurando…' : 'Elegir este PE'}
-              </button>
+              {/* "Elegir" button — only shown on the selected card */}
+              {isSelected && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleConfirmPe(pe) }}
+                  disabled={choosing}
+                  style={{
+                    marginTop:    10,
+                    width:        '100%',
+                    padding:      '8px 12px',
+                    background:   choosing ? '#e5e7eb' : '#111827',
+                    color:        choosing ? '#9ca3af' : '#fff',
+                    border:       'none',
+                    borderRadius: 6,
+                    fontSize:     12,
+                    fontWeight:   500,
+                    cursor:       choosing ? 'default' : 'pointer',
+                    transition:   'background 150ms ease',
+                  }}
+                  onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#374151' }}
+                  onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#111827' }}
+                >
+                  {choosing ? 'Configurando…' : 'Elegir este PE →'}
+                </button>
+              )}
             </div>
           )
         })}
       </div>
+
+      {!selectedPe && (
+        <p style={{ fontSize: 12, color: '#9ca3af', marginTop: 10, textAlign: 'center' }}>
+          Hacé click en un PE para seleccionarlo
+        </p>
+      )}
     </div>
   )
 }
@@ -622,60 +662,37 @@ export default function Sidebar() {
 
   // ── INIT_VEHICLES trigger ────────────────────────────────────────────────
   // Fires once when the manager confirms a PE (chosenMeetingPoint set) while
-  // vehicles is still empty.  For charter: creates charter_1 + auto-advances
-  // to step 3.  For normal: creates personal/Uber vehicles and seeds routes.
+  // vehicles is still empty.  Charter is excluded: INIT_VEHICLES, route
+  // computation, and step advance are all handled synchronously in the PE
+  // confirmation button (CharterPeSelectionSection.handleConfirmPe).
   useEffect(() => {
     if (!state.chosenMeetingPoint) return
     if (state.vehicles.length > 0) return
     if (!state.remainingPool)      return
+    // Charter handles its own initialization in the button handler.
+    if (state.charterMode)         return
 
     const pool_count = state.remainingPool.remaining_pool?.length ?? 0
 
-    if (state.charterMode) {
-      dispatch({
-        type:    ACTIONS.INIT_VEHICLES,
-        payload: { pool_count, charter: true, chosenMeetingPoint: state.chosenMeetingPoint },
-      })
-      // Charter skips Uber route tracing — go directly to assignment step.
-      dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 3 })
-    } else {
-      const has_personal_vehicle = state.personalVehicle?.has_personal_vehicle ?? false
-      const driverObj            = state.personalVehicle?.driver
-      const driver               = driverObj ? `${driverObj.Nombre} ${driverObj.Apellido}` : null
-      const vehicle_description  = state.personalVehicle?.vehicle_description ?? null
+    const has_personal_vehicle = state.personalVehicle?.has_personal_vehicle ?? false
+    const driverObj            = state.personalVehicle?.driver
+    const driver               = driverObj ? `${driverObj.Nombre} ${driverObj.Apellido}` : null
+    const vehicle_description  = state.personalVehicle?.vehicle_description ?? null
 
-      dispatch({
-        type:    ACTIONS.INIT_VEHICLES,
-        payload: { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint: state.chosenMeetingPoint },
-      })
+    dispatch({
+      type:    ACTIONS.INIT_VEHICLES,
+      payload: { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint: state.chosenMeetingPoint },
+    })
 
-      if (has_personal_vehicle && state.driverRoutes) {
-        const isPea = state.meetingPoint &&
-          state.chosenMeetingPoint?.name !== state.meetingPoint?.name
-        const route = isPea ? state.driverRoutes.direct_route : state.driverRoutes.base_route
-        if (route) {
-          dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'personal', route } })
-        }
+    if (has_personal_vehicle && state.driverRoutes) {
+      const isPea = state.meetingPoint &&
+        state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+      const route = isPea ? state.driverRoutes.direct_route : state.driverRoutes.base_route
+      if (route) {
+        dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'personal', route } })
       }
     }
   }, [state.chosenMeetingPoint]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Charter vehicle auto-route ────────────────────────────────────────────
-  // Once charter_1 is created (vehicles initialized) but has no route yet,
-  // auto-compute the PE→event route so canValidate's route check passes.
-  useEffect(() => {
-    if (!state.charterMode) return
-    const charterV = state.vehicles.find((v) => v.id === 'charter_1')
-    if (!charterV || charterV.route !== null) return
-    if (!state.chosenMeetingPoint || !state.eventCoords) return
-
-    simpleRoute(
-      state.chosenMeetingPoint.lat, state.chosenMeetingPoint.lng,
-      state.eventCoords.lat,        state.eventCoords.lng,
-    ).then((route) => {
-      dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'charter_1', route } })
-    }).catch(() => {})
-  }, [state.vehicles, state.chosenMeetingPoint, state.eventCoords]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div

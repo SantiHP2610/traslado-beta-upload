@@ -37,6 +37,7 @@ function vehicleDisplayName(v) {
       ? `${v.vehicle_description} de ${v.driver}`
       : 'Vehículo personal'
   }
+  if (v.type === 'charter') return 'Charter'
   return `Uber ${v.id.replace('uber_', '')}`
 }
 

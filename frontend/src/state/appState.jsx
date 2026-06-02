@@ -604,11 +604,13 @@ function appReducer(state, action) {
         })
       } else if (state.currentStep >= 3) {
         // Leaving step 3 → step 2: clear all vehicle assignments (charter and normal).
+        // Also clear meetingPoint for charter so PE selection starts fresh.
         Object.assign(clearing, {
           vehicles: [],
           pending_employee: null,
           activePickupResult: null,
           chosenMeetingPoint: null,
+          meetingPoint: null,
           manualPickupMode: { active: false, vehicleId: null },
         })
       } else if (state.currentStep >= 2) {

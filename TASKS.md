@@ -16,3 +16,6 @@ next_estimated_delivery: 2026-06-04
 ## Done
 
 - [x] Planificación de pickup para charter: cuando remainingPool.status === 'charter', rediseño completo del flujo de charter con nuevo modelo de estado (charterAssignment), selección de PE en paso 2, asignación de empleados por PE/pickup en paso 3, modal de confirmación y output final específicos para charter
+- [x] Fix bug 1 charter: back button desde paso 3 ahora vuelve correctamente a paso 2 (limpia meetingPoint y vehicles; INIT_VEHICLES effect ya no auto-avanza para charter)
+- [x] Fix bug 2 charter: etiqueta de vehículo ya no muestra "Uber charter_1" — muestra "Charter" en todos los panels (AssignmentSummaryPanel, UnassignedPanel, StaffMarkers, ConfirmationModal, FinalOutputBlocks)
+- [x] Fix bug 3 charter: selección de PE separada en dos pasos (click en card = preview; click en "Elegir este PE" = confirmación); ruta PE→evento calculada antes de avanzar a paso 3
