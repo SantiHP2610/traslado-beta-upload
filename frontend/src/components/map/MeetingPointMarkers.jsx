@@ -274,8 +274,29 @@ export default function MeetingPointMarkers() {
     !isChosen(meetingPoint) &&
     !candidates.some((c) => isChosen(c))
 
+  // Temporary highlighted PE — shown while the manager browses PE cards in
+  // the charter PE selection sidebar.  Different React key from real PE markers
+  // so it appears/disappears instantly (no cross-point animation).
+  const highlightedPE = state.highlightedPE
+
   return (
     <>
+      {highlightedPE && !chosen && (
+        <AdvancedMarker
+          key={`highlight-${highlightedPE.lat}-${highlightedPE.lng}`}
+          position={{ lat: highlightedPE.lat, lng: highlightedPE.lng }}
+          title={highlightedPE.name}
+        >
+          <Pin
+            background="#FBBC04"
+            borderColor="#ffffff"
+            glyphColor="#1a1a1a"
+            glyph="PE"
+            scale={1.3}
+          />
+        </AdvancedMarker>
+      )}
+
       {/* ── Original PE marker ──────────────────────────────────────────── */}
       {/* Hidden once a choice is made and PE was NOT the chosen point.      */}
       {(!isPostChoice || peChosen) && (

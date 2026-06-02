@@ -187,6 +187,9 @@ export default function FinalOutputBlocks() {
   const staff = state.excelData?.staff ?? []
   const event = state.excelData?.event ?? {}
 
+  const isCharter        = state.charterMode
+  const charterCompany   = state.selectedCharterCompany
+
   // Pickup timing lives on the personal vehicle's route (frontend state).
   const statePersonal    = state.vehicles.find((v) => v.type === 'personal')
   const pickupLegSeconds = statePersonal?.route?.leg_seconds ?? null
@@ -325,7 +328,12 @@ export default function FinalOutputBlocks() {
               {/* ── Right: Salida desde PE ───────────────────────────────── */}
               <div className="overflow-y-auto space-y-4 pl-2">
 
-                <p className="text-sm font-semibold">Salida desde Punto de Encuentro</p>
+                <p className="text-sm font-semibold">
+                  {isCharter && charterCompany
+                    ? `Charter — ${charterCompany}`
+                    : 'Salida desde Punto de Encuentro'
+                  }
+                </p>
 
                 <div className="space-y-0.5">
                   <SectionTitle>Punto de encuentro</SectionTitle>

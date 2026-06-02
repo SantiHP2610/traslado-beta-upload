@@ -16,7 +16,7 @@
 
 import { useState }                                from 'react'
 import { RotateCcw }                               from 'lucide-react'
-import { useAppState, ACTIONS, getUnassignedEmployees, isVehicleFull } from '../../state/appState'
+import { useAppState, ACTIONS, getUnassignedEmployees, isVehicleFull, VEHICLE_COLORS } from '../../state/appState'
 
 function fullName(emp) {
   return `${emp.Nombre} ${emp.Apellido}`
@@ -44,7 +44,38 @@ function capacityInfo(v) {
 // ---------------------------------------------------------------------------
 
 function EmployeeMenu({ emp, vehicles, dispatch, onClose }) {
-  const name      = fullName(emp)
+  const name    = fullName(emp)
+
+  // Charter vehicle: flat list of charter-specific assignment options.
+  const charterV = vehicles.find((v) => v.type === 'charter')
+  if (charterV) {
+    return (
+      <div style={{ marginTop: 4, marginLeft: 17, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <button
+          onClick={() => {
+            dispatch({ type: ACTIONS.ASSIGN_TO_PE, payload: { employee_name: name, vehicle_id: charterV.id } })
+            onClose()
+          }}
+          style={{ fontSize: 12, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', textAlign: 'left' }}
+        >
+          → Punto de encuentro ({charterV.meeting_point?.name ?? 'PE'})
+        </button>
+        {charterV.pickups.map((pu, i) => pu.point && (
+          <button
+            key={i}
+            onClick={() => {
+              dispatch({ type: ACTIONS.ASSIGN_TO_PICKUP_SLOT, payload: { employee_name: name, vehicle_id: charterV.id, pickup_index: i } })
+              onClose()
+            }}
+            style={{ fontSize: 12, color: VEHICLE_COLORS.charter_1.pickup, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', textAlign: 'left' }}
+          >
+            → Pickup {i + 1} ({pu.point.place_name ?? pu.point.place_address})
+          </button>
+        ))}
+      </div>
+    )
+  }
+
   const available = vehicles.filter((v) => !isVehicleFull(v))
 
   if (available.length === 0) {

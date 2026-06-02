@@ -43,6 +43,7 @@ MAX_PASSENGERS_PER_CAR = 4
 # Total capacity is also 5 but the driver is never from our staff.
 MAX_PASSENGERS_UBER = 4
 CHARTER_THRESHOLD = 8
+CHARTER_MAX_PICKUPS = 2    # maximum pickup stops allowed for charter bus routing
 
 # --- Time parameters (minutes) ---
 # DEPARTURE_BUFFER_MINUTES: extra margin added before the calculated

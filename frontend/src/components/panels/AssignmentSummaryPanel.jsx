@@ -236,8 +236,40 @@ function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
           </p>
         )}
 
+        {/* ── Charter multi-pickup sections ─────────────────────────── */}
+        {vehicle.type === 'charter' && vehicle.pickups.map((pu, i) => (
+          <div key={i} style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #f3f4f6' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <p style={{ fontSize: 11, fontWeight: 600, color: colors.pickup, margin: 0, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Pickup {i + 1} — {pu.point?.place_name ?? pu.point?.place_address ?? 'Sin nombre'}
+              </p>
+              <button
+                onClick={() => dispatch({ type: ACTIONS.REMOVE_VEHICLE_PICKUP, payload: { vehicle_id: vehicle.id, index: i } })}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 14, padding: '0 2px' }}
+                title="Quitar pickup"
+                onMouseEnter={(e) => { e.currentTarget.style.color = '#dc2626' }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = '#9ca3af' }}
+              >✕</button>
+            </div>
+            {pu.point?.place_address && (
+              <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 4px', lineHeight: 1.4 }}>
+                {pu.point.place_address}
+              </p>
+            )}
+            {pu.passengers.map((name) => (
+              <PassengerRow
+                key={name}
+                name={name}
+                profesion={getProfesion(name)}
+                dotColor={colors.pickup}
+                onRemove={() => handleUnassign(name)}
+              />
+            ))}
+          </div>
+        ))}
+
         {/* ── Pickup section ────────────────────────────────────────── */}
-        {hasPickup && (
+        {vehicle.type !== 'charter' && hasPickup && (
           <div
             style={{
               marginTop:    8,
@@ -283,32 +315,42 @@ function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
           </div>
         )}
 
-        {/* ── "Elegir pickup en mapa" (any vehicle with route, no pickup yet) */}
-        {!vehicle.pickup.point && vehicle.route && (
-          <button
-            onClick={() => onPickupClick(vehicle.id)}
-            style={{
-              display:      'flex',
-              alignItems:   'center',
-              gap:          5,
-              marginTop:    8,
-              fontSize:     11,
-              color:        '#374151',
-              background:   '#f9fafb',
-              border:       '1px solid #e5e7eb',
-              borderRadius: 6,
-              padding:      '5px 10px',
-              cursor:       'pointer',
-              width:        '100%',
-              transition:   'background 120ms ease',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = '#f3f4f6' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = '#f9fafb' }}
-          >
-            <span style={{ fontSize: 12 }}>📍</span>
-            Elegir pickup en mapa
-          </button>
-        )}
+        {/* ── "Elegir pickup en mapa" ────────────────────────────────── */}
+        {/* Charter: uses pickups[] array, button visible if count < max_pickups */}
+        {/* Normal: uses pickup.point, button visible if not yet set            */}
+        {vehicle.route && (() => {
+          const showButton = vehicle.type === 'charter'
+            ? vehicle.pickups.length < vehicle.max_pickups
+            : !vehicle.pickup.point
+          return showButton ? (
+            <button
+              onClick={() => onPickupClick(vehicle.id)}
+              style={{
+                display:      'flex',
+                alignItems:   'center',
+                gap:          5,
+                marginTop:    8,
+                fontSize:     11,
+                color:        '#374151',
+                background:   '#f9fafb',
+                border:       '1px solid #e5e7eb',
+                borderRadius: 6,
+                padding:      '5px 10px',
+                cursor:       'pointer',
+                width:        '100%',
+                transition:   'background 120ms ease',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#f3f4f6' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#f9fafb' }}
+            >
+              <span style={{ fontSize: 12 }}>📍</span>
+              Elegir pickup en mapa
+              {vehicle.type === 'charter' && vehicle.pickups.length > 0
+                ? ` (${vehicle.pickups.length + 1} de ${vehicle.max_pickups})`
+                : ''}
+            </button>
+          ) : null
+        })()}
       </div>
     </div>
   )

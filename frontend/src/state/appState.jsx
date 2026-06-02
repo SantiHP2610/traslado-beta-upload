@@ -59,17 +59,18 @@ import { createContext, useContext, useReducer } from 'react'
 // ---------------------------------------------------------------------------
 
 export const VEHICLE_COLORS = {
-  personal: { route: '#FBBC04', passengers: '#FBBC04', pickup: '#7B1FA2' },
-  uber_1:   { route: '#2D2D2D', passengers: '#2D2D2D', pickup: '#1A3A5C' },
-  uber_2:   { route: '#5A5A5A', passengers: '#5A5A5A', pickup: '#2E5E8E' },
-  uber_3:   { route: '#858585', passengers: '#858585', pickup: '#4A7FB5' },
+  personal:  { route: '#FBBC04', passengers: '#FBBC04', pickup: '#7B1FA2' },
+  uber_1:    { route: '#2D2D2D', passengers: '#2D2D2D', pickup: '#1A3A5C' },
+  uber_2:    { route: '#5A5A5A', passengers: '#5A5A5A', pickup: '#2E5E8E' },
+  uber_3:    { route: '#858585', passengers: '#858585', pickup: '#4A7FB5' },
+  charter_1: { route: '#333333', passengers: '#555555', pickup: '#444444' },
 }
 
 // ---------------------------------------------------------------------------
 // Internal factory — builds a blank vehicle object with correct defaults.
 // ---------------------------------------------------------------------------
 
-function _buildVehicle(id, type, driver, vehicleDescription, meetingPoint, capacity, color) {
+function _buildVehicle(id, type, driver, vehicleDescription, meetingPoint, capacity, color, maxPickups = 1) {
   return {
     id,
     type,
@@ -79,6 +80,8 @@ function _buildVehicle(id, type, driver, vehicleDescription, meetingPoint, capac
     custom_meeting_point: false,
     passengers_pe:        [],
     pickup:               { point: null, passengers: [] },
+    pickups:              [],   // multi-pickup slots (charter only; non-charter stays on pickup)
+    max_pickups:          maxPickups,
     route:                null,
     capacity,
     color,
@@ -181,20 +184,17 @@ const initialState = {
   allMeetingPoints: null,
 
   // Charter flow — set when remainingPool.status === 'charter'.
-  // charterMode: true when the pool triggers the charter path.
-  // charterAssignment: structured assignment object for the charter bus.
-  // charterPickupMode: { active, index } — active while the manager is clicking
-  //   the map to add a charter pickup point.
+  // Charter now uses the normal vehicles model: a single charter_1 vehicle with
+  // type "charter", capacity 999, and max_pickups 2.  No separate charterAssignment
+  // slice is needed — all state lives in vehicles[].
   charterMode: false,
-  charterAssignment: {
-    meeting_point:    null,   // { name, lat, lng, address }
-    custom_departure: null,   // override departure address (same shape), or null
-    pickups:          [],     // [{ point: {name,lat,lng,address}, passengers: [] }] max 2
-    pe_passengers:    [],     // string[] names at PE
-    selected_company: null,   // string — charter company name
-    route:            null,   // { encoded_polyline, duration_seconds }
-  },
-  charterPickupMode: { active: false, index: 0 },
+
+  // Temporary PE highlight — dispatched while the manager browses PE cards in the
+  // charter PE selection step so a preview marker appears on the map.
+  highlightedPE: null,    // { name, lat, lng, address } | null
+
+  // Charter company chosen in the confirmation modal.
+  selectedCharterCompany: null,   // string | null
 
   // Snapshot of driverRoutes taken before the first pickup confirmation.
   // Kept as a legacy field (no longer written) — see originalDriverRoutes note above.
@@ -250,18 +250,9 @@ export const ACTIONS = {
   SET_ALL_MEETING_POINTS:         'SET_ALL_MEETING_POINTS',
 
   // ── charter flow actions ──────────────────────────────────────────────────
-  SET_CHARTER_MODE:              'SET_CHARTER_MODE',
-  SET_CHARTER_MEETING_POINT:     'SET_CHARTER_MEETING_POINT',
-  SET_CHARTER_CUSTOM_DEPARTURE:  'SET_CHARTER_CUSTOM_DEPARTURE',
-  ADD_CHARTER_PICKUP:            'ADD_CHARTER_PICKUP',
-  REMOVE_CHARTER_PICKUP:         'REMOVE_CHARTER_PICKUP',
-  ASSIGN_TO_CHARTER_PE:          'ASSIGN_TO_CHARTER_PE',
-  ASSIGN_TO_CHARTER_PICKUP:      'ASSIGN_TO_CHARTER_PICKUP',
-  UNASSIGN_CHARTER_EMPLOYEE:     'UNASSIGN_CHARTER_EMPLOYEE',
-  SET_CHARTER_ROUTE:             'SET_CHARTER_ROUTE',
-  SET_CHARTER_COMPANY:           'SET_CHARTER_COMPANY',
-  SET_CHARTER_PICKUP_MODE:       'SET_CHARTER_PICKUP_MODE',
-  RESET_CHARTER_ASSIGNMENT:      'RESET_CHARTER_ASSIGNMENT',
+  SET_CHARTER_MODE:    'SET_CHARTER_MODE',
+  SET_HIGHLIGHTED_PE:  'SET_HIGHLIGHTED_PE',    // preview marker while browsing PEs
+  SET_CHARTER_COMPANY: 'SET_CHARTER_COMPANY',   // company chosen in confirmation
 
   // ── new vehicles-model actions ────────────────────────────────────────────
   INIT_VEHICLES:              'INIT_VEHICLES',
@@ -275,6 +266,10 @@ export const ACTIONS = {
   CLEAR_VEHICLE_PICKUP:       'CLEAR_VEHICLE_PICKUP',
   SET_PENDING_EMPLOYEE:       'SET_PENDING_EMPLOYEE',
   RESET_ALL_VEHICLES:         'RESET_ALL_VEHICLES',
+  // Multi-pickup for charter vehicles (pickups[] array alongside single pickup{})
+  ADD_VEHICLE_PICKUP:         'ADD_VEHICLE_PICKUP',     // appends to v.pickups[]
+  REMOVE_VEHICLE_PICKUP:      'REMOVE_VEHICLE_PICKUP',  // removes from v.pickups[] by index
+  ASSIGN_TO_PICKUP_SLOT:      'ASSIGN_TO_PICKUP_SLOT',  // assigns employee to pickups[i].passengers
 }
 
 // ---------------------------------------------------------------------------
@@ -354,116 +349,13 @@ function appReducer(state, action) {
       return { ...state, allMeetingPoints: action.payload }
 
     case ACTIONS.SET_CHARTER_MODE:
-      // payload: boolean
       return { ...state, charterMode: action.payload }
 
-    case ACTIONS.SET_CHARTER_MEETING_POINT:
-      // payload: { meeting_point: { name, lat, lng, address } }
-      return {
-        ...state,
-        charterAssignment: { ...state.charterAssignment, meeting_point: action.payload.meeting_point },
-      }
-
-    case ACTIONS.SET_CHARTER_CUSTOM_DEPARTURE:
-      // payload: { address: { name, lat, lng, address } | null }
-      return {
-        ...state,
-        charterAssignment: { ...state.charterAssignment, custom_departure: action.payload.address },
-      }
-
-    case ACTIONS.ADD_CHARTER_PICKUP: {
-      // payload: { point: { name, lat, lng, address } }
-      const currentPickups = state.charterAssignment.pickups
-      if (currentPickups.length >= 2) return state  // hard cap at 2
-      const newPickup = { point: action.payload.point, passengers: [] }
-      return {
-        ...state,
-        charterAssignment: {
-          ...state.charterAssignment,
-          pickups: [...currentPickups, newPickup],
-        },
-      }
-    }
-
-    case ACTIONS.REMOVE_CHARTER_PICKUP: {
-      // payload: { index: 0|1 }
-      const { index } = action.payload
-      const filtered = state.charterAssignment.pickups.filter((_, i) => i !== index)
-      // Also remove passengers from this pickup from no other slot
-      return {
-        ...state,
-        charterAssignment: { ...state.charterAssignment, pickups: filtered },
-      }
-    }
-
-    case ACTIONS.ASSIGN_TO_CHARTER_PE: {
-      // payload: { employee_name }
-      const { employee_name } = action.payload
-      if (state.charterAssignment.pe_passengers.includes(employee_name)) return state
-      return {
-        ...state,
-        charterAssignment: {
-          ...state.charterAssignment,
-          pe_passengers: [...state.charterAssignment.pe_passengers, employee_name],
-        },
-      }
-    }
-
-    case ACTIONS.ASSIGN_TO_CHARTER_PICKUP: {
-      // payload: { employee_name, pickup_index: 0|1 }
-      const { employee_name, pickup_index } = action.payload
-      const pickups = state.charterAssignment.pickups.map((pu, i) => {
-        if (i !== pickup_index) return pu
-        if (pu.passengers.includes(employee_name)) return pu
-        return { ...pu, passengers: [...pu.passengers, employee_name] }
-      })
-      return { ...state, charterAssignment: { ...state.charterAssignment, pickups } }
-    }
-
-    case ACTIONS.UNASSIGN_CHARTER_EMPLOYEE: {
-      // payload: { employee_name } — removes from pe_passengers and all pickups
-      const { employee_name } = action.payload
-      return {
-        ...state,
-        charterAssignment: {
-          ...state.charterAssignment,
-          pe_passengers: state.charterAssignment.pe_passengers.filter((n) => n !== employee_name),
-          pickups: state.charterAssignment.pickups.map((pu) => ({
-            ...pu,
-            passengers: pu.passengers.filter((n) => n !== employee_name),
-          })),
-        },
-      }
-    }
-
-    case ACTIONS.SET_CHARTER_ROUTE:
-      // payload: { route: { encoded_polyline, duration_seconds } }
-      return {
-        ...state,
-        charterAssignment: { ...state.charterAssignment, route: action.payload.route },
-      }
+    case ACTIONS.SET_HIGHLIGHTED_PE:
+      return { ...state, highlightedPE: action.payload }
 
     case ACTIONS.SET_CHARTER_COMPANY:
-      // payload: { company_name }
-      return {
-        ...state,
-        charterAssignment: { ...state.charterAssignment, selected_company: action.payload.company_name },
-      }
-
-    case ACTIONS.SET_CHARTER_PICKUP_MODE:
-      // payload: { active: boolean, index: 0|1 }
-      return { ...state, charterPickupMode: action.payload }
-
-    case ACTIONS.RESET_CHARTER_ASSIGNMENT:
-      // Clears all assignment data but keeps pickups structure (points stay, passengers cleared)
-      return {
-        ...state,
-        charterAssignment: {
-          ...state.charterAssignment,
-          pe_passengers: [],
-          pickups: state.charterAssignment.pickups.map((pu) => ({ ...pu, passengers: [] })),
-        },
-      }
+      return { ...state, selectedCharterCompany: action.payload }
 
     // ── legacy no-ops ─────────────────────────────────────────────────────
     // Old components may still dispatch these. Returning state unchanged
@@ -482,29 +374,36 @@ function appReducer(state, action) {
     // ── vehicles model ────────────────────────────────────────────────────
 
     case ACTIONS.INIT_VEHICLES: {
-      // payload: { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint }
-      const { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint } = action.payload
+      // payload: { pool_count, has_personal_vehicle, driver, vehicle_description,
+      //            chosenMeetingPoint, charter? }
+      const { pool_count, has_personal_vehicle, driver, vehicle_description,
+              chosenMeetingPoint, charter } = action.payload
       const newVehicles = []
 
-      let remaining = pool_count
-
-      if (has_personal_vehicle) {
+      if (charter) {
+        // Charter path: one charter bus carries everyone, no capacity limit.
         newVehicles.push(_buildVehicle(
-          'personal', 'personal', driver, vehicle_description, chosenMeetingPoint, 5, VEHICLE_COLORS.personal,
+          'charter_1', 'charter', null, 'Charter', chosenMeetingPoint,
+          999, VEHICLE_COLORS.charter_1, 2,
         ))
-        // Personal car seats 5 (driver + 4 passengers); subtract full capacity
-        // so Ubers are only created for people who can't fit in the car at all.
-        remaining = Math.max(0, pool_count - 5)
-      }
-
-      if (remaining > 0) {
-        const uberCount = Math.ceil(remaining / 4)
-        for (let i = 1; i <= uberCount; i++) {
-          const colorKey = `uber_${i}`
+      } else {
+        let remaining = pool_count
+        if (has_personal_vehicle) {
           newVehicles.push(_buildVehicle(
-            `uber_${i}`, 'uber', null, null, chosenMeetingPoint, 4,
-            VEHICLE_COLORS[colorKey] ?? VEHICLE_COLORS.uber_1,
+            'personal', 'personal', driver, vehicle_description, chosenMeetingPoint,
+            5, VEHICLE_COLORS.personal,
           ))
+          remaining = Math.max(0, pool_count - 5)
+        }
+        if (remaining > 0) {
+          const uberCount = Math.ceil(remaining / 4)
+          for (let i = 1; i <= uberCount; i++) {
+            const colorKey = `uber_${i}`
+            newVehicles.push(_buildVehicle(
+              `uber_${i}`, 'uber', null, null, chosenMeetingPoint,
+              4, VEHICLE_COLORS[colorKey] ?? VEHICLE_COLORS.uber_1,
+            ))
+          }
         }
       }
 
@@ -518,8 +417,11 @@ function appReducer(state, action) {
         ...state,
         vehicles: state.vehicles.map(v => {
           if (v.id !== vehicle_id) return v
-          const maxPassengers = v.capacity - (v.type === 'personal' ? 1 : 0)
-          if (v.passengers_pe.length + v.pickup.passengers.length >= maxPassengers) return v
+          if (v.type !== 'charter') {
+            const maxPassengers = v.capacity - (v.type === 'personal' ? 1 : 0)
+            if (v.passengers_pe.length + v.pickup.passengers.length >= maxPassengers) return v
+          }
+          if (v.passengers_pe.includes(employee_name)) return v
           return { ...v, passengers_pe: [...v.passengers_pe, employee_name] }
         }),
       }
@@ -539,6 +441,49 @@ function appReducer(state, action) {
       }
     }
 
+    case ACTIONS.ASSIGN_TO_PICKUP_SLOT: {
+      // payload: { employee_name, vehicle_id, pickup_index } — charter multi-pickup
+      const { employee_name, vehicle_id, pickup_index } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v => {
+          if (v.id !== vehicle_id) return v
+          const newPickups = v.pickups.map((pu, i) => {
+            if (i !== pickup_index) return pu
+            if (pu.passengers.includes(employee_name)) return pu
+            return { ...pu, passengers: [...pu.passengers, employee_name] }
+          })
+          return { ...v, pickups: newPickups }
+        }),
+      }
+    }
+
+    case ACTIONS.ADD_VEHICLE_PICKUP: {
+      // payload: { vehicle_id, point: { name, lat, lng, address } }
+      // Appends a new pickup slot to v.pickups[] (charter only).
+      const { vehicle_id, point } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v => {
+          if (v.id !== vehicle_id) return v
+          if (v.pickups.length >= v.max_pickups) return v
+          return { ...v, pickups: [...v.pickups, { point, passengers: [] }] }
+        }),
+      }
+    }
+
+    case ACTIONS.REMOVE_VEHICLE_PICKUP: {
+      // payload: { vehicle_id, index }
+      const { vehicle_id, index } = action.payload
+      return {
+        ...state,
+        vehicles: state.vehicles.map(v => {
+          if (v.id !== vehicle_id) return v
+          return { ...v, pickups: v.pickups.filter((_, i) => i !== index), route: null }
+        }),
+      }
+    }
+
     case ACTIONS.UNASSIGN_EMPLOYEE: {
       // payload: { employee_name } — removes from whichever vehicle/slot holds them.
       const { employee_name } = action.payload
@@ -548,6 +493,10 @@ function appReducer(state, action) {
           ...v,
           passengers_pe: v.passengers_pe.filter(n => n !== employee_name),
           pickup: { ...v.pickup, passengers: v.pickup.passengers.filter(n => n !== employee_name) },
+          pickups: v.pickups.map(pu => ({
+            ...pu,
+            passengers: pu.passengers.filter(n => n !== employee_name),
+          })),
         })),
       }
     }
@@ -612,9 +561,7 @@ function appReducer(state, action) {
       return { ...state, pending_employee: action.payload?.name ?? null }
 
     case ACTIONS.RESET_ALL_VEHICLES:
-      // Clears all assignments and routes while preserving vehicle structure
-      // (same vehicles, same types, same driver).  Meeting points reset to
-      // the global chosenMeetingPoint.
+      // Clears all assignments and routes while preserving vehicle structure.
       return {
         ...state,
         pending_employee: null,
@@ -622,6 +569,7 @@ function appReducer(state, action) {
           ...v,
           passengers_pe:        [],
           pickup:               { point: null, passengers: [] },
+          pickups:              [],
           route:                null,
           meeting_point:        state.chosenMeetingPoint,
           custom_meeting_point: false,
@@ -650,59 +598,35 @@ function appReducer(state, action) {
       const clearing = { error: null, loadingStep: null }
 
       if (state.currentStep >= 4) {
-        // Leaving step 4 → step 3: undo confirmation and final output.
-        Object.assign(clearing, { showModal: false, showOutput: false, finalOutput: null })
+        Object.assign(clearing, {
+          showModal: false, showOutput: false, finalOutput: null,
+          selectedCharterCompany: null,
+        })
       } else if (state.currentStep >= 3) {
-        if (state.charterMode) {
-          // Charter step 3 → step 2: clear only assignment data, keep meeting_point/pickups/route.
-          Object.assign(clearing, {
-            charterAssignment: {
-              ...state.charterAssignment,
-              pe_passengers: [],
-              pickups: state.charterAssignment.pickups.map((pu) => ({ ...pu, passengers: [] })),
-            },
-          })
-        } else {
-          // Normal step 3 → step 2: clear all vehicle state.
-          Object.assign(clearing, {
-            vehicles: [],
-            pending_employee: null,
-            activePickupResult: null,
-            chosenMeetingPoint: null,
-            manualPickupMode: { active: false, vehicleId: null },
-          })
-        }
+        // Leaving step 3 → step 2: clear all vehicle assignments (charter and normal).
+        Object.assign(clearing, {
+          vehicles: [],
+          pending_employee: null,
+          activePickupResult: null,
+          chosenMeetingPoint: null,
+          manualPickupMode: { active: false, vehicleId: null },
+        })
       } else if (state.currentStep >= 2) {
-        if (state.charterMode) {
-          // Charter step 2 → step 1: clear all charter assignment state.
-          Object.assign(clearing, {
-            charterAssignment: {
-              meeting_point:    null,
-              custom_departure: null,
-              pickups:          [],
-              pe_passengers:    [],
-              selected_company: null,
-              route:            null,
-            },
-            charterPickupMode: { active: false, index: 0 },
-            meetingPoint:      null,
-            chosenMeetingPoint: null,
-          })
-        } else {
-          // Normal step 2 → step 1: undo routes, PEA evaluation, meeting point
-          // data, and any CABA-specific decisions so useStepTwo recomputes cleanly.
-          Object.assign(clearing, {
-            meetingPoint: null,
-            driverRoutes: null,
-            peaEvaluation: null,
-            chosenMeetingPoint: null,
-            manualPeaMode: false,
-            cabaDecisionToTransport: false,
-            allMeetingPoints: null,
-          })
-        }
+        // Leaving step 2 → step 1: clear routing and PE data.
+        // Also clear vehicles in case INIT_VEHICLES already fired for charter.
+        Object.assign(clearing, {
+          meetingPoint: null,
+          driverRoutes: null,
+          peaEvaluation: null,
+          chosenMeetingPoint: null,
+          manualPeaMode: false,
+          cabaDecisionToTransport: false,
+          allMeetingPoints: null,
+          vehicles: [],
+          highlightedPE: null,
+        })
       } else if (state.currentStep >= 1) {
-        // Leaving step 1 → step 0: undo the "van question" (frescos panel).
+        // Leaving step 1 → step 0: undo the "van question".
         Object.assign(clearing, {
           frescosResult: null,
           secondMinifleteResult: null,
@@ -710,15 +634,8 @@ function appReducer(state, action) {
           personalVehicle: null,
           meetingPoint: null,
           charterMode: false,
-          charterAssignment: {
-            meeting_point:    null,
-            custom_departure: null,
-            pickups:          [],
-            pe_passengers:    [],
-            selected_company: null,
-            route:            null,
-          },
-          charterPickupMode: { active: false, index: 0 },
+          highlightedPE: null,
+          selectedCharterCompany: null,
         })
       }
 
@@ -831,15 +748,15 @@ export function getVehicleById(state, id) {
 
 /**
  * Returns a Set of all employee names currently assigned to any vehicle.
- * Includes drivers (pre-assigned at INIT_VEHICLES), passengers_pe, and
- * pickup.passengers so the driver is correctly excluded from the unassigned list.
+ * Includes drivers, passengers_pe, pickup.passengers, and pickups[].passengers.
  */
 export function getAssignedEmployees(state) {
   const names = new Set()
   for (const v of state.vehicles) {
     if (v.driver) names.add(v.driver)
-    for (const n of v.passengers_pe)       names.add(n)
-    for (const n of v.pickup.passengers)   names.add(n)
+    for (const n of v.passengers_pe)     names.add(n)
+    for (const n of v.pickup.passengers) names.add(n)
+    for (const pu of v.pickups)          for (const n of pu.passengers) names.add(n)
   }
   return names
 }
@@ -867,28 +784,15 @@ export function getUnassignedEmployees(state) {
 }
 
 /**
- * Returns employees from remainingPool not yet assigned to any charter slot
- * (neither pe_passengers nor any pickup's passengers list).
- * Returns [] when remainingPool is not populated.
- */
-export function getCharterUnassigned(state) {
-  const pool = state.remainingPool?.remaining_pool ?? []
-  const ca   = state.charterAssignment
-  const assigned = new Set([
-    ...ca.pe_passengers,
-    ...ca.pickups.flatMap((p) => p.passengers),
-  ])
-  return pool.filter((e) => !assigned.has(`${e.Nombre} ${e.Apellido}`))
-}
-
-/**
  * True when the vehicle has no remaining passenger capacity.
- * Personal vehicle: capacity 5, driver occupies 1 → 4 passenger slots.
- * Uber vehicle: capacity 4 → 4 passenger slots.
+ * Charter vehicles have capacity 999 and are never considered full.
  */
 export function isVehicleFull(vehicle) {
+  if (vehicle.type === 'charter') return false
   const maxPassengers = vehicle.capacity - (vehicle.type === 'personal' ? 1 : 0)
-  return vehicle.passengers_pe.length + vehicle.pickup.passengers.length >= maxPassengers
+  const assigned = vehicle.passengers_pe.length + vehicle.pickup.passengers.length
+    + vehicle.pickups.reduce((s, pu) => s + pu.passengers.length, 0)
+  return assigned >= maxPassengers
 }
 
 /**
@@ -919,22 +823,23 @@ export function canValidate(state) {
 
   for (const v of state.vehicles) {
     const hasPassengers = v.passengers_pe.length > 0 || v.pickup.passengers.length > 0
+      || v.pickups.some(pu => pu.passengers.length > 0)
     if (hasPassengers && !v.route) {
       reasons.push(`Vehículo ${v.id} tiene pasajeros pero no tiene ruta`)
     }
   }
 
-  const hasUber     = state.vehicles.some(v => v.type === 'uber')
-  const personal    = state.vehicles.find(v => v.type === 'personal')
-  if (hasUber && personal && !isVehicleFull(personal)) {
-    reasons.push('El vehículo personal debe estar lleno antes de usar Ubers')
+  // Uber-ordering and solo-Uber checks are irrelevant for charter.
+  if (!state.charterMode) {
+    const hasUber  = state.vehicles.some(v => v.type === 'uber')
+    const personal = state.vehicles.find(v => v.type === 'personal')
+    if (hasUber && personal && !isVehicleFull(personal)) {
+      reasons.push('El vehículo personal debe estar lleno antes de usar Ubers')
+    }
   }
 
-  // Solo-Uber warning: only evaluated when no blocking reasons exist.
-  // If the personal car still has empty seats the rule above already fires,
-  // so this check implicitly runs only after the car is full.
   let soloUberWarning = null
-  if (reasons.length === 0) {
+  if (!state.charterMode && reasons.length === 0) {
     for (const v of state.vehicles) {
       if (v.type !== 'uber') continue
       const total = v.passengers_pe.length + v.pickup.passengers.length
@@ -943,7 +848,7 @@ export function canValidate(state) {
           vehicleId:    v.id,
           employeeName: v.passengers_pe[0] ?? v.pickup.passengers[0],
         }
-        break  // surface one warning at a time
+        break
       }
     }
   }

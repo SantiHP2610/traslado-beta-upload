@@ -19,12 +19,11 @@
 import { useState, useEffect }             from 'react'
 import { ChevronDown, ChevronRight }        from 'lucide-react'
 import { useAppState, ACTIONS, VEHICLE_COLORS } from '../../state/appState'
-import { simpleRoute, geocodeAddress }      from '../../api/endpoints'
+import { simpleRoute, geocodeAddress, nearestMeetingPoint } from '../../api/endpoints'
 import FrescosPanel                         from './FrescosPanel'
 import PeaPanel                             from './PeaPanel'
 import { CabaPanel }                        from './CabaPanel'
 import { CabaPeSelectionPanel }             from './CabaPeSelectionPanel'
-import CharterPeSelectionPanel              from './CharterPeSelectionPanel'
 
 // ---------------------------------------------------------------------------
 // EventInfoSection — compact event summary at the top of the sidebar
@@ -391,6 +390,220 @@ function UberRoutesSection() {
 }
 
 // ---------------------------------------------------------------------------
+// Charter companies — plain text, no hyperlinks
+// ---------------------------------------------------------------------------
+
+const CHARTER_PHONES = [
+  { name: 'Transfer Express',    phone: '(011) 4555-0100' },
+  { name: 'Buenos Aires Bus',    phone: '(011) 4314-5555' },
+  { name: 'Chevallier Integral', phone: '(011) 4000-5255' },
+]
+
+// ---------------------------------------------------------------------------
+// CharterInfoSection — shown in step 1 when charterMode is true
+// Phone numbers are plain text — NOT clickable links.
+// ---------------------------------------------------------------------------
+
+function CharterInfoSection({ poolCount, onContinue }) {
+  return (
+    <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb', animation: 'fadeIn 200ms ease-out' }}>
+      <p style={{ fontSize: 15, fontWeight: 700, color: '#111827', margin: '0 0 4px' }}>
+        Servicio de charter requerido
+      </p>
+      <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 14px' }}>
+        El equipo de <strong style={{ color: '#111827' }}>{poolCount} personas</strong> será trasladado por charter
+      </p>
+
+      <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#6b7280', margin: '0 0 8px' }}>
+        Empresas de charter
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+        {CHARTER_PHONES.map((item) => (
+          <div key={item.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>{item.name}</span>
+            <span style={{ fontSize: 12, color: '#6b7280', fontFamily: 'monospace' }}>{item.phone}</span>
+          </div>
+        ))}
+      </div>
+
+      <button
+        onClick={onContinue}
+        style={{
+          width: '100%', padding: '10px 16px', background: '#111827', color: '#fff',
+          border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 500, cursor: 'pointer',
+          transition: 'background 150ms ease',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = '#374151' }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
+      >
+        Continuar →
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Haversine distance in km (client-side, no API call)
+// ---------------------------------------------------------------------------
+function haversineKm(a, b) {
+  const R = 6371
+  const dLat = (b.lat - a.lat) * Math.PI / 180
+  const dLng = (b.lng - a.lng) * Math.PI / 180
+  const h = Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
+
+// ---------------------------------------------------------------------------
+// CharterPeSelectionSection — shown in step 2 when charterMode is true
+// Fetches all 3 PEs, shows selectable cards with distance info, and
+// dispatches SET_CHOSEN_MEETING_POINT + auto-advances to step 3 on confirm.
+// ---------------------------------------------------------------------------
+
+function CharterPeSelectionSection() {
+  const { state, dispatch } = useAppState()
+  const [allPes,   setAllPes]   = useState(null)
+  const [loading,  setLoading]  = useState(true)
+  const [error,    setError]    = useState(null)
+  const [choosing, setChoosing] = useState(false)
+
+  const staffWithCoords = state.staffWithCoords ?? []
+  const eventCoords     = state.eventCoords
+
+  useEffect(() => {
+    nearestMeetingPoint(true)
+      .then((data) => setAllPes(data))
+      .catch(() => setError('No se pudo obtener los puntos de encuentro.'))
+      .finally(() => setLoading(false))
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function avgStaffDistanceKm(pe) {
+    if (!staffWithCoords.length) return null
+    const dists = staffWithCoords
+      .filter((e) => e.coordinates)
+      .map((e) => haversineKm(e.coordinates, pe))
+    if (!dists.length) return null
+    return dists.reduce((s, d) => s + d, 0) / dists.length
+  }
+
+  async function handleChoose(pe) {
+    if (choosing) return
+    setChoosing(true)
+    dispatch({ type: ACTIONS.SET_MEETING_POINT,        payload: pe })
+    dispatch({ type: ACTIONS.SET_CHOSEN_MEETING_POINT, payload: pe })
+    dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE,       payload: null })
+    // INIT_VEHICLES and auto-advance to step 3 happen in Sidebar's useEffect
+  }
+
+  if (loading) return (
+    <p style={{ fontSize: 13, color: '#6b7280' }}>Buscando puntos de encuentro…</p>
+  )
+  if (error) return (
+    <p style={{ fontSize: 12, color: '#dc2626' }}>{error}</p>
+  )
+  if (!allPes) return null
+
+  const peList = [
+    allPes.recommended,
+    ...(allPes.alternatives ?? []),
+  ].filter(Boolean)
+
+  // Determine which PE has the smallest avg staff distance
+  const staffAvgs = peList.map((pe) => avgStaffDistanceKm(pe))
+  const minAvgIdx = staffAvgs.reduce(
+    (minI, d, i) => (d !== null && (staffAvgs[minI] === null || d < staffAvgs[minI])) ? i : minI,
+    0,
+  )
+
+  return (
+    <div style={{ animation: 'fadeIn 200ms ease-out' }}>
+      <p style={{ fontSize: 14, fontWeight: 600, color: '#111827', margin: '0 0 12px' }}>
+        Punto de encuentro para el charter
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {peList.map((pe, i) => {
+          const isRecommended = i === 0
+          const avgDist       = staffAvgs[i]
+          const isNearTeam    = i === minAvgIdx && minAvgIdx !== 0
+
+          return (
+            <div
+              key={pe.name}
+              style={{
+                padding:      '12px 14px',
+                background:   '#f9fafb',
+                border:       isRecommended ? '1.5px solid #FBBC04' : '1px solid #e5e7eb',
+                borderRadius: 10,
+                cursor:       'pointer',
+                transition:   'border-color 120ms ease, box-shadow 120ms ease',
+              }}
+              onMouseEnter={() => dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })}
+              onMouseLeave={() => dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null })}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 4 }}>
+                <p style={{ fontSize: 13, fontWeight: 700, color: '#111827', margin: 0, flex: 1, marginRight: 8 }}>
+                  {pe.name}
+                </p>
+                <div style={{ display: 'flex', gap: 4, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {isRecommended && (
+                    <span style={{ fontSize: 10, fontWeight: 600, background: '#FBBC04', color: '#111', padding: '2px 6px', borderRadius: 10 }}>
+                      Recomendado
+                    </span>
+                  )}
+                  {isNearTeam && (
+                    <span style={{ fontSize: 10, fontWeight: 600, background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: 10 }}>
+                      Más cercano al equipo
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 6px', lineHeight: 1.4 }}>
+                {pe.address}
+              </p>
+
+              {pe.duration_seconds != null && (
+                <p style={{ fontSize: 11, color: '#9ca3af', margin: '0 0 2px' }}>
+                  {Math.ceil(pe.duration_seconds / 60)} min al evento desde CP
+                </p>
+              )}
+              {avgDist != null && (
+                <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
+                  Promedio equipo: {avgDist.toFixed(1)} km
+                </p>
+              )}
+
+              <button
+                onClick={() => handleChoose(pe)}
+                disabled={choosing}
+                style={{
+                  marginTop:    8,
+                  width:        '100%',
+                  padding:      '8px 12px',
+                  background:   choosing ? '#e5e7eb' : '#111827',
+                  color:        choosing ? '#9ca3af' : '#fff',
+                  border:       'none',
+                  borderRadius: 6,
+                  fontSize:     12,
+                  fontWeight:   500,
+                  cursor:       choosing ? 'default' : 'pointer',
+                  transition:   'background 150ms ease',
+                }}
+                onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#374151' }}
+                onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#111827' }}
+              >
+                {choosing ? 'Configurando…' : 'Elegir este PE'}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar — main export
 // ---------------------------------------------------------------------------
 
@@ -408,40 +621,61 @@ export default function Sidebar() {
   const isCharter  = state.charterMode
 
   // ── INIT_VEHICLES trigger ────────────────────────────────────────────────
-  // Fires once when the manager confirms a PE or PEA (chosenMeetingPoint set)
-  // while vehicles is still empty.  Builds the vehicles array and immediately
-  // sets the personal vehicle's route from the already-computed driverRoutes.
-  // Skipped for charter — charter does not use the vehicles model.
+  // Fires once when the manager confirms a PE (chosenMeetingPoint set) while
+  // vehicles is still empty.  For charter: creates charter_1 + auto-advances
+  // to step 3.  For normal: creates personal/Uber vehicles and seeds routes.
   useEffect(() => {
-    if (state.charterMode)         return  // charter uses charterAssignment, not vehicles
     if (!state.chosenMeetingPoint) return
     if (state.vehicles.length > 0) return
     if (!state.remainingPool)      return
 
-    const pool_count           = state.remainingPool.remaining_pool?.length ?? 0
-    const has_personal_vehicle = state.personalVehicle?.has_personal_vehicle ?? false
-    const driverObj            = state.personalVehicle?.driver
-    const driver               = driverObj
-      ? `${driverObj.Nombre} ${driverObj.Apellido}`
-      : null
-    const vehicle_description  = state.personalVehicle?.vehicle_description ?? null
+    const pool_count = state.remainingPool.remaining_pool?.length ?? 0
 
-    dispatch({
-      type:    ACTIONS.INIT_VEHICLES,
-      payload: { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint: state.chosenMeetingPoint },
-    })
+    if (state.charterMode) {
+      dispatch({
+        type:    ACTIONS.INIT_VEHICLES,
+        payload: { pool_count, charter: true, chosenMeetingPoint: state.chosenMeetingPoint },
+      })
+      // Charter skips Uber route tracing — go directly to assignment step.
+      dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 3 })
+    } else {
+      const has_personal_vehicle = state.personalVehicle?.has_personal_vehicle ?? false
+      const driverObj            = state.personalVehicle?.driver
+      const driver               = driverObj ? `${driverObj.Nombre} ${driverObj.Apellido}` : null
+      const vehicle_description  = state.personalVehicle?.vehicle_description ?? null
 
-    // Seed the personal vehicle's route from the step-2a driver routes so
-    // canValidate's "vehicles with passengers must have routes" check passes.
-    if (has_personal_vehicle && state.driverRoutes) {
-      const isPea  = state.meetingPoint &&
-        state.chosenMeetingPoint?.name !== state.meetingPoint?.name
-      const route  = isPea ? state.driverRoutes.direct_route : state.driverRoutes.base_route
-      if (route) {
-        dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'personal', route } })
+      dispatch({
+        type:    ACTIONS.INIT_VEHICLES,
+        payload: { pool_count, has_personal_vehicle, driver, vehicle_description, chosenMeetingPoint: state.chosenMeetingPoint },
+      })
+
+      if (has_personal_vehicle && state.driverRoutes) {
+        const isPea = state.meetingPoint &&
+          state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+        const route = isPea ? state.driverRoutes.direct_route : state.driverRoutes.base_route
+        if (route) {
+          dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'personal', route } })
+        }
       }
     }
   }, [state.chosenMeetingPoint]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Charter vehicle auto-route ────────────────────────────────────────────
+  // Once charter_1 is created (vehicles initialized) but has no route yet,
+  // auto-compute the PE→event route so canValidate's route check passes.
+  useEffect(() => {
+    if (!state.charterMode) return
+    const charterV = state.vehicles.find((v) => v.id === 'charter_1')
+    if (!charterV || charterV.route !== null) return
+    if (!state.chosenMeetingPoint || !state.eventCoords) return
+
+    simpleRoute(
+      state.chosenMeetingPoint.lat, state.chosenMeetingPoint.lng,
+      state.eventCoords.lat,        state.eventCoords.lng,
+    ).then((route) => {
+      dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'charter_1', route } })
+    }).catch(() => {})
+  }, [state.vehicles, state.chosenMeetingPoint, state.eventCoords]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -535,6 +769,12 @@ export default function Sidebar() {
                   <CabaPanel />
                 </div>
               )}
+              {isCharter && state.currentStep === 1 && (
+                <CharterInfoSection
+                  poolCount={state.remainingPool?.remaining_count ?? 0}
+                  onContinue={() => dispatch({ type: ACTIONS.SET_CURRENT_STEP, payload: 2 })}
+                />
+              )}
             </>
           ) : (
             <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
@@ -546,11 +786,11 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* ── Step 2: Punto de encuentro / Charter PE selection ────────── */}
+        {/* ── Step 2: Punto de encuentro ───────────────────────────────── */}
         {state.currentStep >= 2 && (
           <div style={{ padding: '16px 20px', animation: 'fadeIn 200ms ease-out' }}>
             {isCharter
-              ? <CharterPeSelectionPanel />
+              ? <CharterPeSelectionSection />
               : isCaba && state.cabaDecisionToTransport && !state.meetingPoint
                 ? <CabaPeSelectionPanel />
                 : (!isCaba || state.meetingPoint)

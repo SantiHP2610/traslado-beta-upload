@@ -47,11 +47,6 @@ import PickupHoverIndicator              from './PickupHoverIndicator'
 import Sidebar                           from '../panels/Sidebar'
 import UnassignedPanel                   from '../panels/UnassignedPanel'
 import AssignmentSummaryPanel            from '../panels/AssignmentSummaryPanel'
-import CharterPanel                      from '../panels/CharterPanel'
-import CharterAssignmentPanel            from '../panels/CharterAssignmentPanel'
-import CharterSummaryPanel               from '../panels/CharterSummaryPanel'
-import CharterConfirmationModal          from '../panels/CharterConfirmationModal'
-import CharterFinalOutput                from '../panels/CharterFinalOutput'
 import MeetingPointCard                  from '../panels/MeetingPointCard'
 import ConfirmationModal                 from '../panels/ConfirmationModal'
 import FinalOutputBlocks                 from '../panels/FinalOutputBlocks'
@@ -181,48 +176,6 @@ function DblClickGateway({ handlerRef }) {
 }
 
 // ---------------------------------------------------------------------------
-// CharterRoutePolyline — renders the charter bus route on the map.
-// Must live inside <Map> to call useMap().
-// ---------------------------------------------------------------------------
-
-function CharterRoutePolyline() {
-  const { state }  = useAppState()
-  const map        = useMap()
-  const polyRef    = useRef(null)
-
-  useEffect(() => {
-    const encoded = state.charterAssignment?.route?.encoded_polyline
-    if (!map || !encoded) {
-      if (polyRef.current) {
-        polyRef.current.setMap(null)
-        polyRef.current = null
-      }
-      return
-    }
-    const path = polyline.decode(encoded).map(([lat, lng]) => ({ lat, lng }))
-    if (polyRef.current) {
-      polyRef.current.setPath(path)
-    } else {
-      polyRef.current = new google.maps.Polyline({
-        path,
-        map,
-        strokeColor:   '#333333',
-        strokeOpacity: 0.9,
-        strokeWeight:  4,
-      })
-    }
-    return () => {
-      if (polyRef.current) {
-        polyRef.current.setMap(null)
-        polyRef.current = null
-      }
-    }
-  }, [map, state.charterAssignment?.route?.encoded_polyline])  // eslint-disable-line react-hooks/exhaustive-deps
-
-  return null
-}
-
-// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -278,12 +231,6 @@ export default function AppMap() {
 
   // ── Charter pickup mode ─────────────────────────────────────────────────
   // Tracks the InfoWindow shown when the manager clicks the map in charter mode.
-  const [charterPickupInfo, setCharterPickupInfo] = useState(null)
-
-  useEffect(() => {
-    if (!state.charterPickupMode?.active) setCharterPickupInfo(null)
-  }, [state.charterPickupMode?.active])
-
   const bounds = useMemo(
     () => computeBounds(state.staffWithCoords, state.driverRoutes, state.eventCoords),
     [state.staffWithCoords, state.driverRoutes, state.eventCoords],
@@ -439,19 +386,35 @@ export default function AppMap() {
         dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: updatedRoutes })
       }
 
-      // Store the pickup point and updated route on the vehicle.
-      dispatch({
-        type:    ACTIONS.SET_VEHICLE_PICKUP_POINT,
-        payload: {
-          vehicle_id: vehicleId,
-          point: {
-            place_name:    pickupData.name ?? pickupData.address,
-            place_address: pickupData.address,
-            lat:           pickupData.lat,
-            lng:           pickupData.lng,
+      // Store the pickup point on the vehicle.
+      // Charter vehicles append to pickups[]; normal vehicles use pickup.point.
+      if (vehicle.type === 'charter') {
+        dispatch({
+          type:    ACTIONS.ADD_VEHICLE_PICKUP,
+          payload: {
+            vehicle_id: vehicleId,
+            point: {
+              place_name:    pickupData.name ?? pickupData.address,
+              place_address: pickupData.address,
+              lat:           pickupData.lat,
+              lng:           pickupData.lng,
+            },
           },
-        },
-      })
+        })
+      } else {
+        dispatch({
+          type:    ACTIONS.SET_VEHICLE_PICKUP_POINT,
+          payload: {
+            vehicle_id: vehicleId,
+            point: {
+              place_name:    pickupData.name ?? pickupData.address,
+              place_address: pickupData.address,
+              lat:           pickupData.lat,
+              lng:           pickupData.lng,
+            },
+          },
+        })
+      }
       dispatch({
         type:    ACTIONS.SET_VEHICLE_ROUTE,
         payload: {
@@ -474,41 +437,6 @@ export default function AppMap() {
     }
   }, [manualPickupInfo, recalculating, state, dispatch])
 
-  // ── Charter pickup map click ────────────────────────────────────────────
-  // Any map click during charter pickup mode reverse-geocodes the point and
-  // shows a minimal InfoWindow with a "Confirmar" button.  No route-proximity
-  // check — charter buses can detour freely.
-  const handleMapClickCharterPickup = useCallback(async (event) => {
-    if (!state.charterPickupMode?.active) return
-    if (state.currentStep !== 2 && state.currentStep !== 3) return
-    if (!event.detail?.latLng) return
-    const { lat, lng } = event.detail.latLng
-    setCharterPickupInfo({ lat, lng, loading: true, name: null, address: null })
-    try {
-      const info = await pickupPlaceInfo(lat, lng)
-      setCharterPickupInfo({ ...info, loading: false })
-    } catch {
-      setCharterPickupInfo({ lat, lng, loading: false, name: null,
-        address: `${lat.toFixed(5)}, ${lng.toFixed(5)}` })
-    }
-  }, [state.charterPickupMode, state.currentStep])
-
-  const handleConfirmCharterPickup = useCallback(() => {
-    if (!charterPickupInfo || charterPickupInfo.loading) return
-    dispatch({
-      type:    ACTIONS.ADD_CHARTER_PICKUP,
-      payload: {
-        point: {
-          lat:     charterPickupInfo.lat,
-          lng:     charterPickupInfo.lng,
-          name:    charterPickupInfo.name,
-          address: charterPickupInfo.address,
-        },
-      },
-    })
-    dispatch({ type: ACTIONS.SET_CHARTER_PICKUP_MODE, payload: { active: false, index: 0 } })
-    setCharterPickupInfo(null)
-  }, [charterPickupInfo, dispatch])
 
   // ── Manual PEA map click ─────────────────────────────────────────────────
   // When manualPeaMode is true (step 2), every map click is intercepted.
@@ -584,14 +512,9 @@ export default function AppMap() {
         overflow: 'hidden',
       }}
     >
-      {/* ── Charter overlay — centered card at step 1 when charter detected ── */}
-      {isCharter && state.currentStep === 1 && state.frescosResult && (
-        <CharterPanel />
-      )}
-
       {/* ── Left panel slot ──────────────────────────────────────────────── */}
       {showSidebar     && <Sidebar />}
-      {showStep3Panels && (isCharter ? <CharterAssignmentPanel /> : <UnassignedPanel />)}
+      {showStep3Panels && <UnassignedPanel />}
 
       {/* ── Map area (always present, flex:1) ────────────────────────────── */}
       {/*
@@ -617,14 +540,12 @@ export default function AppMap() {
             width:  '100%',
             height: '100%',
             cursor: (state.manualPickupMode?.active && state.currentStep === 3) ||
-                    (state.manualPeaMode             && state.currentStep === 2) ||
-                    (state.charterPickupMode?.active  && [2, 3].includes(state.currentStep))
+                    (state.manualPeaMode             && state.currentStep === 2)
               ? 'crosshair' : undefined,
           }}
           onClick={
-            (state.manualPickupMode?.active  && state.currentStep === 3) ? handleMapClick :
-            (state.manualPeaMode             && state.currentStep === 2 && !isCharter) ? handleMapClickPea :
-            (state.charterPickupMode?.active && [2, 3].includes(state.currentStep)) ? handleMapClickCharterPickup :
+            (state.manualPickupMode?.active && state.currentStep === 3) ? handleMapClick :
+            (state.manualPeaMode && state.currentStep === 2)             ? handleMapClickPea :
             undefined
           }
         >
@@ -730,6 +651,28 @@ export default function AppMap() {
                 </Fragment>
               )
             })
+          }
+
+          {/* Charter multi-pickup markers — one per pickups[] slot */}
+          {state.currentStep >= 3 && state.vehicles
+            .filter((v) => v.type === 'charter')
+            .flatMap((v) => v.pickups.map((pu, i) => pu.point ? (
+              <AdvancedMarker
+                key={`charter-pickup-${v.id}-${i}`}
+                position={{ lat: pu.point.lat ?? pu.point.place_lat, lng: pu.point.lng ?? pu.point.place_lng }}
+                title={`Charter Pickup ${i + 1}: ${pu.point.place_name ?? pu.point.place_address}`}
+              >
+                <div style={{
+                  width: 36, height: 36, borderRadius: 8,
+                  backgroundColor: '#444444', border: '2px solid white',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'white', fontSize: 14, fontWeight: 700,
+                }}>
+                  {i + 1}
+                </div>
+              </AdvancedMarker>
+            ) : null))
           }
 
           {/* ── Custom vehicle PE markers ─────────────────────────────────── */}
@@ -925,76 +868,6 @@ export default function AppMap() {
             </InfoWindow>
           )}
 
-          {/* Charter route polyline — dark grey line when charter mode is active */}
-          {isCharter && <CharterRoutePolyline />}
-
-          {/* Charter pickup markers — one per confirmed pickup in charterAssignment.pickups */}
-          {isCharter && state.charterAssignment.pickups.map((pu, i) => pu?.point && (
-            <AdvancedMarker
-              key={`charter-pickup-${i}`}
-              position={{ lat: pu.point.lat, lng: pu.point.lng }}
-              title={`Pickup ${i + 1}: ${pu.point.name ?? pu.point.address}`}
-            >
-              <div style={{
-                width:           36,
-                height:          36,
-                borderRadius:    8,
-                background:      '#333333',
-                border:          '2px solid white',
-                boxShadow:       '0 2px 8px rgba(0,0,0,0.25)',
-                display:         'flex',
-                alignItems:      'center',
-                justifyContent:  'center',
-                color:           'white',
-                fontSize:        14,
-                fontWeight:      700,
-              }}>
-                {i + 1}
-              </div>
-            </AdvancedMarker>
-          ))}
-
-          {/* Charter pickup InfoWindow — shown while charter pickup mode is active */}
-          {charterPickupInfo && (
-            <InfoWindow
-              position={{ lat: charterPickupInfo.lat, lng: charterPickupInfo.lng }}
-              onCloseClick={() => setCharterPickupInfo(null)}
-            >
-              <div style={{ minWidth: 180, maxWidth: 260, fontFamily: 'sans-serif' }}>
-                {charterPickupInfo.loading ? (
-                  <p style={{ fontSize: 13, color: '#374151', margin: 0 }}>Cargando…</p>
-                ) : (
-                  <>
-                    {charterPickupInfo.name && (
-                      <p style={{ fontSize: 14, fontWeight: 600, margin: '0 0 2px', color: '#111827' }}>
-                        {charterPickupInfo.name}
-                      </p>
-                    )}
-                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 8px', lineHeight: 1.4 }}>
-                      {charterPickupInfo.address ?? `${charterPickupInfo.lat?.toFixed(5)}, ${charterPickupInfo.lng?.toFixed(5)}`}
-                    </p>
-                    <button
-                      onClick={handleConfirmCharterPickup}
-                      style={{
-                        width:        '100%',
-                        padding:      '7px 12px',
-                        background:   '#111827',
-                        color:        '#fff',
-                        border:       'none',
-                        borderRadius: 6,
-                        fontSize:     12,
-                        fontWeight:   600,
-                        cursor:       'pointer',
-                      }}
-                    >
-                      Confirmar como punto de recogida
-                    </button>
-                  </>
-                )}
-              </div>
-            </InfoWindow>
-          )}
-
           {/* Manual PEA InfoWindow — shown when user clicks during PEA mode */}
           {manualPeaInfo && (
             <InfoWindow
@@ -1176,14 +1049,11 @@ export default function AppMap() {
       </div>
 
       {/* ── Right panel slot ─────────────────────────────────────────────── */}
-      {showStep3Panels && !isCharter && <AssignmentSummaryPanel />}
-      {showStep3Panels && isCharter  && <CharterSummaryPanel />}
+      {showStep3Panels && <AssignmentSummaryPanel />}
 
       {/* ── Step 4 overlays (position:fixed — independent of flex layout) ── */}
-      {state.showModal  && !isCharter && <ConfirmationModal />}
-      {state.showModal  && isCharter  && <CharterConfirmationModal />}
-      {state.showOutput && !isCharter && <FinalOutputBlocks />}
-      {state.showOutput && isCharter  && <CharterFinalOutput />}
+      {state.showModal  && <ConfirmationModal />}
+      {state.showOutput && <FinalOutputBlocks />}
     </div>
   )
 }

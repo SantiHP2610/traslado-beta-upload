@@ -90,6 +90,12 @@ function NameRow({ name, role, color = 'bg-slate-400' }) {
 // Main component
 // ---------------------------------------------------------------------------
 
+const CHARTER_PHONES = [
+  { name: 'Transfer Express',    phone: '(011) 4555-0100' },
+  { name: 'Buenos Aires Bus',    phone: '(011) 4314-5555' },
+  { name: 'Chevallier Integral', phone: '(011) 4000-5255' },
+]
+
 export default function ConfirmationModal() {
   const { state, dispatch } = useAppState()
   const [confirming, setConfirming] = useState(false)
@@ -105,6 +111,8 @@ export default function ConfirmationModal() {
     peaEvaluation,
     excelData,
     showOutput,
+    charterMode,
+    selectedCharterCompany,
   } = state
 
   const staff = excelData?.staff ?? []
@@ -118,6 +126,7 @@ export default function ConfirmationModal() {
 
   const personalVehicle = vehicles.find((v) => v.type === 'personal') ?? null
   const uberVehicles    = vehicles.filter((v) => v.type === 'uber')
+  const charterVehicle  = vehicles.find((v) => v.type === 'charter') ?? null
 
   // Pickup info for the personal vehicle — read from the vehicle's route.
   const personalPickup    = personalVehicle?.pickup ?? null
@@ -138,6 +147,7 @@ export default function ConfirmationModal() {
 
   async function handleConfirm() {
     if (!frescosResult || !chosenMeetingPoint) return
+    if (charterMode && !selectedCharterCompany) return
     setConfirming(true)
     dispatch({ type: ACTIONS.SET_ERROR, payload: null })
 
@@ -207,6 +217,39 @@ export default function ConfirmationModal() {
 
         {/* Scrollable content */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }} className="space-y-4">
+
+          {/* Charter company selection — required before confirming */}
+          {charterMode && (
+            <div className="space-y-2 pb-3 border-b border-border">
+              <SectionTitle>Empresa de charter</SectionTitle>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {CHARTER_PHONES.map((item) => (
+                  <button
+                    key={item.name}
+                    onClick={() => dispatch({ type: ACTIONS.SET_CHARTER_COMPANY, payload: item.name })}
+                    style={{
+                      display:        'flex',
+                      alignItems:     'center',
+                      justifyContent: 'space-between',
+                      padding:        '10px 12px',
+                      background:     selectedCharterCompany === item.name ? '#f0fdf4' : '#f9fafb',
+                      border:         selectedCharterCompany === item.name ? '1.5px solid #22c55e' : '1px solid #e5e7eb',
+                      borderRadius:   8,
+                      cursor:         'pointer',
+                      textAlign:      'left',
+                      transition:     'border-color 120ms ease',
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>{item.name}</span>
+                    <span style={{ fontSize: 12, color: '#6b7280', fontFamily: 'monospace' }}>{item.phone}</span>
+                  </button>
+                ))}
+              </div>
+              {!selectedCharterCompany && (
+                <p className="text-xs text-amber-600">Seleccioná una empresa para continuar</p>
+              )}
+            </div>
+          )}
 
           {/* Section 1: Frescos + loading time */}
           <div className="space-y-1.5">
