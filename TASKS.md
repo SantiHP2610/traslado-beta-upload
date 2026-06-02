@@ -19,3 +19,9 @@ next_estimated_delivery: 2026-06-04
 - [x] Fix bug 1 charter: back button desde paso 3 ahora vuelve correctamente a paso 2 (limpia meetingPoint y vehicles; INIT_VEHICLES effect ya no auto-avanza para charter)
 - [x] Fix bug 2 charter: etiqueta de vehículo ya no muestra "Uber charter_1" — muestra "Charter" en todos los panels (AssignmentSummaryPanel, UnassignedPanel, StaffMarkers, ConfirmationModal, FinalOutputBlocks)
 - [x] Fix bug 3 charter: selección de PE separada en dos pasos (click en card = preview; click en "Elegir este PE" = confirmación); ruta PE→evento calculada antes de avanzar a paso 3
+- [x] Fix bug charter: MeetingPointMarkers ahora renderiza el marker de preview (highlightedPE) aunque meetingPoint sea null (charter paso 2 antes de confirmar)
+- [x] Fix bug charter: empleados asignados al PE del charter ahora son amarillos (#FBBC04) — coincide con el color del marcador PE
+- [x] Fix bug charter: quitar un punto de recogida ya no limpia la ruta (REMOVE_VEHICLE_PICKUP deja route intacto); botón "Elegir pickup" reaparece correctamente
+- [x] Fix bug charter: labels de pickup en español "Recogida N:" (AssignmentSummaryPanel, StaffMarkers, UnassignedPanel)
+- [x] Fix bug charter: empleados en pickups[] del charter incluidos en pickup_passengers al validar (buildAssignmentsInput + buildBody en modal)
+- [x] Feature charter: sección "O ingresar punto de encuentro manualmente" en CharterPeSelectionSection con geocodificación inline y confirmación de PE

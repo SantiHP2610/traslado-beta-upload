@@ -549,7 +549,7 @@ function VehicleAssignmentMenu({ employee, vehicles, dispatch, onClose }) {
                 }}
                 style={{ fontSize: 12, color: '#444444', background: 'none', border: 'none', cursor: 'pointer', padding: '3px 0', textAlign: 'left' }}
               >
-                → Pickup {i + 1} ({pu.point.place_name ?? pu.point.place_address})
+                → Recogida {i + 1}: {pu.point.place_name ?? pu.point.place_address}
               </button>
             ))}
           </div>

@@ -475,6 +475,13 @@ function CharterPeSelectionSection() {
   const [selectedPe, setSelectedPe] = useState(null)
   const [choosing,   setChoosing]   = useState(false)
 
+  // Manual address entry
+  const [showManual,     setShowManual]     = useState(false)
+  const [manualAddr,     setManualAddr]     = useState('')
+  const [geocodingManual, setGeocodingManual] = useState(false)
+  const [manualGeoError, setManualGeoError] = useState(null)
+  const [manualPe,       setManualPe]       = useState(null)  // geocoded result
+
   const staffWithCoords = state.staffWithCoords ?? []
 
   useEffect(() => {
@@ -496,7 +503,28 @@ function CharterPeSelectionSection() {
   // Card click — preview only (map marker + "Elegir" button reveal)
   function handleCardClick(pe) {
     setSelectedPe(pe)
+    setManualPe(null)       // deselect manual PE when a card is selected
     dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })
+  }
+
+  // Manual geocode
+  async function handleManualGeocode() {
+    const addr = manualAddr.trim()
+    if (!addr) return
+    setGeocodingManual(true)
+    setManualGeoError(null)
+    setManualPe(null)
+    try {
+      const geo = await geocodeAddress(addr)
+      const pe  = { name: addr, address: geo.formatted_address ?? addr, lat: geo.lat, lng: geo.lng }
+      setManualPe(pe)
+      setSelectedPe(null)   // deselect cards when manual PE is geocoded
+      dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })
+    } catch {
+      setManualGeoError('No se pudo geocodificar la dirección.')
+    } finally {
+      setGeocodingManual(false)
+    }
   }
 
   // "Elegir este PE" button — full confirmation: vehicles init + route + step advance
@@ -634,11 +662,98 @@ function CharterPeSelectionSection() {
         })}
       </div>
 
-      {!selectedPe && (
+      {!selectedPe && !manualPe && (
         <p style={{ fontSize: 12, color: '#9ca3af', marginTop: 10, textAlign: 'center' }}>
           Hacé click en un PE para seleccionarlo
         </p>
       )}
+
+      {/* ── Manual PE entry ──────────────────────────────────────────── */}
+      <div style={{ marginTop: 14, borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
+        {!showManual ? (
+          <button
+            onClick={() => { setShowManual(true); setSelectedPe(null) }}
+            disabled={choosing}
+            style={{
+              background: 'none', border: 'none', cursor: choosing ? 'default' : 'pointer',
+              fontSize: 12, color: '#6b7280', textDecoration: 'underline', padding: 0,
+            }}
+          >
+            O ingresar punto de encuentro manualmente
+          </button>
+        ) : (
+          <div>
+            <p style={{ fontSize: 12, fontWeight: 600, color: '#374151', margin: '0 0 6px' }}>
+              Dirección del punto de encuentro
+            </p>
+            <input
+              value={manualAddr}
+              onChange={(e) => { setManualAddr(e.target.value); setManualPe(null) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleManualGeocode() }}
+              placeholder="Ej: Av. Rivadavia 4500, Buenos Aires"
+              style={{
+                display: 'block', width: '100%', padding: '6px 10px',
+                border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12,
+                marginBottom: 6, boxSizing: 'border-box', outline: 'none',
+              }}
+            />
+            {manualGeoError && (
+              <p style={{ fontSize: 11, color: '#dc2626', margin: '0 0 6px' }}>{manualGeoError}</p>
+            )}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              <button
+                onClick={handleManualGeocode}
+                disabled={geocodingManual || !manualAddr.trim()}
+                style={{
+                  flex: 1, padding: '7px 0', fontSize: 12, fontWeight: 500,
+                  background: geocodingManual ? '#e5e7eb' : '#111827',
+                  color: geocodingManual ? '#9ca3af' : '#fff',
+                  border: 'none', borderRadius: 6,
+                  cursor: geocodingManual ? 'default' : 'pointer',
+                }}
+              >
+                {geocodingManual ? 'Buscando…' : 'Geocodificar'}
+              </button>
+              <button
+                onClick={() => { setShowManual(false); setManualPe(null); setManualAddr(''); dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null }) }}
+                style={{
+                  flex: 1, padding: '7px 0', fontSize: 12,
+                  background: '#fff', color: '#374151',
+                  border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer',
+                }}
+              >
+                Cancelar
+              </button>
+            </div>
+
+            {manualPe && (
+              <div style={{ padding: '10px 12px', background: '#f0f9ff', border: '1.5px solid #111827', borderRadius: 8 }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: '#111827', margin: '0 0 2px' }}>
+                  {manualPe.name}
+                </p>
+                <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 8px', lineHeight: 1.4 }}>
+                  {manualPe.address}
+                </p>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleConfirmPe(manualPe) }}
+                  disabled={choosing}
+                  style={{
+                    width: '100%', padding: '7px 12px',
+                    background: choosing ? '#e5e7eb' : '#111827',
+                    color: choosing ? '#9ca3af' : '#fff',
+                    border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                    cursor: choosing ? 'default' : 'pointer', transition: 'background 150ms ease',
+                  }}
+                  onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#374151' }}
+                  onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#111827' }}
+                >
+                  {choosing ? 'Configurando…' : 'Elegir este punto →'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

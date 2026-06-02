@@ -236,12 +236,19 @@ export default function MeetingPointMarkers() {
   const pea          = state.peaEvaluation
   const chosen       = state.chosenMeetingPoint
 
-  if (!meetingPoint) return null
+  // Temporary highlighted PE — shown while the manager browses PE cards in
+  // the charter PE selection sidebar.  Different React key from real PE markers
+  // so it appears/disappears instantly (no cross-point animation).
+  const highlightedPE = state.highlightedPE
+
+  // Allow rendering even when meetingPoint is not yet set (charter step 2:
+  // the user is browsing PE cards and we only have a highlighted preview).
+  if (!meetingPoint && !highlightedPE) return null
 
   // True when this specific point is the currently chosen meeting point.
   // Matched by lat+lng because the data shape varies between PE and PEA objects.
   function isChosen(point) {
-    if (!chosen) return false
+    if (!chosen || !point) return false
     return (
       Math.abs(chosen.lat - point.lat) < 0.0001 &&
       Math.abs(chosen.lng - point.lng) < 0.0001
@@ -253,7 +260,7 @@ export default function MeetingPointMarkers() {
     setOpenKey(null)   // close the InfoWindow after choosing
   }
 
-  const peChosen   = isChosen(meetingPoint)
+  const peChosen   = isChosen(meetingPoint)   // false when meetingPoint is null
   const peColors   = peChosen ? PE_COLORS.selected  : PE_COLORS.default
   const candidates = pea?.has_candidates ? (pea.candidates ?? []) : []
 
@@ -270,14 +277,10 @@ export default function MeetingPointMarkers() {
   // In this case the candidates loop and PE block render nothing, so we need a
   // dedicated marker block below.
   const isManualPea =
+    meetingPoint !== null &&
     chosen !== null &&
     !isChosen(meetingPoint) &&
     !candidates.some((c) => isChosen(c))
-
-  // Temporary highlighted PE — shown while the manager browses PE cards in
-  // the charter PE selection sidebar.  Different React key from real PE markers
-  // so it appears/disappears instantly (no cross-point animation).
-  const highlightedPE = state.highlightedPE
 
   return (
     <>
@@ -297,9 +300,9 @@ export default function MeetingPointMarkers() {
         </AdvancedMarker>
       )}
 
-      {/* ── Original PE marker ──────────────────────────────────────────── */}
-      {/* Hidden once a choice is made and PE was NOT the chosen point.      */}
-      {(!isPostChoice || peChosen) && (
+      {/* ── Original PE marker — only rendered once meetingPoint is available */}
+      {/* Hidden once a choice is made and PE was NOT the chosen point.        */}
+      {meetingPoint && (!isPostChoice || peChosen) && (
         <>
           <AdvancedMarker
             position={{ lat: meetingPoint.lat, lng: meetingPoint.lng }}
@@ -337,7 +340,7 @@ export default function MeetingPointMarkers() {
       {/* ── PEA candidate markers ────────────────────────────────────────── */}
       {/* Each candidate is hidden once a choice is made and it was not       */}
       {/* the chosen one (including the original PE marker when PEA chosen).  */}
-      {candidates.map((candidate, i) => {
+      {meetingPoint && candidates.map((candidate, i) => {
         const markerKey = `pea-${i}`
         const peaChosen = isChosen(candidate)
         const peaColors = peaChosen ? PEA_COLORS.selected : PEA_COLORS.default

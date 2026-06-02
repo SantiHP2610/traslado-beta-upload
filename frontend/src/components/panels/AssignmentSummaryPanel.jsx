@@ -49,7 +49,11 @@ function buildAssignmentsInput(vehicles, pending_employee) {
       driver:               v.driver ?? null,
       vehicle_description:  v.vehicle_description ?? null,
       passengers_pe:        v.passengers_pe,
-      pickup_passengers:    v.pickup.passengers,
+      // Charter uses pickups[] (multi-pickup); personal/Uber use pickup.passengers.
+      // Flatten charter pickups so the backend sees all passengers in one list.
+      pickup_passengers:    v.type === 'charter'
+        ? v.pickups.flatMap((pu) => pu.passengers)
+        : v.pickup.passengers,
       meeting_point:        v.meeting_point,
       custom_meeting_point: v.custom_meeting_point,
     })),
@@ -242,7 +246,7 @@ function VehicleCard({ vehicle, staffPool, dispatch, onPickupClick }) {
           <div key={i} style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #f3f4f6' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
               <p style={{ fontSize: 11, fontWeight: 600, color: colors.pickup, margin: 0, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Pickup {i + 1} — {pu.point?.place_name ?? pu.point?.place_address ?? 'Sin nombre'}
+                Recogida {i + 1}: {pu.point?.place_name ?? pu.point?.place_address ?? 'Sin nombre'}
               </p>
               <button
                 onClick={() => dispatch({ type: ACTIONS.REMOVE_VEHICLE_PICKUP, payload: { vehicle_id: vehicle.id, index: i } })}

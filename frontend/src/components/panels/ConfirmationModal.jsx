@@ -39,7 +39,9 @@ function buildBody(vehicles, pendingEmployee, frescosResult, chosenMeetingPoint,
         driver:               v.driver ?? null,
         vehicle_description:  v.vehicle_description ?? null,
         passengers_pe:        v.passengers_pe,
-        pickup_passengers:    v.pickup.passengers,
+        pickup_passengers:    v.type === 'charter'
+          ? v.pickups.flatMap((pu) => pu.passengers)
+          : v.pickup.passengers,
         meeting_point:        v.meeting_point,
         custom_meeting_point: v.custom_meeting_point,
       })),

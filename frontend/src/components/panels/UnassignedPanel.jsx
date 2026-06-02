@@ -70,7 +70,7 @@ function EmployeeMenu({ emp, vehicles, dispatch, onClose }) {
             }}
             style={{ fontSize: 12, color: VEHICLE_COLORS.charter_1.pickup, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', textAlign: 'left' }}
           >
-            → Pickup {i + 1} ({pu.point.place_name ?? pu.point.place_address})
+            → Recogida {i + 1}: {pu.point.place_name ?? pu.point.place_address}
           </button>
         ))}
       </div>
@@ -190,7 +190,8 @@ export default function UnassignedPanel() {
 
   // At least one assignment exists when vehicles have passengers.
   const hasAnyAssigned = state.vehicles.some(
-    (v) => v.passengers_pe.length > 0 || v.pickup.passengers.length > 0,
+    (v) => v.passengers_pe.length > 0 || v.pickup.passengers.length > 0
+      || v.pickups.some((pu) => pu.passengers.length > 0),
   )
 
   function handleReset() {

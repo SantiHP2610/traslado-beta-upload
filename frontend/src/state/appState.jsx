@@ -63,7 +63,7 @@ export const VEHICLE_COLORS = {
   uber_1:    { route: '#2D2D2D', passengers: '#2D2D2D', pickup: '#1A3A5C' },
   uber_2:    { route: '#5A5A5A', passengers: '#5A5A5A', pickup: '#2E5E8E' },
   uber_3:    { route: '#858585', passengers: '#858585', pickup: '#4A7FB5' },
-  charter_1: { route: '#333333', passengers: '#555555', pickup: '#444444' },
+  charter_1: { route: '#333333', passengers: '#FBBC04', pickup: '#444444' },
 }
 
 // ---------------------------------------------------------------------------
@@ -474,12 +474,14 @@ function appReducer(state, action) {
 
     case ACTIONS.REMOVE_VEHICLE_PICKUP: {
       // payload: { vehicle_id, index }
+      // Removing a charter pickup slot does NOT clear the route — the PE→event
+      // base route is still valid and canValidate needs it to pass.
       const { vehicle_id, index } = action.payload
       return {
         ...state,
         vehicles: state.vehicles.map(v => {
           if (v.id !== vehicle_id) return v
-          return { ...v, pickups: v.pickups.filter((_, i) => i !== index), route: null }
+          return { ...v, pickups: v.pickups.filter((_, i) => i !== index) }
         }),
       }
     }
