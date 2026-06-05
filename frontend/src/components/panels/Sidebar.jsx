@@ -19,7 +19,7 @@
 import { useState, useEffect, useRef }      from 'react'
 import { ChevronDown, ChevronRight }        from 'lucide-react'
 import { useAppState, ACTIONS, VEHICLE_COLORS } from '../../state/appState'
-import { simpleRoute, geocodeAddress, geocodeAndEnrich, nearestMeetingPoint } from '../../api/endpoints'
+import { simpleRoute, geocodeAddress, geocodeAndEnrich, nearestMeetingPoint, getConfig } from '../../api/endpoints'
 import FrescosPanel                         from './FrescosPanel'
 import PeaPanel                             from './PeaPanel'
 import { CabaPanel }                        from './CabaPanel'
@@ -391,10 +391,12 @@ function UberRoutesSection() {
 }
 
 // ---------------------------------------------------------------------------
-// Charter companies — plain text, no hyperlinks
+// Charter companies — plain text, no hyperlinks.
+// Hardcoded fallback used while the async /config fetch completes (or if it
+// fails).  The live list comes from config.py via GET /config.
 // ---------------------------------------------------------------------------
 
-const CHARTER_PHONES = [
+const CHARTER_PHONES_FALLBACK = [
   { name: 'Transfer Express',    phone: '(011) 4555-0100' },
   { name: 'Buenos Aires Bus',    phone: '(011) 4314-5555' },
   { name: 'Chevallier Integral', phone: '(011) 4000-5255' },
@@ -406,6 +408,17 @@ const CHARTER_PHONES = [
 // ---------------------------------------------------------------------------
 
 function CharterInfoSection({ poolCount, onContinue }) {
+  const [charterPhones, setCharterPhones] = useState(CHARTER_PHONES_FALLBACK)
+
+  useEffect(() => {
+    getConfig()
+      .then((cfg) => {
+        const list = cfg.charter?.constants?.CHARTER_PHONE_LIST?.value
+        if (Array.isArray(list)) setCharterPhones(list)
+      })
+      .catch(() => {})   // keep fallback on error
+  }, [])
+
   return (
     <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb', animation: 'fadeIn 200ms ease-out' }}>
       <p style={{ fontSize: 15, fontWeight: 700, color: '#111827', margin: '0 0 4px' }}>
@@ -419,7 +432,7 @@ function CharterInfoSection({ poolCount, onContinue }) {
         Empresas de charter
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
-        {CHARTER_PHONES.map((item) => (
+        {charterPhones.map((item) => (
           <div key={item.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6 }}>
             <span style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>{item.name}</span>
             <span style={{ fontSize: 12, color: '#6b7280', fontFamily: 'monospace' }}>{item.phone}</span>

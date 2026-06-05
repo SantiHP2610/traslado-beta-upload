@@ -14,9 +14,9 @@
  * false → FinalOutputBlocks takes over.
  */
 
-import { useState }              from 'react'
+import { useState, useEffect }   from 'react'
 import { useAppState, ACTIONS }  from '../../state/appState'
-import { finalOutput }           from '../../api/endpoints'
+import { finalOutput, getConfig } from '../../api/endpoints'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -93,7 +93,9 @@ function NameRow({ name, role, color = 'bg-slate-400' }) {
 // Main component
 // ---------------------------------------------------------------------------
 
-const CHARTER_PHONES = [
+// Hardcoded fallback used while the async /config fetch completes (or if it
+// fails).  The live list comes from config.py via GET /config.
+const CHARTER_PHONES_FALLBACK = [
   { name: 'Transfer Express',    phone: '(011) 4555-0100' },
   { name: 'Buenos Aires Bus',    phone: '(011) 4314-5555' },
   { name: 'Chevallier Integral', phone: '(011) 4000-5255' },
@@ -102,6 +104,16 @@ const CHARTER_PHONES = [
 export default function ConfirmationModal() {
   const { state, dispatch } = useAppState()
   const [confirming, setConfirming] = useState(false)
+  const [charterPhones, setCharterPhones] = useState(CHARTER_PHONES_FALLBACK)
+
+  useEffect(() => {
+    getConfig()
+      .then((cfg) => {
+        const list = cfg.charter?.constants?.CHARTER_PHONE_LIST?.value
+        if (Array.isArray(list)) setCharterPhones(list)
+      })
+      .catch(() => {})   // keep fallback on error
+  }, [])
   const [loadingTimeMinutes, setLoadingTimeMinutes] = useState(50)
 
   const {
@@ -226,7 +238,7 @@ export default function ConfirmationModal() {
             <div className="space-y-2 pb-3 border-b border-border">
               <SectionTitle>Empresa de charter</SectionTitle>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {CHARTER_PHONES.map((item) => (
+                {charterPhones.map((item) => (
                   <button
                     key={item.name}
                     onClick={() => dispatch({ type: ACTIONS.SET_CHARTER_COMPANY, payload: item.name })}

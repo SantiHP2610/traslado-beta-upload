@@ -2361,6 +2361,22 @@ _CONFIG_SCHEMA: dict[str, dict] = {
             },
         },
     },
+    "charter": {
+        "label": "Charter",
+        "constants": {
+            "CHARTER_MAX_PICKUPS": {
+                "description": (
+                    "Máximo de puntos de recogida permitidos para el bus de charter."
+                ),
+            },
+            "CHARTER_PHONE_LIST": {
+                "description": (
+                    "Lista de empresas de charter con teléfono de contacto. "
+                    "Cada entrada debe tener 'name' y 'phone'."
+                ),
+            },
+        },
+    },
     "departure_formula": {
         "label": "Fórmula de salida",
         "constants": {
