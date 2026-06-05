@@ -27,7 +27,7 @@
  * Every marker has an "Editar dirección" link in its InfoWindow.  Clicking it
  * enters edit mode for that employee: the marker becomes draggable and an
  * address text input appears in the InfoWindow.  The user can drag the pin to a
- * new position, or type an address and click "Geocodificar".  Clicking "Listo"
+ * new position, or type an address and click "Buscar".  Clicking "Listo"
  * or any other marker exits edit mode.  The override is stored in the global
  * coordinateOverrides slice.  "Volver a ubicación original" reverts the marker.
  *
@@ -256,7 +256,7 @@ function EditModeContent({ employee, hasOverride, dispatch, onDone }) {
             cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1,
           }}
         >
-          {loading ? '…' : 'Geocodificar'}
+          {loading ? '…' : 'Buscar'}
         </button>
         <button
           onClick={onDone}

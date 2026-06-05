@@ -333,6 +333,39 @@ export async function pickupPlaceInfo(lat, lng) {
 }
 
 /**
+ * Geocodes an address string, then enriches the result with a nearby-place lookup
+ * (name, address, opening hours) via POST /pickup-place-info.
+ * Falls back to "Punto personalizado" + formatted_address if no place is found.
+ * Use this wherever a meeting-point is set from a text input so the stored name
+ * reflects a real place rather than the user's raw search query.
+ * @param {string} address
+ * @returns {{ lat, lng, name, address, opening_hours } | null}
+ */
+export async function geocodeAndEnrich(address) {
+  const geo = await geocodeAddress(address)
+  if (!geo?.lat) return null
+  try {
+    const info = await pickupPlaceInfo(geo.lat, geo.lng)
+    if (info.name) {
+      return {
+        lat:           geo.lat,
+        lng:           geo.lng,
+        name:          info.name,
+        address:       info.address || geo.formatted_address,
+        opening_hours: info.opening_hours || [],
+      }
+    }
+  } catch {}
+  return {
+    lat:           geo.lat,
+    lng:           geo.lng,
+    name:          'Punto personalizado',
+    address:       geo.formatted_address,
+    opening_hours: [],
+  }
+}
+
+/**
  * Fetches full place details from the Places API (New) by place ID.
  * Called when the user single-clicks a Google Maps POI during manual pickup mode.
  * @param {string} placeId  Google Places place ID (e.g. "ChIJ...")

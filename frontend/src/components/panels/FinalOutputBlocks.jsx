@@ -97,6 +97,13 @@ function transportText(tb, pendingEmployee) {
       if (v.pickup?.passengers?.length) {
         lines.push(`Pickup: ${v.pickup.passengers.join(', ')}`)
       }
+    } else if (v.type === 'charter') {
+      if (v.passengers_pe?.length) lines.push(`Charter PE: ${v.passengers_pe.join(', ')}`)
+      for (let i = 0; i < (v.pickups?.length ?? 0); i++) {
+        const pu = v.pickups[i]
+        const ptName = pu.point?.place_name || pu.point?.place_address || ''
+        lines.push(`Recogida ${i + 1}${ptName ? ` (${ptName})` : ''}: ${pu.passengers.join(', ')}`)
+      }
     } else {
       const peName = v.meeting_point?.name || v.meeting_point?.address || tb.meeting_point?.name || ''
       lines.push(`${vehicleDisplayName(v)} (PE: ${peName}): ${(v.passengers_pe ?? []).join(', ')}`)
@@ -452,6 +459,78 @@ export default function FinalOutputBlocks() {
                               {vPickupInfo.label}
                             </p>
                           </div>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  // Charter vehicle — uses pickups[] array instead of single pickup
+                  if (v.type === 'charter') {
+                    const charterPickupInfo = computePickupInfo(
+                      tb.departure_from_pe,
+                      v.route?.leg_seconds   ?? null,
+                      v.route?.pickup_before_pe ?? null,
+                    )
+                    return (
+                      <div key={v.id} className="space-y-1">
+                        <SectionTitle>Charter</SectionTitle>
+
+                        {pePassengers.length > 0 && (
+                          <>
+                            {v.pickups.length > 0 && (
+                              <p className="text-xs text-muted-foreground">Suben en el PE:</p>
+                            )}
+                            {pePassengers.map((name) => (
+                              <div key={name} className="flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-full bg-[#FBBC04] shrink-0" />
+                                <span className="text-xs">
+                                  {name}
+                                  {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
+                                </span>
+                              </div>
+                            ))}
+                          </>
+                        )}
+
+                        {v.pickups.map((pu, idx) => (
+                          <div key={idx} className="pt-0.5 space-y-0.5">
+                            <p className="text-xs text-muted-foreground">
+                              Recogida {idx + 1}
+                              {pu.point?.place_name ? ` (${pu.point.place_name})` : ''}:
+                            </p>
+                            {pu.passengers.map((name) => (
+                              <div key={name} className="flex items-center gap-1.5">
+                                <span className="h-2 w-2 rounded-full bg-[#444444] shrink-0" />
+                                <span className="text-xs">
+                                  {name}
+                                  {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
+                                </span>
+                              </div>
+                            ))}
+                            {pu.point?.place_address && (
+                              <p className="text-xs text-muted-foreground pl-3.5">
+                                {pu.point.place_address}
+                              </p>
+                            )}
+                            {v.pickups.length === 1 && charterPickupInfo.time ? (
+                              <p className="text-xs font-medium pl-3.5">
+                                Hora en punto de recogida: {charterPickupInfo.time}
+                              </p>
+                            ) : (
+                              <p className="text-xs text-muted-foreground pl-3.5">
+                                Horario a confirmar
+                              </p>
+                            )}
+                            {v.pickups.length === 1 && (
+                              <p className="text-xs text-muted-foreground pl-3.5">
+                                {charterPickupInfo.label}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+
+                        {pePassengers.length === 0 && v.pickups.length === 0 && (
+                          <p className="text-xs text-muted-foreground">Sin pasajeros</p>
                         )}
                       </div>
                     )

@@ -308,7 +308,58 @@ export default function ConfirmationModal() {
             {remuNote && <p className="text-xs text-amber-600">{remuNote}</p>}
           </div>
 
-          {/* Section 3: Personal vehicle */}
+          {/* Section 3: Charter vehicle */}
+          {charterVehicle && (
+            <div className="space-y-1.5">
+              <SectionTitle>Charter</SectionTitle>
+
+              {charterVehicle.passengers_pe.length > 0 && (
+                <>
+                  {charterVehicle.pickups.length > 0 && (
+                    <p className="text-xs text-muted-foreground pl-3.5">Suben en el PE:</p>
+                  )}
+                  {charterVehicle.passengers_pe.map((name) => (
+                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#FBBC04]" />
+                  ))}
+                </>
+              )}
+
+              {charterVehicle.pickups.map((pu, idx) => {
+                const charterLegSecs    = charterVehicle.route?.leg_seconds    ?? null
+                const charterBeforePe   = charterVehicle.route?.pickup_before_pe ?? null
+                return (
+                  <div key={idx} className="space-y-0.5">
+                    <p className="text-xs text-muted-foreground pl-3.5 pt-0.5">
+                      Recogida {idx + 1}
+                      {pu.point?.place_name ? ` — ${pu.point.place_name}` : ''}:
+                    </p>
+                    {pu.passengers.map((name) => (
+                      <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#444444]" />
+                    ))}
+                    {pu.point?.place_address && (
+                      <p className="text-xs text-muted-foreground pl-3.5">
+                        {pu.point.place_address}
+                      </p>
+                    )}
+                    {charterLegSecs != null ? (
+                      <p className="text-xs text-muted-foreground pl-3.5">
+                        {Math.ceil(charterLegSecs / 60)} min{' '}
+                        {charterBeforePe ? 'antes' : 'después'} del PE
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground pl-3.5">Horario a confirmar</p>
+                    )}
+                  </div>
+                )
+              })}
+
+              {charterVehicle.passengers_pe.length === 0 && charterVehicle.pickups.length === 0 && (
+                <p className="text-xs text-muted-foreground pl-3.5">Sin pasajeros</p>
+              )}
+            </div>
+          )}
+
+          {/* Section 4: Personal vehicle */}
           {personalVehicle && (
             <div className="space-y-1.5">
               <SectionTitle>{vehicleDisplayName(personalVehicle)}</SectionTitle>

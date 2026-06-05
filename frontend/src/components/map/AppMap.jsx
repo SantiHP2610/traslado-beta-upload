@@ -449,6 +449,23 @@ export default function AppMap() {
     const { lat, lng } = event.detail.latLng
     const clickedPoint = { lat, lng }
 
+    // Charter mode: no driver route exists — skip proximity check, just enrich
+    // the clicked point with place info and signal the sidebar via highlightedPE.
+    if (state.charterMode) {
+      dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: { lat, lng, name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}` } })
+      try {
+        const info = await pickupPlaceInfo(lat, lng)
+        dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: {
+          lat,
+          lng,
+          name:    info.name ?? 'Punto seleccionado',
+          address: info.address ?? `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        }})
+      } catch {}
+      dispatch({ type: ACTIONS.SET_MANUAL_PEA_MODE, payload: false })
+      return
+    }
+
     const directPolyline = state.driverRoutes?.direct_route?.encoded_polyline
     let tooFar = false
     if (directPolyline) {
@@ -475,7 +492,7 @@ export default function AppMap() {
     } catch {
       setManualPeaInfo({ lat, lng, loading: false, tooFar, name: null, address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, primary_type: null, opening_hours: [], staff_metrics: [], error: 'No se pudo obtener info del lugar.' })
     }
-  }, [state.manualPeaMode, state.currentStep, state.driverRoutes, state.staffWithCoords, state.frescosResult, state.meetingPoint])
+  }, [state.manualPeaMode, state.currentStep, state.charterMode, state.driverRoutes, state.staffWithCoords, state.frescosResult, state.meetingPoint, dispatch])
 
   // When the user confirms a manually clicked PEA point.
   const handleConfirmManualPea = useCallback(() => {
@@ -561,7 +578,7 @@ export default function AppMap() {
 
           <RoutePolylines />
 
-          {state.meetingPoint && state.currentStep >= 2 && (
+          {(state.meetingPoint || state.highlightedPE) && state.currentStep >= 2 && (
             <MeetingPointMarkers />
           )}
 

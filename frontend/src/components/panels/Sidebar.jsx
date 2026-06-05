@@ -16,10 +16,10 @@
  *       enables and dispatches SET_CURRENT_STEP 3.
  */
 
-import { useState, useEffect }             from 'react'
+import { useState, useEffect, useRef }      from 'react'
 import { ChevronDown, ChevronRight }        from 'lucide-react'
 import { useAppState, ACTIONS, VEHICLE_COLORS } from '../../state/appState'
-import { simpleRoute, geocodeAddress, nearestMeetingPoint } from '../../api/endpoints'
+import { simpleRoute, geocodeAddress, geocodeAndEnrich, nearestMeetingPoint } from '../../api/endpoints'
 import FrescosPanel                         from './FrescosPanel'
 import PeaPanel                             from './PeaPanel'
 import { CabaPanel }                        from './CabaPanel'
@@ -157,16 +157,17 @@ function UberRoutesSection() {
     setGeocoding((prev)  => ({ ...prev, [vehicleId]: true  }))
     setGeoErrors((prev)  => ({ ...prev, [vehicleId]: null  }))
     try {
-      const geo    = await geocodeAddress(address)
+      const result = await geocodeAndEnrich(address)
+      if (!result) throw new Error('No result')
       const newMp  = {
-        name:    address,
-        address: geo.formatted_address ?? address,
-        lat:     geo.lat,
-        lng:     geo.lng,
+        name:    result.name,
+        address: result.address,
+        lat:     result.lat,
+        lng:     result.lng,
       }
       dispatch({ type: ACTIONS.SET_VEHICLE_MEETING_POINT, payload: { vehicle_id: vehicleId, meeting_point: newMp } })
       if (state.eventCoords) {
-        const route = await simpleRoute(geo.lat, geo.lng, state.eventCoords.lat, state.eventCoords.lng)
+        const route = await simpleRoute(result.lat, result.lng, state.eventCoords.lat, state.eventCoords.lng)
         dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: vehicleId, route } })
       }
       setEditMode((prev) => ({ ...prev, [vehicleId]: false }))
@@ -319,7 +320,7 @@ function UberRoutesSection() {
                         cursor:       isGeo ? 'default' : 'pointer',
                       }}
                     >
-                      {isGeo ? 'Geocodificando…' : 'Geocodificar'}
+                      {isGeo ? 'Buscando…' : 'Buscar'}
                     </button>
                     <button
                       onClick={() => setEditMode((prev) => ({ ...prev, [v.id]: false }))}
@@ -476,11 +477,15 @@ function CharterPeSelectionSection() {
   const [choosing,   setChoosing]   = useState(false)
 
   // Manual address entry
-  const [showManual,     setShowManual]     = useState(false)
-  const [manualAddr,     setManualAddr]     = useState('')
+  const [showManual,      setShowManual]      = useState(false)
+  const [manualAddr,      setManualAddr]      = useState('')
   const [geocodingManual, setGeocodingManual] = useState(false)
-  const [manualGeoError, setManualGeoError] = useState(null)
-  const [manualPe,       setManualPe]       = useState(null)  // geocoded result
+  const [manualGeoError,  setManualGeoError]  = useState(null)
+  const [manualPe,        setManualPe]        = useState(null)  // geocoded result
+
+  // Map-click mode — user can click on the map to pick a PE location.
+  const [manualPeMapMode, setManualPeMapMode] = useState(false)
+  const manualPeMapRef    = useRef(false)  // ref mirror so the effect below reads latest value
 
   const staffWithCoords = state.staffWithCoords ?? []
 
@@ -507,7 +512,8 @@ function CharterPeSelectionSection() {
     dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })
   }
 
-  // Manual geocode
+  // Manual geocode — enriches with place name via pickupPlaceInfo so the stored
+  // name reflects a real place rather than the user's raw search query (Bug 4).
   async function handleManualGeocode() {
     const addr = manualAddr.trim()
     if (!addr) return
@@ -515,8 +521,8 @@ function CharterPeSelectionSection() {
     setManualGeoError(null)
     setManualPe(null)
     try {
-      const geo = await geocodeAddress(addr)
-      const pe  = { name: addr, address: geo.formatted_address ?? addr, lat: geo.lat, lng: geo.lng }
+      const pe = await geocodeAndEnrich(addr)
+      if (!pe) throw new Error('No result')
       setManualPe(pe)
       setSelectedPe(null)   // deselect cards when manual PE is geocoded
       dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })
@@ -526,6 +532,33 @@ function CharterPeSelectionSection() {
       setGeocodingManual(false)
     }
   }
+
+  // Map-click mode handlers — activates global manualPeaMode so AppMap turns
+  // the cursor to crosshair and handles clicks via handleMapClickPea (charter branch).
+  function handleStartMapMode() {
+    manualPeMapRef.current = true
+    setManualPeMapMode(true)
+    setSelectedPe(null)
+    dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null })
+    dispatch({ type: ACTIONS.SET_MANUAL_PEA_MODE, payload: true })
+  }
+
+  function handleCancelMapMode() {
+    manualPeMapRef.current = false
+    setManualPeMapMode(false)
+    dispatch({ type: ACTIONS.SET_MANUAL_PEA_MODE, payload: false })
+  }
+
+  // When AppMap completes a charter map click it sets highlightedPE and clears
+  // manualPeaMode.  Watch for that transition to populate manualPe in the sidebar.
+  useEffect(() => {
+    if (manualPeMapRef.current && !state.manualPeaMode && state.highlightedPE) {
+      setManualPe(state.highlightedPE)
+      setSelectedPe(null)
+      manualPeMapRef.current = false
+      setManualPeMapMode(false)
+    }
+  }, [state.manualPeaMode, state.highlightedPE])
 
   // "Elegir este PE" button — full confirmation: vehicles init + route + step advance
   async function handleConfirmPe(pe) {
@@ -712,10 +745,10 @@ function CharterPeSelectionSection() {
                   cursor: geocodingManual ? 'default' : 'pointer',
                 }}
               >
-                {geocodingManual ? 'Buscando…' : 'Geocodificar'}
+                {geocodingManual ? 'Buscando…' : 'Buscar'}
               </button>
               <button
-                onClick={() => { setShowManual(false); setManualPe(null); setManualAddr(''); dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null }) }}
+                onClick={() => { setShowManual(false); setManualPe(null); setManualAddr(''); handleCancelMapMode(); dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null }) }}
                 style={{
                   flex: 1, padding: '7px 0', fontSize: 12,
                   background: '#fff', color: '#374151',
@@ -725,6 +758,40 @@ function CharterPeSelectionSection() {
                 Cancelar
               </button>
             </div>
+
+            {/* Map-click mode — activated by "O seleccionar en el mapa" */}
+            {manualPeMapMode ? (
+              <div style={{ padding: '8px 10px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, marginBottom: 8 }}>
+                <p style={{ fontSize: 12, fontWeight: 600, color: '#1d4ed8', margin: '0 0 6px' }}>
+                  Hacé click en el mapa para elegir el punto de encuentro
+                </p>
+                <button
+                  onClick={handleCancelMapMode}
+                  style={{
+                    fontSize: 11, color: '#6b7280', background: 'none',
+                    border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline',
+                  }}
+                >
+                  Cancelar selección en mapa
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={handleStartMapMode}
+                disabled={choosing}
+                style={{
+                  display: 'block', width: '100%', padding: '6px 0', fontSize: 12,
+                  background: 'none', color: '#374151',
+                  border: '1px solid #d1d5db', borderRadius: 6,
+                  cursor: choosing ? 'default' : 'pointer', marginBottom: 8,
+                  transition: 'background 120ms ease',
+                }}
+                onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#f9fafb' }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'none' }}
+              >
+                O seleccionar en el mapa
+              </button>
+            )}
 
             {manualPe && (
               <div style={{ padding: '10px 12px', background: '#f0f9ff', border: '1.5px solid #111827', borderRadius: 8 }}>
