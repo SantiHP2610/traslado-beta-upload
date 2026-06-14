@@ -240,6 +240,7 @@ export default function MeetingPointMarkers() {
   // the charter PE selection sidebar.  Different React key from real PE markers
   // so it appears/disappears instantly (no cross-point animation).
   const highlightedPE = state.highlightedPE
+  console.log(">>> MPM:", { highlightedPE, chosen, meetingPoint: !!meetingPoint })
 
   // Allow rendering even when meetingPoint is not yet set (charter step 2:
   // the user is browsing PE cards and we only have a highlighted preview).
@@ -247,6 +248,7 @@ export default function MeetingPointMarkers() {
 
   // True when this specific point is the currently chosen meeting point.
   // Matched by lat+lng because the data shape varies between PE and PEA objects.
+  
   function isChosen(point) {
     if (!chosen || !point) return false
     return (
@@ -284,7 +286,7 @@ export default function MeetingPointMarkers() {
 
   return (
     <>
-      {highlightedPE && !chosen && (
+      {highlightedPE && (
         <AdvancedMarker
           key={`highlight-${highlightedPE.lat}-${highlightedPE.lng}`}
           position={{ lat: highlightedPE.lat, lng: highlightedPE.lng }}

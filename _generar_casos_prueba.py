@@ -103,6 +103,27 @@ ZONAS = {
         ("Av. Eva Perón 4100", None, "San José"),
         ("Av. Tomás Espora 1100", None, "Florencio Varela"),
     ],
+    "mixto": [
+        # CABA
+        ("Av. Corrientes 4800", None, "Almagro"),
+        ("Av. Cabildo 3200", None, "Belgrano"),
+        ("Av. Directorio 3100", None, "Flores"),
+        # GBA Norte lejano
+        ("Av. Patricias Argentinas 700", None, "San Fernando"),
+        ("Av. Sobremonte 2400", None, "Tigre"),
+        ("Ruta 202 km 12", None, "Don Torcuato"),
+        # GBA Oeste lejano
+        ("Av. Vergara 3100", None, "Hurlingham"),
+        ("Av. 25 de Mayo 800", None, "Moreno"),
+        ("Av. Rivadavia 18500", None, "Morón"),
+        ("Camino de Cintura 4200", None, "La Matanza"),
+        ("Av. Pte. Perón 6800", None, "González Catán"),
+        # GBA Sur lejano
+        ("Av. Calchaquí 3200", None, "Quilmes"),
+        ("Av. Centenario 500", None, "Lomas de Zamora"),
+        ("Av. Monteverde 400", None, "Claypole"),
+        ("Av. Eva Perón 4100", None, "Florencio Varela"),
+    ],
 }
 
 NOMBRES = [
@@ -272,8 +293,8 @@ def caso_sin_auto():
     _write_event(wb.active, [
         ("Menu", "Asado Finger Food"),
         ("Evento", "Casamiento"),
-        ("Locacion", "Av. Figueroa Alcorta 7500, CABA"),
-        ("DescripcionLocacion", "Espacio al aire libre con parrilla propia"),
+        ("Locacion", "Av. Hipólito Yrigoyen 4200, Lanús"),
+        ("DescripcionLocacion", "Salón de eventos con estacionamiento propio"),
         ("Empresa", None),
         ("Observaciones", "Estacionamiento limitado, no hay cochera disponible."),
         ("Fecha", date(2026, 8, 22)),

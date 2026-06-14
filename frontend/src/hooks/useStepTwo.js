@@ -102,6 +102,12 @@ export function useStepTwo() {
     // Only fire on step 2 with a populated personalVehicle.
     if (state.currentStep !== 2 || !state.personalVehicle) return
 
+    // Charter mode handles step 2 entirely in CharterPeSelectionSection —
+    // it fetches all PEs itself and lets the manager choose before advancing.
+    // Running this effect for charter would auto-set chosenMeetingPoint before
+    // the user picks a PE, breaking the PE selection flow.
+    if (state.charterMode) return
+
     // CABA gate: if the event is in CABA and the manager hasn't yet decided to
     // plan transport, show CabaPanel and do nothing here.  The effect will re-fire
     // when cabaDecisionToTransport is set to true (dep array includes it).

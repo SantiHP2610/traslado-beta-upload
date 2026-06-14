@@ -464,11 +464,18 @@ export default function FinalOutputBlocks() {
                     )
                   }
 
-                  // Charter vehicle — uses pickups[] array instead of single pickup
+                  // Charter vehicle — uses pickups[] array instead of single pickup.
+                  // vehiclePickups normalises backend responses that may arrive as a
+                  // single v.pickup object (older shape) or with no pickups field.
                   if (v.type === 'charter') {
+                    const vehiclePickups = Array.isArray(v.pickups)
+                      ? v.pickups
+                      : v.pickup?.point
+                        ? [{ point: v.pickup.point, passengers: v.pickup?.passengers ?? [] }]
+                        : []
                     const charterPickupInfo = computePickupInfo(
                       tb.departure_from_pe,
-                      v.route?.leg_seconds   ?? null,
+                      v.route?.leg_seconds      ?? null,
                       v.route?.pickup_before_pe ?? null,
                     )
                     return (
@@ -477,7 +484,7 @@ export default function FinalOutputBlocks() {
 
                         {pePassengers.length > 0 && (
                           <>
-                            {v.pickups.length > 0 && (
+                            {vehiclePickups.length > 0 && (
                               <p className="text-xs text-muted-foreground">Suben en el PE:</p>
                             )}
                             {pePassengers.map((name) => (
@@ -492,7 +499,7 @@ export default function FinalOutputBlocks() {
                           </>
                         )}
 
-                        {v.pickups.map((pu, idx) => (
+                        {vehiclePickups.map((pu, idx) => (
                           <div key={idx} className="pt-0.5 space-y-0.5">
                             <p className="text-xs text-muted-foreground">
                               Recogida {idx + 1}
@@ -512,7 +519,7 @@ export default function FinalOutputBlocks() {
                                 {pu.point.place_address}
                               </p>
                             )}
-                            {v.pickups.length === 1 && charterPickupInfo.time ? (
+                            {vehiclePickups.length === 1 && charterPickupInfo.time ? (
                               <p className="text-xs font-medium pl-3.5">
                                 Hora en punto de recogida: {charterPickupInfo.time}
                               </p>
@@ -521,7 +528,7 @@ export default function FinalOutputBlocks() {
                                 Horario a confirmar
                               </p>
                             )}
-                            {v.pickups.length === 1 && (
+                            {vehiclePickups.length === 1 && (
                               <p className="text-xs text-muted-foreground pl-3.5">
                                 {charterPickupInfo.label}
                               </p>
@@ -529,7 +536,7 @@ export default function FinalOutputBlocks() {
                           </div>
                         ))}
 
-                        {pePassengers.length === 0 && v.pickups.length === 0 && (
+                        {pePassengers.length === 0 && vehiclePickups.length === 0 && (
                           <p className="text-xs text-muted-foreground">Sin pasajeros</p>
                         )}
                       </div>

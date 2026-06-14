@@ -352,6 +352,7 @@ function appReducer(state, action) {
       return { ...state, charterMode: action.payload }
 
     case ACTIONS.SET_HIGHLIGHTED_PE:
+      console.log(">>> SET_HIGHLIGHTED_PE dispatched:", action.payload);
       return { ...state, highlightedPE: action.payload }
 
     case ACTIONS.SET_CHARTER_COMPANY:
