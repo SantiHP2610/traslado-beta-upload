@@ -15,12 +15,14 @@ venues.json
 
 # --- Uploaded Excel files (may contain real event/staff data) ----------------
 uploads/
-*.xlsx
-*.xls
 ~$*.xlsx
 ~$*.xls
-# Exception: keep the generated sample file
-!sample_data/evento_prueba.xlsx
+*.xlsx
+*.xls
+
+# --- Allow all sample/test data ---
+!sample_data/*.xlsx
+!sample_data/*.xls
 
 # --- Python ------------------------------------------------------------------
 __pycache__/
