@@ -82,14 +82,17 @@ function drawStep2Preview(map, driverRoutes, chosenMeetingPoint, meetingPoint) {
   const { base_route, direct_route } = driverRoutes
 
   if (!chosenMeetingPoint) {
-    // Both routes visible: blue base + red direct
-    lines.push(makePolyline({
-      path: decodePath(base_route.encoded_polyline),
-      strokeColor: '#4285F4', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map,
-    }))
+    // Both routes visible before PE selection.
+    // Direct route (red) drawn first so the base route (yellow) renders on top —
+    // for CABA events the two polylines can share similar geometry, so drawing order
+    // determines which one is visible when they overlap.
     lines.push(makePolyline({
       path: decodePath(direct_route.encoded_polyline),
       strokeColor: '#EA4335', strokeWeight: PERSONAL_STROKE, strokeOpacity: 0.6, map,
+    }))
+    lines.push(makePolyline({
+      path: decodePath(base_route.encoded_polyline),
+      strokeColor: '#FBBC04', strokeWeight: PERSONAL_STROKE, strokeOpacity: 1.0, map,
     }))
     return lines
   }

@@ -2,14 +2,15 @@
  * CabaPeSelectionPanel.jsx
  * Step 2 panel shown after the manager decides to plan transport for a CABA event.
  *
- * Displays all 3 predefined meeting points (from state.allMeetingPoints) sorted
- * by distance, and lets the manager choose one.  Choosing dispatches
- * SET_MEETING_POINT + SET_CHOSEN_MEETING_POINT, which triggers INIT_VEHICLES in
- * Sidebar and advances the flow to step 3.
+ * This is a PE RECOMMENDER only — it shows the 3 predefined options with badges
+ * and lets the manager pick their preferred one.  Confirming dispatches only
+ * SET_MEETING_POINT, which flips the Sidebar condition (line 1008) so PeaPanel
+ * renders.  useStepTwo then fires, calculates driver routes + PEA candidates, and
+ * the manager confirms from the map marker InfoWindow — same as the normal flow.
  *
  * Interaction model:
- *   - Click card  → visual selection + SET_HIGHLIGHTED_PE (map preview)
- *   - Click Elegir → SET_MEETING_POINT + SET_CHOSEN_MEETING_POINT + clear highlight
+ *   - Click card  → visual selection + SET_HIGHLIGHTED_PE (map marker preview)
+ *   - Click Elegir → SET_MEETING_POINT only + clear highlight → PeaPanel takes over
  */
 
 import { useState } from 'react'
@@ -74,9 +75,11 @@ export function CabaPeSelectionPanel() {
   }
 
   function handleConfirm(pt) {
-    dispatch({ type: ACTIONS.SET_MEETING_POINT,        payload: pt })
-    dispatch({ type: ACTIONS.SET_CHOSEN_MEETING_POINT, payload: pt })
-    dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE,       payload: null })
+    // SET_MEETING_POINT alone flips the Sidebar condition (isCaba && !meetingPoint → false)
+    // so PeaPanel renders and useStepTwo calculates routes.  Do NOT set chosenMeetingPoint
+    // here — that happens later when the manager confirms from the map marker InfoWindow.
+    dispatch({ type: ACTIONS.SET_MEETING_POINT,  payload: pt })
+    dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null })
   }
 
   return (

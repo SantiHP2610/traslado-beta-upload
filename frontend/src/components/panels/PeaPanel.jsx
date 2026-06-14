@@ -63,8 +63,8 @@ function RouteSummary({ driverRoutes }) {
       {open && (
         <div className="mt-1 space-y-1.5 text-xs pl-3 border-l border-border">
           <div>
-            <p className="font-medium text-blue-600">
-              Ruta base (casa → PE → evento)
+            <p className="font-medium" style={{ color: '#B8860B' }}>
+              Ruta base (chofer → PE → evento)
             </p>
             <p className="text-muted-foreground">
               {formatDuration(base.duration_seconds)} · {formatDistance(base.distance_meters)}
@@ -72,7 +72,7 @@ function RouteSummary({ driverRoutes }) {
           </div>
           <div>
             <p className="font-medium text-red-500">
-              Ruta directa (casa → evento)
+              Ruta directa (chofer → evento)
             </p>
             <p className="text-muted-foreground">
               {formatDuration(direct.duration_seconds)} · {formatDistance(direct.distance_meters)}
