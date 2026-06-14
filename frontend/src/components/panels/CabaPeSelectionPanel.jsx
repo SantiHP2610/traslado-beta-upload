@@ -56,12 +56,13 @@ export function CabaPeSelectionPanel() {
     0,
   )
 
-  // PE closest to event = lowest distance_meters (backend already returns recommended first,
-  // but derive it from the data so the badge is always accurate)
+  // PE closest to event = lowest duration_seconds (driving time, not straight-line distance).
+  // Duration is more accurate than distance_meters for deciding which PE is "best" —
+  // a farther PE might be faster due to road layout.
   const closestToEventIdx = allSorted.reduce(
     (minI, pe, i) =>
-      pe.distance_meters != null &&
-      (allSorted[minI].distance_meters == null || pe.distance_meters < allSorted[minI].distance_meters)
+      pe.duration_seconds != null &&
+      (allSorted[minI].duration_seconds == null || pe.duration_seconds < allSorted[minI].duration_seconds)
         ? i : minI,
     0,
   )

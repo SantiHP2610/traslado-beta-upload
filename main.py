@@ -907,6 +907,8 @@ def endpoint_detect_personal_vehicle():
 def endpoint_calculate_driver_route(
     driver_lat: Optional[float] = Query(None, description="Override driver latitude — skips geocoding the driver address from Excel"),
     driver_lng: Optional[float] = Query(None, description="Override driver longitude — skips geocoding the driver address from Excel"),
+    pe_lat:     Optional[float] = Query(None, description="PE latitude — uses this as the meeting-point waypoint instead of calling nearest_meeting_point()"),
+    pe_lng:     Optional[float] = Query(None, description="PE longitude — paired with pe_lat"),
 ):
     """
     Workflow:
@@ -979,14 +981,19 @@ def endpoint_calculate_driver_route(
     event_coords = _geocode_event(event)
 
     # -------------------------------------------------------------------------
-    # Step 4: find the nearest meeting point (PE) to the event venue.
-    # This is the same PE used by the Uber vehicles and is the intermediate
-    # waypoint in Route A.
+    # Step 4: resolve the meeting point (PE) for the base-route waypoint.
+    # When the frontend passes pe_lat/pe_lng, the user has already selected a
+    # specific PE (e.g. from CabaPeSelectionPanel) — use those coords directly
+    # so the calculated route actually goes through the chosen PE, not whatever
+    # nearest_meeting_point() would independently pick.
     # -------------------------------------------------------------------------
-    try:
-        meeting_point = nearest_meeting_point(event_coords)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    if pe_lat is not None and pe_lng is not None:
+        meeting_point = {"lat": pe_lat, "lng": pe_lng}
+    else:
+        try:
+            meeting_point = nearest_meeting_point(event_coords)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     # -------------------------------------------------------------------------
     # Step 5: calculate both routes via the Routes API and return the result.

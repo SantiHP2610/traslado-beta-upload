@@ -163,7 +163,7 @@ export function useStepTwo() {
 
         const overrideLat = driverOverride?.lat ?? null
         const overrideLng = driverOverride?.lng ?? null
-        const driverRoutes = await calculateDriverRoute(overrideLat, overrideLng)
+        const driverRoutes = await calculateDriverRoute(overrideLat, overrideLng, meetingPoint.lat, meetingPoint.lng)
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
 
@@ -227,7 +227,7 @@ export function useStepTwo() {
       try {
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
 
-        const driverRoutes = await calculateDriverRoute(effectiveLat, effectiveLng)
+        const driverRoutes = await calculateDriverRoute(effectiveLat, effectiveLng, state.meetingPoint?.lat, state.meetingPoint?.lng)
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
 
@@ -291,7 +291,7 @@ export function useStepTwo() {
       try {
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
 
-        const driverRoutes = await calculateDriverRoute(effectiveLat, effectiveLng)
+        const driverRoutes = await calculateDriverRoute(effectiveLat, effectiveLng, state.meetingPoint.lat, state.meetingPoint.lng)
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
 

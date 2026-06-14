@@ -220,14 +220,16 @@ export async function detectPersonalVehicle() {
  * Both encoded polylines are returned for map rendering and PEA/pickup evaluation.
  * @param {number|null} [driverLat]  Override driver latitude (from coordinate override).
  * @param {number|null} [driverLng]  Override driver longitude (from coordinate override).
+ * @param {number|null} [peLat]      PE latitude — routes through this point instead of auto-selecting.
+ * @param {number|null} [peLng]      PE longitude — paired with peLat.
  * @returns {{ base_route: object, direct_route: object }}
  */
-export async function calculateDriverRoute(driverLat = null, driverLng = null) {
+export async function calculateDriverRoute(driverLat = null, driverLng = null, peLat = null, peLng = null) {
   const params = {}
-  if (driverLat != null && driverLng != null) {
-    params.driver_lat = driverLat
-    params.driver_lng = driverLng
-  }
+  if (driverLat != null) params.driver_lat = driverLat
+  if (driverLng != null) params.driver_lng = driverLng
+  if (peLat != null)     params.pe_lat = peLat
+  if (peLng != null)     params.pe_lng = peLng
   const response = await client.get('/calculate-driver-route', { params })
   return response.data
 }

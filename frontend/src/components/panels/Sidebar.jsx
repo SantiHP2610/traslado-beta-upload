@@ -618,6 +618,16 @@ function CharterPeSelectionSection() {
     0,
   )
 
+  // PE with lowest driving time to the event — more reliable than distance_meters
+  // because road layout can make a farther PE faster.
+  const bestByTimeIdx = peList.reduce(
+    (best, pe, i) =>
+      pe.duration_seconds != null &&
+      (peList[best].duration_seconds == null || pe.duration_seconds < peList[best].duration_seconds)
+        ? i : best,
+    0,
+  )
+
   return (
     <div style={{ animation: 'fadeIn 200ms ease-out' }}>
       <p style={{ fontSize: 14, fontWeight: 600, color: '#111827', margin: '0 0 12px' }}>
@@ -626,9 +636,9 @@ function CharterPeSelectionSection() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {peList.map((pe, i) => {
-          const isRecommended = i === 0
+          const isRecommended = i === bestByTimeIdx
           const avgDist       = staffAvgs[i]
-          const isNearTeam    = i === minAvgIdx && minAvgIdx !== 0
+          const isNearTeam    = i === minAvgIdx && i !== bestByTimeIdx
           const isSelected    = selectedPe?.name === pe.name
 
           return (
@@ -672,7 +682,7 @@ function CharterPeSelectionSection() {
 
               {pe.duration_seconds != null && (
                 <p style={{ fontSize: 11, color: '#9ca3af', margin: '0 0 2px' }}>
-                  {Math.ceil(pe.duration_seconds / 60)} min al evento desde CP
+                  {Math.ceil(pe.duration_seconds / 60)} min al evento · {pe.distance_meters != null ? `${(pe.distance_meters / 1000).toFixed(1)} km` : ''}
                 </p>
               )}
               {avgDist != null && (
@@ -882,8 +892,10 @@ export default function Sidebar() {
     })
 
     if (has_personal_vehicle && state.driverRoutes) {
-      const isPea = state.meetingPoint &&
-        state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+      const isPea = state.meetingPoint && state.chosenMeetingPoint && (
+        Math.abs(state.chosenMeetingPoint.lat - state.meetingPoint.lat) > 0.0001 ||
+        Math.abs(state.chosenMeetingPoint.lng - state.meetingPoint.lng) > 0.0001
+      )
       const route = isPea ? state.driverRoutes.direct_route : state.driverRoutes.base_route
       if (route) {
         dispatch({ type: ACTIONS.SET_VEHICLE_ROUTE, payload: { vehicle_id: 'personal', route } })
