@@ -133,7 +133,10 @@ export default function ConfirmationModal() {
   const staff = excelData?.staff ?? []
   const event = excelData?.event ?? {}
 
-  const isPea    = meetingPoint && chosenMeetingPoint?.name !== meetingPoint?.name
+  const isPea    = meetingPoint && chosenMeetingPoint && (
+    Math.abs((chosenMeetingPoint?.lat || 0) - (meetingPoint?.lat || 0)) > 0.0001 ||
+    Math.abs((chosenMeetingPoint?.lng || 0) - (meetingPoint?.lng || 0)) > 0.0001
+  )
   const remuNote = isPea
     ? peaEvaluation?.candidates?.find((c) => c.name === chosenMeetingPoint?.name)
         ?.remuneration_note ?? null
@@ -352,7 +355,7 @@ export default function ConfirmationModal() {
                         {pu.point?.place_name ? ` — ${pu.point.place_name}` : ''}:
                       </p>
                       {pu.passengers.map((name) => (
-                        <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#444444]" />
+                        <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#8B5CF6]" />
                       ))}
                       {pu.point?.place_address && (
                         <p className="text-xs text-muted-foreground pl-3.5">
@@ -416,7 +419,7 @@ export default function ConfirmationModal() {
                     {personalPickup.point?.place_name ? ` (${personalPickup.point.place_name})` : ''}:
                   </p>
                   {personalPickup.passengers.map((name) => (
-                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#7B1FA2]" />
+                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#8B5CF6]" />
                   ))}
                   {personalPickup.point?.place_address && (
                     <p className="text-xs text-muted-foreground pl-3.5">
@@ -462,7 +465,7 @@ export default function ConfirmationModal() {
                     <NameRow key={name} name={name} role={getProfesion(name)} color="bg-slate-400" />
                   ))}
                   {v.pickup.passengers.map((name) => (
-                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#7B1FA2]" />
+                    <NameRow key={name} name={name} role={getProfesion(name)} color="bg-[#8B5CF6]" />
                   ))}
                   {v.passengers_pe.length === 0 && v.pickup.passengers.length === 0 && (
                     <p className="text-xs text-muted-foreground pl-3.5">Sin pasajeros</p>

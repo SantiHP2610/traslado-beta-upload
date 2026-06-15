@@ -434,7 +434,7 @@ export default function FinalOutputBlocks() {
                             </p>
                             {pickupPassengers.map((name) => (
                               <div key={name} className="flex items-center gap-1.5">
-                                <span className="h-2 w-2 rounded-full bg-[#7B1FA2] shrink-0" />
+                                <span className="h-2 w-2 rounded-full bg-[#8B5CF6] shrink-0" />
                                 <span className="text-xs">
                                   {name}
                                   {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
@@ -489,7 +489,7 @@ export default function FinalOutputBlocks() {
                             )}
                             {pePassengers.map((name) => (
                               <div key={name} className="flex items-center gap-1.5">
-                                <span className="h-2 w-2 rounded-full bg-[#FBBC04] shrink-0" />
+                                <span className="h-2 w-2 rounded-full bg-[#34A853] shrink-0" />
                                 <span className="text-xs">
                                   {name}
                                   {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}
@@ -507,7 +507,7 @@ export default function FinalOutputBlocks() {
                             </p>
                             {pu.passengers.map((name) => (
                               <div key={name} className="flex items-center gap-1.5">
-                                <span className="h-2 w-2 rounded-full bg-[#444444] shrink-0" />
+                                <span className="h-2 w-2 rounded-full bg-[#8B5CF6] shrink-0" />
                                 <span className="text-xs">
                                   {name}
                                   {getProfesion(name, staff) ? ` — ${getProfesion(name, staff)}` : ''}

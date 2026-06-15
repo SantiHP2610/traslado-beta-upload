@@ -12,8 +12,8 @@
  *
  * ── Two rendering modes ───────────────────────────────────────────────────────
  * Step 2 (no vehicles yet): falls back to state.driverRoutes for the preview:
- *   BLUE  (base_route, opacity 1.0)  — home → PE → event
- *   RED   (direct_route, opacity 0.6) — home → event
+ *   YELLOW (#FBBC04, base_route, opacity 1.0)  — home → PE → event
+ *   RED    (#EA4335, direct_route, opacity 0.6) — home → event
  *
  * Step 3+ (vehicles populated): draws one polyline set per vehicle:
  *   Personal vehicle:
@@ -97,7 +97,10 @@ function drawStep2Preview(map, driverRoutes, chosenMeetingPoint, meetingPoint) {
     return lines
   }
 
-  const isPea = meetingPoint && chosenMeetingPoint.name !== meetingPoint.name
+  const isPea = meetingPoint && chosenMeetingPoint && (
+    Math.abs((chosenMeetingPoint?.lat || 0) - (meetingPoint?.lat || 0)) > 0.0001 ||
+    Math.abs((chosenMeetingPoint?.lng || 0) - (meetingPoint?.lng || 0)) > 0.0001
+  )
 
   if (!isPea) {
     // PE chosen: two-leg yellow split on base route
@@ -133,7 +136,10 @@ function drawVehicleRoute(map, vehicle, chosenMeetingPoint, meetingPoint) {
   if (vehicle.type === 'personal') {
     // Same two-scenario rendering as the step-2 preview, using vehicle.route
     // as the source (base route for PE, direct route for PEA).
-    const isPea = meetingPoint && chosenMeetingPoint && chosenMeetingPoint.name !== meetingPoint.name
+    const isPea = meetingPoint && chosenMeetingPoint && (
+      Math.abs((chosenMeetingPoint?.lat || 0) - (meetingPoint?.lat || 0)) > 0.0001 ||
+      Math.abs((chosenMeetingPoint?.lng || 0) - (meetingPoint?.lng || 0)) > 0.0001
+    )
 
     if (!isPea) {
       // PE scenario: split at chosen meeting point

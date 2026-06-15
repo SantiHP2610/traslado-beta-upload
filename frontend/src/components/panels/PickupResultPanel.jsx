@@ -138,8 +138,10 @@ export default function PickupResultPanel() {
       legSeconds     = newRoute.leg_seconds ?? null
 
       // Update the route that is currently active (base = PE chosen, direct = PEA chosen).
-      const isPea = state.meetingPoint &&
-        state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+      const isPea = state.meetingPoint && state.chosenMeetingPoint && (
+        Math.abs((state.chosenMeetingPoint?.lat || 0) - (state.meetingPoint?.lat || 0)) > 0.0001 ||
+        Math.abs((state.chosenMeetingPoint?.lng || 0) - (state.meetingPoint?.lng || 0)) > 0.0001
+      )
       const updatedRoutes = isPea
         ? { ...state.driverRoutes, direct_route: { ...state.driverRoutes.direct_route, encoded_polyline: newRoute.encoded_polyline } }
         : { ...state.driverRoutes, base_route:   { ...state.driverRoutes.base_route,   encoded_polyline: newRoute.encoded_polyline, legs: [] } }

@@ -56,7 +56,7 @@
 import { useState, useMemo, useEffect, useRef }  from 'react'
 import { AdvancedMarker, InfoWindow }             from '@vis.gl/react-google-maps'
 import { User }                                   from 'lucide-react'
-import { useAppState, ACTIONS, isVehicleFull } from '../../state/appState'
+import { useAppState, ACTIONS, isVehicleFull, VEHICLE_COLORS } from '../../state/appState'
 import { geocodeAddress as geocodeAddressApi }    from '../../api/endpoints'
 import { Card, CardContent }                      from '@/components/ui/card'
 import { Button }                                 from '@/components/ui/button'
@@ -547,7 +547,7 @@ function VehicleAssignmentMenu({ employee, vehicles, dispatch, onClose }) {
                   dispatch({ type: ACTIONS.ASSIGN_TO_PICKUP_SLOT, payload: { employee_name: name, vehicle_id: charterV.id, pickup_index: i } })
                   onClose()
                 }}
-                style={{ fontSize: 12, color: '#444444', background: 'none', border: 'none', cursor: 'pointer', padding: '3px 0', textAlign: 'left' }}
+                style={{ fontSize: 12, color: VEHICLE_COLORS.charter_1.pickup, background: 'none', border: 'none', cursor: 'pointer', padding: '3px 0', textAlign: 'left' }}
               >
                 → Recogida {i + 1}: {pu.point.place_name ?? pu.point.place_address}
               </button>

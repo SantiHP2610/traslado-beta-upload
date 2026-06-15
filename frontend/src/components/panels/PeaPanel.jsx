@@ -101,7 +101,7 @@ export default function PeaPanel() {
 
   return (
     <div className="space-y-3">
-      <p style={{ fontSize: 14, fontWeight: 600, color: '#111827', margin: '0 0 4px' }}>
+      <p className="text-sm font-semibold text-gray-900">
         Punto de encuentro
       </p>
 

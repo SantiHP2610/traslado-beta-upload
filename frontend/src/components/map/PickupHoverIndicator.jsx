@@ -23,7 +23,7 @@ import { useAppState }       from '../../state/appState'
 const THROTTLE_MS    = 50
 const MAX_SNAP_M     = 500    // clicks beyond this distance are not highlighted
 const CIRCLE_RADIUS  = 100    // metres — visible at city zoom without overwhelming the map
-const CIRCLE_COLOR   = '#7B1FA2'
+const CIRCLE_COLOR   = '#8B5CF6'
 const CIRCLE_OPACITY = 0.4
 
 function haversineMetres(a, b) {

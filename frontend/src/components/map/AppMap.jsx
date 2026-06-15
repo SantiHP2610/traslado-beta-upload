@@ -378,8 +378,10 @@ export default function AppMap() {
       // For the personal vehicle also keep state.driverRoutes in sync so that
       // any component still reading it (e.g. step-2 fallback preview) stays correct.
       if (vehicleId === 'personal') {
-        const isPea = state.meetingPoint &&
-          state.chosenMeetingPoint?.name !== state.meetingPoint?.name
+        const isPea = state.meetingPoint && state.chosenMeetingPoint && (
+          Math.abs((state.chosenMeetingPoint?.lat || 0) - (state.meetingPoint?.lat || 0)) > 0.0001 ||
+          Math.abs((state.chosenMeetingPoint?.lng || 0) - (state.meetingPoint?.lng || 0)) > 0.0001
+        )
         const updatedRoutes = isPea
           ? { ...state.driverRoutes, direct_route: { ...state.driverRoutes.direct_route, encoded_polyline: newRoute.encoded_polyline } }
           : { ...state.driverRoutes, base_route:   { ...state.driverRoutes.base_route,   encoded_polyline: newRoute.encoded_polyline, legs: [] } }
@@ -681,7 +683,7 @@ export default function AppMap() {
               >
                 <div style={{
                   width: 36, height: 36, borderRadius: 8,
-                  backgroundColor: '#444444', border: '2px solid white',
+                  backgroundColor: VEHICLE_COLORS.charter_1.pickup, border: '2px solid white',
                   boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   color: 'white', fontSize: 14, fontWeight: 700,
@@ -862,7 +864,7 @@ export default function AppMap() {
                               disabled={recalculating}
                               style={{
                                 flexShrink: 0, padding: '4px 10px',
-                                background: recalculating ? '#6b7280' : '#7B1FA2',
+                                background: recalculating ? '#6b7280' : '#8B5CF6',
                                 color: '#fff', border: 'none', borderRadius: 5,
                                 fontSize: 11, fontWeight: 600,
                                 cursor: recalculating ? 'default' : 'pointer',

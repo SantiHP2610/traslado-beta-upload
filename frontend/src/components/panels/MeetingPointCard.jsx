@@ -20,7 +20,10 @@ export default function MeetingPointCard() {
   if (!chosenMeetingPoint) return null
 
   // PE = original meeting point; PEA = user chose a different candidate.
-  const isPea = meetingPoint && chosenMeetingPoint.name !== meetingPoint.name
+  const isPea = meetingPoint && chosenMeetingPoint && (
+    Math.abs((chosenMeetingPoint?.lat || 0) - (meetingPoint?.lat || 0)) > 0.0001 ||
+    Math.abs((chosenMeetingPoint?.lng || 0) - (meetingPoint?.lng || 0)) > 0.0001
+  )
 
   return (
     <div

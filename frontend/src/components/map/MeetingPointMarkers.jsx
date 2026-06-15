@@ -240,7 +240,7 @@ export default function MeetingPointMarkers() {
   // the charter PE selection sidebar.  Different React key from real PE markers
   // so it appears/disappears instantly (no cross-point animation).
   const highlightedPE = state.highlightedPE
-  console.log(">>> MPM:", { highlightedPE, chosen, meetingPoint: !!meetingPoint })
+
 
   // Allow rendering even when meetingPoint is not yet set (charter step 2:
   // the user is browsing PE cards and we only have a highlighted preview).
