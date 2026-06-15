@@ -59,11 +59,11 @@ import { createContext, useContext, useReducer } from 'react'
 // ---------------------------------------------------------------------------
 
 export const VEHICLE_COLORS = {
-  personal:  { route: '#FBBC04', passengers: '#FBBC04', pickup: '#7B1FA2' },
-  uber_1:    { route: '#2D2D2D', passengers: '#2D2D2D', pickup: '#1A3A5C' },
-  uber_2:    { route: '#5A5A5A', passengers: '#5A5A5A', pickup: '#2E5E8E' },
-  uber_3:    { route: '#858585', passengers: '#858585', pickup: '#4A7FB5' },
-  charter_1: { route: '#333333', passengers: '#FBBC04', pickup: '#444444' },
+  personal:  { route: '#FBBC04', passengers: '#FBBC04', pickup: '#8B5CF6' },
+  uber_1:    { route: '#2D2D2D', passengers: '#2D2D2D', pickup: '#8B5CF6' },
+  uber_2:    { route: '#5A5A5A', passengers: '#5A5A5A', pickup: '#8B5CF6' },
+  uber_3:    { route: '#858585', passengers: '#858585', pickup: '#8B5CF6' },
+  charter_1: { route: '#333333', passengers: '#34A853', pickup: '#8B5CF6' },
 }
 
 // ---------------------------------------------------------------------------
