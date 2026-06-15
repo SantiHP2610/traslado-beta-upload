@@ -200,7 +200,7 @@ export function useStepTwo() {
     }
   }, [state.currentStep, state.cabaDecisionToTransport]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Effect 2: re-run routes + PEA when the driver's effective position changes ─
+  // ── Effect 2: re-run routes when the driver's effective position changes ──────
   // Deps are effectiveLat/effectiveLng, not the raw override, so this fires for
   // BOTH cases:
   //   • Override SET   (drag / address geocode) → effective coords change to new value
@@ -209,15 +209,20 @@ export function useStepTwo() {
   // Using only driverOverride?.lat/lng as deps would miss the clear case because
   // the guard "!driverOverride" would return early after the dep changed.
   //
-  // The effect is a no-op on initial mount (currentStep !== 2) and does not
-  // duplicate Effect 1's work — Effect 1 handles the 1→2 transition; this effect
-  // only fires on subsequent coordinate changes while already in step 2.
+  // The effect fires in both step 2 and step 3 so the driver can edit their
+  // address at any time and the map polyline stays in sync.
   //
   // nearestMeetingPoint is NOT re-called: it depends on the event venue, not driver.
+  //
+  // Two sub-paths:
+  //   • No PE chosen yet (step 2 pre-confirm): recalculate routes + PEA candidates.
+  //   • PE already chosen (step 2 post-confirm OR step 3): recalculate routes only,
+  //     then also update the personal vehicle's active route so RoutePolylines
+  //     reflects the new driver origin immediately.  PEA is not re-evaluated —
+  //     candidates were shown before confirmation and are no longer displayed.
   useEffect(() => {
     if (
-      state.currentStep !== 2 ||
-      state.chosenMeetingPoint ||
+      (state.currentStep !== 2 && state.currentStep !== 3) ||
       !state.personalVehicle?.has_personal_vehicle ||
       effectiveLat == null ||
       effectiveLng == null
@@ -231,10 +236,36 @@ export function useStepTwo() {
       try {
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
 
-        const driverRoutes = await calculateDriverRoute(effectiveLat, effectiveLng, state.meetingPoint?.lat, state.meetingPoint?.lng)
+        // Always use the original PE as the base-route waypoint.
+        // chosenMeetingPoint may be a PEA (different coords from meetingPoint), but
+        // calculateDriverRoute always builds base_route via the fixed PE waypoint and
+        // direct_route as home→event — the choice between them is made below.
+        const driverRoutes = await calculateDriverRoute(
+          effectiveLat, effectiveLng,
+          state.meetingPoint?.lat, state.meetingPoint?.lng,
+        )
         if (cancelled) return
         dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
 
+        // If a PE has already been confirmed, update the personal vehicle's route
+        // so RoutePolylines draws the correct polyline from the new driver origin.
+        if (state.chosenMeetingPoint) {
+          const isPea = state.meetingPoint && (
+            Math.abs(state.chosenMeetingPoint.lat - state.meetingPoint.lat) > 0.0001 ||
+            Math.abs(state.chosenMeetingPoint.lng - state.meetingPoint.lng) > 0.0001
+          )
+          const vehicleRoute = isPea ? driverRoutes.direct_route : driverRoutes.base_route
+          if (vehicleRoute) {
+            dispatch({
+              type:    ACTIONS.SET_VEHICLE_ROUTE,
+              payload: { vehicle_id: 'personal', route: vehicleRoute },
+            })
+          }
+          dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: null })
+          return
+        }
+
+        // Pre-confirm path: also re-evaluate PEA candidates with the new origin.
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'pea' })
 
         const peaResult = await evaluatePea(effectiveLat, effectiveLng)

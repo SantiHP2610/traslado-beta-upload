@@ -614,12 +614,6 @@ export default function StaffMarkers({ staff }) {
     return names
   }, [frescosResult, secondMinifleteResult])
 
-  // Driver name — used to enforce the address-lock after a meeting point has
-  // been chosen (relevant in step 2 before vehicles is populated).
-  const driverName = personalVehicle?.driver
-    ? `${personalVehicle.driver.Nombre} ${personalVehicle.driver.Apellido}`
-    : null
-
   // ── Marker click handler ───────────────────────────────────────────────────
   // When the user clicks a marker:
   //   • If a different marker was in edit mode → exit edit mode
@@ -731,46 +725,38 @@ export default function StaffMarkers({ staff }) {
                 so Tailwind utility classes may not apply reliably here.
                 "Editar dirección" enters edit mode for this marker.
                 "Volver a original" reverts the override (snaps back immediately).
-                The driver's edit button is hidden once a meeting point has been
-                chosen — routes are committed and the origin can no longer change.
+                Available for ALL employees including the driver at all steps —
+                useStepTwo Effect 2 recalculates the route and vehicle polyline
+                whenever the driver's effective position changes.
               */}
-              {selectedKey === driverName && state.chosenMeetingPoint ? (
-                // Driver address locked — meeting point already selected.
-                <div style={{ padding: '6px 12px 10px', borderTop: '1px solid #e5e7eb' }}>
-                  <p style={{ fontSize: 11, color: '#9ca3af', margin: 0 }}>
-                    Dirección bloqueada — punto de encuentro ya seleccionado.
-                  </p>
-                </div>
-              ) : (
-                <div style={{
-                  padding: '6px 12px 10px',
-                  borderTop: '1px solid #e5e7eb',
-                  display: 'flex',
-                  gap: 12,
-                  alignItems: 'center',
-                }}>
+              <div style={{
+                padding: '6px 12px 10px',
+                borderTop: '1px solid #e5e7eb',
+                display: 'flex',
+                gap: 12,
+                alignItems: 'center',
+              }}>
+                <button
+                  onClick={() => dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: selectedKey })}
+                  style={{
+                    fontSize: 11, color: '#6B7280', textDecoration: 'underline',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  }}
+                >
+                  Editar dirección
+                </button>
+                {selectedOverride && (
                   <button
-                    onClick={() => dispatch({ type: ACTIONS.SET_EDITING_MARKER, payload: selectedKey })}
+                    onClick={() => dispatch({ type: ACTIONS.CLEAR_COORDINATE_OVERRIDE, payload: { name: selectedKey } })}
                     style={{
-                      fontSize: 11, color: '#6B7280', textDecoration: 'underline',
+                      fontSize: 11, color: '#9ca3af', textDecoration: 'underline',
                       background: 'none', border: 'none', cursor: 'pointer', padding: 0,
                     }}
                   >
-                    Editar dirección
+                    Volver a original
                   </button>
-                  {selectedOverride && (
-                    <button
-                      onClick={() => dispatch({ type: ACTIONS.CLEAR_COORDINATE_OVERRIDE, payload: { name: selectedKey } })}
-                      style={{
-                        fontSize: 11, color: '#9ca3af', textDecoration: 'underline',
-                        background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                      }}
-                    >
-                      Volver a original
-                    </button>
-                  )}
-                </div>
-              )}
+                )}
+              </div>
             </>
           )}
         </InfoWindow>
