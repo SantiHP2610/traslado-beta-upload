@@ -615,7 +615,7 @@ export default function AssignmentSummaryPanel() {
                 style={{
                   width:          '100%',
                   padding:        '10px 14px',
-                  background:     validating ? '#374151' : '#111827',
+                  background:     validating ? '#1d4ed8' : '#2563EB',
                   color:          '#fff',
                   border:         'none',
                   borderRadius:   8,
@@ -626,13 +626,13 @@ export default function AssignmentSummaryPanel() {
                   alignItems:     'center',
                   justifyContent: 'center',
                   gap:            8,
-                  transition:     'background 150ms ease',
+                  transition:     'background 150ms ease-out',
                 }}
                 onMouseEnter={(e) => {
-                  if (!validating) e.currentTarget.style.background = '#374151'
+                  if (!validating) e.currentTarget.style.background = '#1d4ed8'
                 }}
                 onMouseLeave={(e) => {
-                  if (!validating) e.currentTarget.style.background = '#111827'
+                  if (!validating) e.currentTarget.style.background = '#2563EB'
                 }}
               >
                 {validating ? (
@@ -703,7 +703,7 @@ export default function AssignmentSummaryPanel() {
               style={{
                 width:          '100%',
                 padding:        '11px 16px',
-                background:     valid && !validating ? '#111827' : '#e5e7eb',
+                background:     valid && !validating ? '#2563EB' : '#e5e7eb',
                 color:          valid && !validating ? '#fff'     : '#9ca3af',
                 border:         'none',
                 borderRadius:   8,
@@ -714,13 +714,13 @@ export default function AssignmentSummaryPanel() {
                 alignItems:     'center',
                 justifyContent: 'center',
                 gap:            8,
-                transition:     'background 150ms ease',
+                transition:     'background 150ms ease-out',
               }}
               onMouseEnter={(e) => {
-                if (valid && !validating) e.currentTarget.style.background = '#374151'
+                if (valid && !validating) e.currentTarget.style.background = '#1d4ed8'
               }}
               onMouseLeave={(e) => {
-                if (valid && !validating) e.currentTarget.style.background = '#111827'
+                if (valid && !validating) e.currentTarget.style.background = '#2563EB'
               }}
             >
               {validating ? (

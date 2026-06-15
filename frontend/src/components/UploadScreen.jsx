@@ -22,7 +22,9 @@
 
 import { useRef, useState, useEffect } from 'react'
 import { Upload, FolderOpen,
-         CheckCircle2, XCircle }       from 'lucide-react'
+         CheckCircle2, XCircle,
+         CalendarDays, Clock4,
+         Users, BriefcaseBusiness }   from 'lucide-react'
 import { useAppState, ACTIONS }        from '../state/appState'
 import { uploadExcel, getTestFiles, useTestExcel } from '../api/endpoints'
 import { Button }                      from '@/components/ui/button'
@@ -77,13 +79,29 @@ function EventSummary({ summary }) {
         <p className="text-sm font-medium text-green-900">{summary.tipo}</p>
       )}
       <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-green-700">
-        {fecha && <span>📅 {fecha}</span>}
-        {summary.hora_inicio && <span>🕐 {summary.hora_inicio}</span>}
+        {fecha && (
+          <span className="flex items-center gap-1">
+            <CalendarDays className="h-3 w-3" />
+            {fecha}
+          </span>
+        )}
+        {summary.hora_inicio && (
+          <span className="flex items-center gap-1">
+            <Clock4 className="h-3 w-3" />
+            {summary.hora_inicio}
+          </span>
+        )}
         {summary.comensales != null && (
-          <span>👥 {summary.comensales} comensales</span>
+          <span className="flex items-center gap-1">
+            <Users className="h-3 w-3" />
+            {summary.comensales} comensales
+          </span>
         )}
         {summary.staff_count != null && (
-          <span>👔 {summary.staff_count} en equipo</span>
+          <span className="flex items-center gap-1">
+            <BriefcaseBusiness className="h-3 w-3" />
+            {summary.staff_count} en equipo
+          </span>
         )}
       </div>
     </div>
@@ -352,7 +370,6 @@ export default function UploadScreen() {
       {dragState === 'success' && (
         <Button
           className="mt-5 w-full max-w-md text-sm"
-          style={{ background: '#111827', color: '#fff' }}
           onClick={handleConfirm}
         >
           Comenzar planificación →

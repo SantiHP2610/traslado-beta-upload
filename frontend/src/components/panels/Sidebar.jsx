@@ -252,7 +252,7 @@ function UberRoutesSection() {
                       flex:         1,
                       fontSize:     11,
                       padding:      '5px 0',
-                      background:   hasRoute ? '#f3f4f6' : '#111827',
+                      background:   hasRoute ? '#f3f4f6' : '#2563EB',
                       color:        hasRoute ? '#374151' : '#fff',
                       border:       hasRoute ? '1px solid #d1d5db' : 'none',
                       borderRadius: 6,
@@ -313,7 +313,7 @@ function UberRoutesSection() {
                         flex:         1,
                         fontSize:     11,
                         padding:      '5px 0',
-                        background:   isGeo ? '#e5e7eb' : '#111827',
+                        background:   isGeo ? '#e5e7eb' : '#2563EB',
                         color:        isGeo ? '#9ca3af' : '#fff',
                         border:       'none',
                         borderRadius: 6,
@@ -371,7 +371,7 @@ function UberRoutesSection() {
         style={{
           width:        '100%',
           padding:      '11px 16px',
-          background:   canContinue ? '#111827' : '#e5e7eb',
+          background:   canContinue ? '#2563EB' : '#e5e7eb',
           color:        canContinue ? '#fff'     : '#9ca3af',
           border:       'none',
           borderRadius: 8,
@@ -379,10 +379,10 @@ function UberRoutesSection() {
           fontWeight:   500,
           cursor:       canContinue ? 'pointer' : 'default',
           marginTop:    4,
-          transition:   'background 150ms ease',
+          transition:   'background 150ms ease-out',
         }}
-        onMouseEnter={(e) => { if (canContinue) e.currentTarget.style.background = '#374151' }}
-        onMouseLeave={(e) => { if (canContinue) e.currentTarget.style.background = '#111827' }}
+        onMouseEnter={(e) => { if (canContinue) e.currentTarget.style.background = '#1d4ed8' }}
+        onMouseLeave={(e) => { if (canContinue) e.currentTarget.style.background = '#2563EB' }}
       >
         Continuar a asignación →
       </button>
@@ -443,12 +443,12 @@ function CharterInfoSection({ poolCount, onContinue }) {
       <button
         onClick={onContinue}
         style={{
-          width: '100%', padding: '10px 16px', background: '#111827', color: '#fff',
+          width: '100%', padding: '10px 16px', background: '#2563EB', color: '#fff',
           border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 500, cursor: 'pointer',
-          transition: 'background 150ms ease',
+          transition: 'background 150ms ease-out',
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = '#374151' }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = '#111827' }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = '#1d4ed8' }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = '#2563EB' }}
       >
         Continuar →
       </button>
@@ -698,17 +698,17 @@ function CharterPeSelectionSection() {
                     marginTop:    10,
                     width:        '100%',
                     padding:      '8px 12px',
-                    background:   choosing ? '#e5e7eb' : '#111827',
+                    background:   choosing ? '#e5e7eb' : '#2563EB',
                     color:        choosing ? '#9ca3af' : '#fff',
                     border:       'none',
                     borderRadius: 6,
                     fontSize:     12,
                     fontWeight:   500,
                     cursor:       choosing ? 'default' : 'pointer',
-                    transition:   'background 150ms ease',
+                    transition:   'background 150ms ease-out',
                   }}
-                  onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#374151' }}
-                  onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#111827' }}
+                  onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#1d4ed8' }}
+                  onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#2563EB' }}
                 >
                   {choosing ? 'Configurando…' : 'Elegir este PE →'}
                 </button>
@@ -762,7 +762,7 @@ function CharterPeSelectionSection() {
                 disabled={geocodingManual || !manualAddr.trim()}
                 style={{
                   flex: 1, padding: '7px 0', fontSize: 12, fontWeight: 500,
-                  background: geocodingManual ? '#e5e7eb' : '#111827',
+                  background: geocodingManual ? '#e5e7eb' : '#2563EB',
                   color: geocodingManual ? '#9ca3af' : '#fff',
                   border: 'none', borderRadius: 6,
                   cursor: geocodingManual ? 'default' : 'pointer',
@@ -829,13 +829,13 @@ function CharterPeSelectionSection() {
                   disabled={choosing}
                   style={{
                     width: '100%', padding: '7px 12px',
-                    background: choosing ? '#e5e7eb' : '#111827',
+                    background: choosing ? '#e5e7eb' : '#2563EB',
                     color: choosing ? '#9ca3af' : '#fff',
                     border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                    cursor: choosing ? 'default' : 'pointer', transition: 'background 150ms ease',
+                    cursor: choosing ? 'default' : 'pointer', transition: 'background 150ms ease-out',
                   }}
-                  onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#374151' }}
-                  onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#111827' }}
+                  onMouseEnter={(e) => { if (!choosing) e.currentTarget.style.background = '#1d4ed8' }}
+                  onMouseLeave={(e) => { if (!choosing) e.currentTarget.style.background = '#2563EB' }}
                 >
                   {choosing ? 'Configurando…' : 'Elegir este punto →'}
                 </button>
@@ -923,7 +923,7 @@ export default function Sidebar() {
           flexShrink:   0,
         }}
       >
-        <h1 style={{ fontSize: 16, fontWeight: 600, margin: 0, color: '#111827' }}>
+        <h1 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: '#111827', letterSpacing: '-0.01em' }}>
           Plan de traslado
         </h1>
       </div>
@@ -951,13 +951,13 @@ export default function Sidebar() {
                   borderBottom:   '1px solid #e5e7eb',
                   cursor:         'pointer',
                   textAlign:      'left',
-                  transition:     'background 150ms ease',
+                  transition:     'background 150ms ease-out',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = '#f3f4f6' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f4fe' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = '#f9fafb' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#1e3a8a' }}>
                     Vehículo de Frescos
                   </span>
                   {fr && (
@@ -1012,7 +1012,7 @@ export default function Sidebar() {
 
         {/* ── Step 2: Punto de encuentro ───────────────────────────────── */}
         {state.currentStep >= 2 && (
-          <div style={{ padding: '16px 20px', animation: 'fadeIn 200ms ease-out' }}>
+          <div style={{ padding: '16px 20px', animation: 'slideInFromBottom 220ms ease-out' }}>
             {isCharter
               ? <CharterPeSelectionSection />
               : isCaba && state.cabaDecisionToTransport && !state.meetingPoint

@@ -433,7 +433,7 @@ export default function ConfigPanel({ onClose }) {
           disabled={!hasChanges || saving}
           style={{
             padding:    '8px 16px',
-            background: hasChanges && !saving ? '#111827' : '#d1d5db',
+            background: hasChanges && !saving ? '#2563EB' : '#d1d5db',
             color:      '#fff',
             border:     'none',
             borderRadius: 6,

@@ -792,7 +792,7 @@ export default function AppMap() {
                       disabled={recalculating}
                       style={{
                         width: '100%', padding: '7px 12px',
-                        background: recalculating ? '#374151' : '#111827',
+                        background: recalculating ? '#1d4ed8' : '#2563EB',
                         color: '#fff', border: 'none', borderRadius: 6,
                         fontSize: 12, fontWeight: 600,
                         cursor: recalculating ? 'default' : 'pointer',
@@ -824,7 +824,7 @@ export default function AppMap() {
                       disabled={recalculating}
                       style={{
                         width: '100%', padding: '8px 12px',
-                        background: recalculating ? '#374151' : '#111827',
+                        background: recalculating ? '#1d4ed8' : '#2563EB',
                         color: '#fff', border: 'none', borderRadius: 6,
                         fontSize: 13, fontWeight: 600,
                         cursor: recalculating ? 'default' : 'pointer',

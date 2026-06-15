@@ -66,3 +66,10 @@ desktop.ini
 # --- Claude Code --------------------------------------------------------------
 .claude/
 CLAUDE.md
+TASKS.md
+
+# --- Local scripts ---
+*.ps1
+*.sh
+!traslado-personal-host.bat
+!traslado-personal-guest.bat

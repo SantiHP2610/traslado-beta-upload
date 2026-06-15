@@ -1,3 +1,6 @@
+/* Inter — must be first @import (CSS spec: @import before all other rules) */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
 /* Tailwind v4: a single @import replaces the old three-directive block
    (@tailwind base / components / utilities).  The Vite plugin resolves
    this at build time — no PostCSS step required. */
@@ -94,7 +97,7 @@
 
 :root {
 
-    --radius: 0.625rem;
+    --radius: 0.5rem;
 
     --background: oklch(1 0 0);
 
@@ -108,21 +111,28 @@
 
     --popover-foreground: oklch(0.145 0 0);
 
-    --primary: oklch(0.205 0 0);
+    /* Blue-600 #2563EB — strong, legible, operational */
+    --primary: oklch(0.546 0.245 264);
 
-    --primary-foreground: oklch(0.985 0 0);
+    --primary-foreground: oklch(1 0 0);
 
-    --secondary: oklch(0.97 0 0);
+    /* Blue-50 #EFF6FF — for secondary / ghost backgrounds */
+    --secondary: oklch(0.967 0.015 254);
 
-    --secondary-foreground: oklch(0.205 0 0);
+    /* Blue-800 #1E40AF */
+    --secondary-foreground: oklch(0.352 0.125 264);
 
-    --muted: oklch(0.97 0 0);
+    /* Slate-50 — cooler neutral for muted areas */
+    --muted: oklch(0.985 0.004 247);
 
-    --muted-foreground: oklch(0.556 0 0);
+    /* Slate-500 — readable muted text */
+    --muted-foreground: oklch(0.549 0.022 248);
 
-    --accent: oklch(0.97 0 0);
+    /* Blue-50 */
+    --accent: oklch(0.967 0.015 254);
 
-    --accent-foreground: oklch(0.205 0 0);
+    /* Blue-800 */
+    --accent-foreground: oklch(0.352 0.125 264);
 
     --destructive: oklch(0.577 0.245 27.325);
 
@@ -130,7 +140,8 @@
 
     --input: oklch(0.922 0 0);
 
-    --ring: oklch(0.708 0 0);
+    /* Blue-600 focus ring matches primary */
+    --ring: oklch(0.546 0.245 264);
 
     --chart-1: oklch(0.646 0.222 41.116);
 
@@ -230,24 +241,51 @@
     }
   body {
     @apply bg-background text-foreground;
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.01em;
     }
 }
 
 /* ── Panel entry animations ────────────────────────────────────────────────
    Used by Sidebar, UnassignedPanel, AssignmentSummaryPanel, ConfirmationModal.
-   Defined here so they are globally available without inline <style> tags.  */
+   Defined here so they are globally available without inline <style> tags.
+   ease-out on enter, ease-in on exit — per UX best practices.            */
 
 @keyframes slideInFromLeft {
-  from { opacity: 0; transform: translateX(-24px); }
+  from { opacity: 0; transform: translateX(-20px); }
   to   { opacity: 1; transform: translateX(0); }
 }
 
 @keyframes slideInFromRight {
-  from { opacity: 0; transform: translateX(24px); }
+  from { opacity: 0; transform: translateX(20px); }
   to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInFromBottom {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes fadeIn {
   from { opacity: 0; }
   to   { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.95); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* Respect user's motion preferences — collapse animations to opacity-only */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes slideInFromLeft  { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideInFromRight { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideInFromBottom { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes scaleIn          { from { opacity: 0; transform: translate(-50%, -50%) scale(1); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 }

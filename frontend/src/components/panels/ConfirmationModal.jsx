@@ -218,7 +218,7 @@ export default function ConfirmationModal() {
           display:       'flex',
           flexDirection: 'column',
           pointerEvents: 'auto',
-          animation:     'fadeIn 180ms ease-out',
+          animation:     'scaleIn 200ms ease-out',
         }}
       >
         {/* Header */}
@@ -521,17 +521,17 @@ export default function ConfirmationModal() {
             disabled={confirming || showOutput}
             style={{
               flex: 2, padding: '10px 16px',
-              background: (confirming || showOutput) ? '#374151' : '#111827',
+              background: (confirming || showOutput) ? '#1d4ed8' : '#2563EB',
               color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600,
               cursor: (confirming || showOutput) ? 'default' : 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              transition: 'background 150ms ease',
+              transition: 'background 150ms ease-out',
             }}
             onMouseEnter={(e) => {
-              if (!confirming && !showOutput) e.currentTarget.style.background = '#374151'
+              if (!confirming && !showOutput) e.currentTarget.style.background = '#1d4ed8'
             }}
             onMouseLeave={(e) => {
-              if (!confirming && !showOutput) e.currentTarget.style.background = '#111827'
+              if (!confirming && !showOutput) e.currentTarget.style.background = '#2563EB'
             }}
           >
             {confirming ? (
