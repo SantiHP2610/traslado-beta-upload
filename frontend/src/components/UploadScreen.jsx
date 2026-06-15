@@ -24,7 +24,7 @@ import { useRef, useState, useEffect } from 'react'
 import { Upload, FolderOpen,
          CheckCircle2, XCircle }       from 'lucide-react'
 import { useAppState, ACTIONS }        from '../state/appState'
-import { uploadExcel, getTestFiles, loadTestCase } from '../api/endpoints'
+import { uploadExcel, getTestFiles, useTestExcel } from '../api/endpoints'
 import { Button }                      from '@/components/ui/button'
 
 // ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ export default function UploadScreen() {
     setTestCaseLoading(true)
     setTestCaseError(null)
     try {
-      const result = await loadTestCase(selectedTestFile)
+      const result = await useTestExcel(selectedTestFile)
       // Skip the upload-screen summary and go directly to map
       dispatch({
         type:    ACTIONS.SET_FILE_UPLOADED,

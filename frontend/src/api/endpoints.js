@@ -47,17 +47,17 @@ export async function uploadExcel(file) {
 }
 
 /**
- * Resets the active Excel to the bundled test file.
- * Clears the API response cache on the server; employees.json and venues.json
- * are preserved.
+ * Loads a bundled test Excel file by filename and sets it as the active event.
+ * When filename is provided, sends ?test_file=<filename> so the backend loads
+ * that specific case from sample_data/.  When omitted, falls back to
+ * ?use_test_file=true which resets to the default (evento_prueba.xlsx).
+ * Skips the upload summary screen — dispatches SET_FILE_UPLOADED directly.
+ * @param {string} [filename]  e.g. "caso_charter_real.xlsx"
  * @returns {{ status: string, source: string, event_summary: object }}
  */
-export async function useTestExcel() {
-  // use_test_file is a query parameter on the backend (FastAPI Query()),
-  // not a JSON body field — send it via params so axios appends ?use_test_file=true.
-  const response = await client.post('/upload-excel', null, {
-    params: { use_test_file: true },
-  })
+export async function useTestExcel(filename) {
+  const params = filename ? { test_file: filename } : { use_test_file: true }
+  const response = await client.post('/upload-excel', null, { params })
   return response.data
 }
 
@@ -68,19 +68,6 @@ export async function useTestExcel() {
  */
 export async function getTestFiles() {
   const response = await client.get('/test-files')
-  return response.data
-}
-
-/**
- * Loads a specific bundled test case by filename and sets it as the active Excel.
- * Skips the upload summary screen — goes directly to the map flow.
- * @param {string} filename  e.g. "caso_charter.xlsx"
- * @returns {{ status: string, source: string, event_summary: object }}
- */
-export async function loadTestCase(filename) {
-  const response = await client.post('/upload-excel', null, {
-    params: { test_file: filename },
-  })
   return response.data
 }
 
