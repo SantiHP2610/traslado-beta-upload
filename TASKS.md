@@ -17,6 +17,9 @@ next_estimated_delivery: 2026-06-04
 
 ## Done
 
+- [x] Fix bug: charter PE cards flickering — removed onMouseEnter/onMouseLeave SET_HIGHLIGHTED_PE dispatches from card div; click-to-preview pattern from CabaPeSelectionPanel now applies to charter cards too
+- [x] Fix bug: PE marker InfoWindow mostraba botón "Elegir" incluso cuando el PE ya era el punto confirmado — ahora muestra "✓ Punto de encuentro seleccionado" como texto estático
+- [x] Feature: cards de selección de PE en flujo estándar — useStepTwo fetches allMeetingPoints en paralelo con calculateDriverRoute; PeaPanel muestra sección colapsable "Cambiar punto de encuentro" que recalcula solo la ruta base al hacer click
 - [x] Planificación de pickup para charter: cuando remainingPool.status === 'charter', rediseño completo del flujo de charter con nuevo modelo de estado (charterAssignment), selección de PE en paso 2, asignación de empleados por PE/pickup en paso 3, modal de confirmación y output final específicos para charter
 - [x] Fix bug 1 charter: back button desde paso 3 ahora vuelve correctamente a paso 2 (limpia meetingPoint y vehicles; INIT_VEHICLES effect ya no auto-avanza para charter)
 - [x] Fix bug 2 charter: etiqueta de vehículo ya no muestra "Uber charter_1" — muestra "Charter" en todos los panels (AssignmentSummaryPanel, UnassignedPanel, StaffMarkers, ConfirmationModal, FinalOutputBlocks)

@@ -83,7 +83,7 @@ function formatDistance(meters) {
 // Sub-component: PE InfoWindow content
 // ---------------------------------------------------------------------------
 
-function PeInfoContent({ meetingPoint, onChoose }) {
+function PeInfoContent({ meetingPoint, onChoose, alreadyChosen = false }) {
   return (
     <Card className="min-w-[220px] shadow-none border-0">
       <CardContent className="p-3 space-y-2">
@@ -99,13 +99,19 @@ function PeInfoContent({ meetingPoint, onChoose }) {
           <span>{formatDistance(meetingPoint.distance_meters)}</span>
         </div>
 
-        <Button
-          className="w-full mt-1"
-          size="sm"
-          onClick={onChoose}
-        >
-          Elegir como punto de encuentro
-        </Button>
+        {alreadyChosen ? (
+          <p className="text-sm font-medium text-green-600 text-center mt-1">
+            ✓ Punto de encuentro seleccionado
+          </p>
+        ) : (
+          <Button
+            className="w-full mt-1"
+            size="sm"
+            onClick={onChoose}
+          >
+            Elegir como punto de encuentro
+          </Button>
+        )}
       </CardContent>
     </Card>
   )
@@ -333,6 +339,7 @@ export default function MeetingPointMarkers() {
               <PeInfoContent
                 meetingPoint={meetingPoint}
                 onChoose={() => handleChoose(meetingPoint)}
+                alreadyChosen={peChosen}
               />
             </InfoWindow>
           )}

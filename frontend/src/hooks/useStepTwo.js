@@ -154,18 +154,22 @@ export function useStepTwo() {
           return
         }
 
-        // ── Phase 2: compute base route (home → PE → event) ───────────────────
-        // and direct route (home → event, used for PEA and pickup evaluation).
-        // Both routes are returned as encoded polylines + duration/distance.
-        // Pass any existing driver coordinate override so the first render
-        // already uses the corrected position if the user moved the pin in step 1.
+        // ── Phase 2: compute base route (home → PE → event) and fetch all PEs ──
+        // Routes: base (home→PE→event) + direct (home→event, for PEA + pickup).
+        // All PEs: fetched in parallel so PeaPanel can render PE-switch cards
+        // without adding latency — nearestMeetingPoint(true) costs one extra
+        // Distance Matrix call but runs concurrently with the Routes API call.
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'routes' })
 
         const overrideLat = driverOverride?.lat ?? null
         const overrideLng = driverOverride?.lng ?? null
-        const driverRoutes = await calculateDriverRoute(overrideLat, overrideLng, meetingPoint.lat, meetingPoint.lng)
+        const [driverRoutes, allPoints] = await Promise.all([
+          calculateDriverRoute(overrideLat, overrideLng, meetingPoint.lat, meetingPoint.lng),
+          nearestMeetingPoint(true),
+        ])
         if (cancelled) return
-        dispatch({ type: ACTIONS.SET_DRIVER_ROUTES, payload: driverRoutes })
+        dispatch({ type: ACTIONS.SET_DRIVER_ROUTES,      payload: driverRoutes })
+        dispatch({ type: ACTIONS.SET_ALL_MEETING_POINTS, payload: allPoints })
 
         // ── Phase 3: PEA evaluation ────────────────────────────────────────────
         dispatch({ type: ACTIONS.SET_LOADING_STEP, payload: 'pea' })

@@ -645,8 +645,6 @@ function CharterPeSelectionSection() {
             <div
               key={pe.name}
               onClick={() => !choosing && handleCardClick(pe)}
-              onMouseEnter={() => dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })}
-              onMouseLeave={() => dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: selectedPe ?? null })}
               style={{
                 padding:      '12px 14px',
                 background:   isSelected ? '#f0f9ff' : '#f9fafb',

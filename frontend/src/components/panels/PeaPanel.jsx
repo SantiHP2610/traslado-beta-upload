@@ -9,7 +9,8 @@
  */
 
 import { useState }                from 'react'
-import { useAppState }             from '../../state/appState'
+import { useAppState, ACTIONS }    from '../../state/appState'
+import { calculateDriverRoute }    from '../../api/endpoints'
 
 // ── Loading messages keyed on loadingStep ─────────────────────────────────
 const LOADING_MESSAGES = {
@@ -84,13 +85,91 @@ function RouteSummary({ driverRoutes }) {
   )
 }
 
+// ── Sub-component: collapsible PE-switch cards ───────────────────────────────
+// Shown above the route guidance when allMeetingPoints is loaded and no PE has
+// been confirmed yet.  Clicking a card recalculates only the base route (home→PE→
+// event); the direct route and PEA candidates are PE-independent and stay as-is.
+
+function AllPeSection({ allMeetingPoints, currentMeetingPoint, onSelect, disabled }) {
+  const [open, setOpen] = useState(false)
+  if (!allMeetingPoints) return null
+
+  const peList = [allMeetingPoints.recommended, ...(allMeetingPoints.alternatives ?? [])].filter(Boolean)
+
+  function isCurrent(pe) {
+    if (!currentMeetingPoint) return false
+    return (
+      Math.abs(currentMeetingPoint.lat - pe.lat) < 0.0001 &&
+      Math.abs(currentMeetingPoint.lng - pe.lng) < 0.0001
+    )
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        <span>Cambiar punto de encuentro</span>
+      </button>
+      {open && (
+        <div className="space-y-1.5 pl-1">
+          {peList.map((pe) => {
+            const current = isCurrent(pe)
+            return (
+              <div
+                key={pe.name}
+                className={[
+                  'rounded border px-2.5 py-2 text-xs transition-all',
+                  current
+                    ? 'border-yellow-400 bg-yellow-50 cursor-default'
+                    : disabled
+                      ? 'border-border bg-background cursor-default opacity-60'
+                      : 'border-border bg-background hover:bg-muted/30 cursor-pointer',
+                ].join(' ')}
+                onClick={() => !current && !disabled && onSelect(pe)}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-medium leading-tight truncate">{pe.name}</p>
+                    <p className="text-muted-foreground mt-0.5 leading-snug truncate">{pe.address}</p>
+                    {pe.duration_seconds != null && (
+                      <p className="text-muted-foreground mt-0.5">
+                        {Math.ceil(pe.duration_seconds / 60)} min al evento
+                      </p>
+                    )}
+                  </div>
+                  {current ? (
+                    <span className="shrink-0 text-yellow-600 font-semibold">✓</span>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); if (!disabled) onSelect(pe) }}
+                      disabled={disabled}
+                      className="shrink-0 rounded bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-40 transition-colors"
+                    >
+                      Elegir
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 export default function PeaPanel() {
   const { state, dispatch } = useAppState()
+  const [selectingPe, setSelectingPe] = useState(false)
 
   const { loadingStep, driverRoutes, peaEvaluation, chosenMeetingPoint,
-          personalVehicle, manualPeaMode } = state
+          personalVehicle, manualPeaMode, allMeetingPoints, meetingPoint,
+          coordinateOverrides, staffWithCoords } = state
 
   const isLoading      = loadingStep !== null
   const driver         = personalVehicle?.driver
@@ -99,11 +178,44 @@ export default function PeaPanel() {
   const hasCandidates  = peaEvaluation?.has_candidates ?? false
   const candidateCount = peaEvaluation?.candidates?.length ?? 0
 
+  const driverOverride       = driverName ? coordinateOverrides?.[driverName] : null
+  const driverOriginalCoords = driverName
+    ? staffWithCoords?.find((e) => `${e.Nombre} ${e.Apellido}` === driverName)?.coordinates
+    : null
+
+  async function handleSelectPe(pe) {
+    if (selectingPe) return
+    setSelectingPe(true)
+    dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: pe })
+    dispatch({ type: ACTIONS.SET_MEETING_POINT,  payload: pe })
+    try {
+      // Recalculate only the base route (home→PE→event); direct route and PEA
+      // depend on home→event only, so they stay exactly as computed by useStepTwo.
+      const drLat  = driverOverride?.lat ?? driverOriginalCoords?.lat ?? null
+      const drLng  = driverOverride?.lng ?? driverOriginalCoords?.lng ?? null
+      const routes = await calculateDriverRoute(drLat, drLng, pe.lat, pe.lng)
+      dispatch({ type: ACTIONS.SET_DRIVER_ROUTES,  payload: routes })
+      dispatch({ type: ACTIONS.SET_HIGHLIGHTED_PE, payload: null })
+    } catch { /* route failure is non-fatal — the existing route remains */ }
+    setSelectingPe(false)
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-sm font-semibold text-gray-900">
         Punto de encuentro
       </p>
+
+      {/* ── PE switch cards — shown before a choice is confirmed ─────── */}
+      {/* Hidden once chosenMeetingPoint is set or while loading.        */}
+      {!isLoading && !chosenMeetingPoint && allMeetingPoints && (
+        <AllPeSection
+          allMeetingPoints={allMeetingPoints}
+          currentMeetingPoint={meetingPoint}
+          onSelect={handleSelectPe}
+          disabled={selectingPe}
+        />
+      )}
 
       {/* ── Loading state ───────────────────────────────────────────── */}
       {isLoading && (
